@@ -1,0 +1,220 @@
+{% extends "listings/base.html" %}
+
+{% block title %}nhatrovn.vn - Danh sách phòng trọ, căn hộ cho thuê thực tế{% endblock %}
+
+{% block content %}
+<main class="listing-page">
+  <form action="{% url 'listings:listing_list' %}" method="GET" id="unifiedFilterForm">
+    <input type="hidden" name="quick_filter" value="{{ current_quick_filter|default:'' }}">
+    <section class="listing-search-wrap">
+      <div class="shell">
+        <div class="listing-search-card">
+          <div class="search-primary-row">
+            <div class="integrated-search" style="grid-template-columns: 1fr auto; display: grid; gap: 12px; align-items: center;">
+              <input type="text" name="q" placeholder="Nhập khu vực, địa chỉ, loại hình hoặc từ khóa tìm trọ..." value="{{ current_search_query|default:'' }}" style="min-height: 48px; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0 16px; font-size: 14px; width: 100%;">
+              <button class="btn btn-primary search-submit" type="submit" style="min-height: 48px; border-radius: var(--radius-sm);">Tìm kiếm</button>
+            </div>
+          </div>
+  
+          <div class="category-chip-row">
+            <a href="{% url 'listings:listing_list' %}" onclick="filterNavigate('category', ''); event.preventDefault();" class="category-chip {% if not current_category %}active{% endif %}">Tất cả phòng</a>
+            {% for category in categories %}
+            <a href="{% url 'listings:listing_list' %}?category={{ category|slugify }}" onclick="filterNavigate('category', '{{ category|slugify }}'); event.preventDefault();" class="category-chip {% if current_category == category|slugify %}active{% endif %}">{{ category }}</a>
+            {% endfor %}
+          </div>
+  
+          <div class="filter-chip-row">
+            <span class="filter-caption">Lọc nhanh:</span>
+            {% for chip in filter_chips %}
+            <a href="{% url 'listings:listing_list' %}?quick_filter={{ chip|slugify }}" onclick="filterNavigate('quick_filter', '{{ chip|slugify }}'); event.preventDefault();" class="quick-chip {% if current_quick_filter == chip|slugify %}active{% endif %}">{{ chip }}</a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </section>
+  
+    <section class="section listing-body-wrap">
+      <div class="shell listing-results-head">
+        <div>
+          <span class="eyebrow">Tìm thấy trọ thực</span>
+          <h1>Cho thuê phòng trọ, căn hộ dịch vụ tốt nhất hiện nay</h1>
+          <p>Hệ thống tìm thấy <strong>{{ result_count }}</strong> phòng trọ, căn hộ có thông tin xác thực.</p>
+        </div>
+        <div class="results-meta">
+          <span class="meta-pill">Cam kết tin trọ thật 100%</span>
+          <span class="meta-pill">Cập nhật trực tiếp</span>
+        </div>
+      </div>
+  
+      <div class="shell listing-content-grid">
+        <aside class="left-rail">
+          <div class="rail-card">
+            <h2>Bộ lọc nâng cao</h2>
+            
+            <label style="margin-bottom: 12px; display: block;">
+              <span>Tỉnh/Thành phố</span>
+              <select name="city" onchange="this.form.submit()">
+                {% for city in cities %}
+                <option value="{{ city|slugify }}" {% if current_city == city|slugify %}selected{% endif %}>{{ city }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            
+            <label style="margin-bottom: 12px; display: block;">
+              <span>Quận/Huyện</span>
+              <select name="district" onchange="this.form.submit()">
+                <option value="">Tất cả Quận/Huyện</option>
+                {% for district in districts %}
+                <option value="{{ district|slugify }}" {% if current_district == district|slugify %}selected{% endif %}>{{ district }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            
+            <label style="margin-bottom: 12px; display: block;">
+              <span>Loại hình phòng</span>
+              <select name="category" onchange="this.form.submit()">
+                <option value="">Tất cả danh mục</option>
+                {% for category in categories %}
+                <option value="{{ category|slugify }}" {% if current_category == category|slugify %}selected{% endif %}>{{ category }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            
+            <label style="margin-bottom: 12px; display: block;">
+              <span>Khoảng giá</span>
+              <select name="price_range" onchange="this.form.submit()">
+                <option value="">Tất cả</option>
+                <option value="0-2" {% if current_price_range == '0-2' %}selected{% endif %}>Dưới 2 triệu</option>
+                <option value="2-3" {% if current_price_range == '2-3' %}selected{% endif %}>2 - 3 triệu</option>
+                <option value="3-4" {% if current_price_range == '3-4' %}selected{% endif %}>3 - 4 triệu</option>
+                <option value="4-5" {% if current_price_range == '4-5' %}selected{% endif %}>4 - 5 triệu</option>
+                <option value="5-99" {% if current_price_range == '5-99' %}selected{% endif %}>Trên 5 triệu</option>
+              </select>
+            </label>
+            
+            <label style="margin-bottom: 12px; display: block;">
+              <span>Tiện ích</span>
+              <select name="amenity" onchange="this.form.submit()">
+                <option value="">Tất cả</option>
+                <option value="may_lanh" {% if current_amenity == 'may_lanh' %}selected{% endif %}>Có máy lạnh</option>
+                <option value="gac" {% if current_amenity == 'gac' %}selected{% endif %}>Có gác</option>
+                <option value="ban_cong" {% if current_amenity == 'ban_cong' %}selected{% endif %}>Có ban công</option>
+                <option value="cua_so" {% if current_amenity == 'cua_so' %}selected{% endif %}>Có cửa sổ</option>
+              </select>
+            </label>
+            
+            <button class="btn btn-secondary" style="width: 100%; margin-top: 10px;" type="submit">Áp dụng lọc</button>
+          </div>
+        </aside>
+
+      <section class="listing-feed">
+        {% for listing in listings %}
+        <article class="listing-result-card">
+          <a class="listing-result-media" href="{% url 'listings:listing_detail' listing.id %}">
+            <img src="{{ listing.image }}" alt="{{ listing.title }}">
+            <span class="media-badge">{{ listing.hero_badge }}</span>
+          </a>
+          <div class="listing-result-body">
+            <div>
+              <div class="pill-row">
+                {% for tag in listing.tags %}
+                <span class="pill {% if tag == 'Đã xác thực' or tag == 'Da xac thuc' %}success{% elif tag == 'Hot' %}pill{% else %}warning{% endif %}">{{ tag }}</span>
+                {% endfor %}
+              </div>
+              <h2><a href="{% url 'listings:listing_detail' listing.id %}">{{ listing.title }}</a></h2>
+              <p class="listing-address">{{ listing.address }}</p>
+            </div>
+
+            <div class="result-price-line">
+              <strong>{{ listing.price_text }}</strong>
+              <span>{{ listing.area_text }}</span>
+              <span>{{ listing.floor_position }}</span>
+            </div>
+
+            <div class="result-stock-line">
+              {% if listing.available_room_count %}
+              <span>Còn {{ listing.available_room_count }} phòng trống</span>
+              {% endif %}
+              {% if listing.total_room_count %}
+              <span>Tổng {{ listing.total_room_count }} phòng</span>
+              {% endif %}
+              <span>{{ listing.category }}</span>
+            </div>
+
+            <p class="result-description">{{ listing.description|truncatewords:28 }}</p>
+
+            <div class="amenity-row" style="margin-bottom: 14px;">
+              {% for amenity in listing.amenities|slice:":6" %}
+              <span>{{ amenity }}</span>
+              {% endfor %}
+            </div>
+
+            <div class="result-actions">
+              <a class="btn btn-primary" href="{% url 'listings:listing_detail' listing.id %}">Xem chi tiết phòng</a>
+            </div>
+          </div>
+        </article>
+        {% empty %}
+        <div class="rail-card" style="text-align: center; padding: 40px 20px;">
+          <p style="color: var(--muted); margin: 0;">Không tìm thấy tin đăng phòng phù hợp.</p>
+        </div>
+        {% endfor %}
+      </section>
+    </div>
+    </section>
+  </form>
+</main>
+
+<script>
+  function filterNavigate(paramName, paramValue) {
+    const url = new URL(window.location.href);
+    if (paramValue === null || paramValue === undefined || paramValue === '') {
+      url.searchParams.delete(paramName);
+    } else {
+      if (paramName === 'quick_filter' && url.searchParams.get(paramName) === paramValue) {
+        url.searchParams.delete(paramName);
+      } else {
+        url.searchParams.set(paramName, paramValue);
+      }
+    }
+    window.location.href = url.toString();
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    const citySelect = document.querySelector('select[name="city"]');
+    const districtSelect = document.querySelector('select[name="district"]');
+    
+    // Parse the JSON data sent from Django view
+    const cityDistrictMap = JSON.parse('{{ city_district_json|escapejs }}');
+    const currentDistrict = "{{ current_district|default:'' }}";
+    
+    if (citySelect && districtSelect && cityDistrictMap) {
+      function updateDistricts() {
+        const selectedCity = citySelect.value;
+        const districts = cityDistrictMap[selectedCity] || [];
+        
+        // Clear all except the first option ("Tất cả Quận/Huyện")
+        districtSelect.innerHTML = '<option value="">Tất cả Quận/Huyện</option>';
+        
+        districts.forEach(dist => {
+          const opt = document.createElement('option');
+          opt.value = dist.slug;
+          opt.innerText = dist.name;
+          if (dist.slug === currentDistrict) {
+            opt.selected = true;
+          }
+          districtSelect.appendChild(opt);
+        });
+      }
+      
+      // Bind event listener
+      citySelect.addEventListener('change', updateDistricts);
+      
+      // Initial trigger to populate based on selected city (or defaults)
+      if (citySelect.value) {
+        updateDistricts();
+      }
+    }
+  });
+</script>
+{% endblock %}

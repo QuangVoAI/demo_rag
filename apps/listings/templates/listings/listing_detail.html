@@ -1,0 +1,251 @@
+{% extends "listings/base.html" %}
+
+{% block title %}nhatrovn.vn - {{ listing.title }}{% endblock %}
+
+{% block content %}
+<main class="section">
+  <div class="shell detail-hero" style="margin-bottom: 24px;">
+    <div class="detail-copy">
+      <div class="pill-row">
+        {% for tag in listing.tags %}
+        <span class="pill {% if tag == 'Đã xác thực' or tag == 'Da xac thuc' %}success{% elif tag == 'Hot' %}pill{% else %}warning{% endif %}">{{ tag }}</span>
+        {% endfor %}
+      </div>
+      <h1>{{ listing.title }}</h1>
+      <p class="listing-address">{{ listing.address }}</p>
+      
+      <div class="detail-price">
+        <strong>{{ listing.price_text }}</strong>
+        <span>{{ listing.area_text }}</span>
+        <span>{{ listing.floor_position }}</span>
+      </div>
+      
+      <p style="color: var(--muted); margin: 16px 0; font-size: 14px; line-height: 1.6;">{{ listing.description }}</p>
+      
+      <div class="amenity-row">
+        {% for amenity in listing.amenities %}
+        <span>{{ amenity }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    
+    <div class="detail-image">
+      <img src="{{ listing.image }}" alt="{{ listing.title }}">
+    </div>
+  </div>
+
+  <div class="shell detail-grid" style="margin-bottom: 24px;">
+    <section class="detail-card">
+      <h2>Biểu phí dịch vụ</h2>
+      <div class="kv-grid">
+        {% for item in listing.fees %}
+        <div>
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
+        {% empty %}
+        <p>Đang cập nhật biểu phí.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="detail-card">
+      <h2>Điều kiện & Quy định</h2>
+      <div class="kv-grid">
+        {% for item in listing.rules %}
+        <div>
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
+        {% empty %}
+        <p>Đang cập nhật quy định.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="detail-card">
+      <h2>Phòng trống khả dụng</h2>
+      <div class="room-list">
+        {% for room in listing.available_rooms %}
+        <article>
+          <strong>Phòng {{ room.room_code }}</strong>
+          <span>{{ room.price_text }} / tháng</span>
+        </article>
+        {% empty %}
+        <p style="color: var(--muted); font-size: 13px;">Đang cập nhật danh sách phòng trống.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="detail-card chatbot-card">
+      <h2>Trợ lý ảo tìm trọ RAG</h2>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">Bạn có thể hỏi trợ lý chatbot về thông tin phòng trọ này:</p>
+      <ul class="chatbot-prompts" style="margin-bottom: 16px;">
+        <li>"Phòng trọ này có được nuôi thú cưng không?"</li>
+        <li>"Chi phí dịch vụ (gửi xe, điện nước) ở đây thế nào?"</li>
+        <li>"Có phòng nào tương tự khu vực này mà giá rẻ hơn không?"</li>
+      </ul>
+      <a class="btn btn-primary" href="#chatbot-preview">Trò chuyện ngay</a>
+    </section>
+  </div>
+
+  <!-- Booking viewing schedule form (Interactive database link) -->
+  <div class="shell" style="margin-bottom: 24px;">
+    <section class="booking-form-card" id="booking-section">
+      <h2 style="margin: 0; font-size: 20px; font-weight: 700; border-bottom: 2px solid var(--primary-light); padding-bottom: 10px;">Đặt lịch hẹn xem phòng trống</h2>
+      <p style="color: var(--muted); font-size: 13px; margin: 8px 0 0;">Điền thông tin của bạn bên dưới. Đội ngũ nhatrovn.vn - Anhome sẽ liên hệ hỗ trợ dẫn xem phòng thực tế miễn phí.</p>
+      
+      <form id="viewingBookingForm" style="margin-top: 20px;">
+        {% csrf_token %}
+        <input type="hidden" name="house_id" value="{{ listing.property_id }}">
+        <input type="hidden" name="room_id" value="{{ listing.id }}">
+        
+        <div class="booking-form-grid">
+          <label>
+            <span>Họ và tên của bạn *</span>
+            <input type="text" name="name" required placeholder="Nhập họ tên đầy đủ">
+          </label>
+          <label>
+            <span>Số điện thoại liên hệ *</span>
+            <input type="tel" name="phone" required placeholder="Nhập số điện thoại">
+          </label>
+          <label>
+            <span>Ngày giờ hẹn xem phòng *</span>
+            <input type="datetime-local" name="datetime" required>
+          </label>
+          
+          <label>
+            <span>Số lượng người ở</span>
+            <select name="number_people">
+              <option value="1">1 người</option>
+              <option value="2" selected>2 người</option>
+              <option value="3">3 người</option>
+              <option value="4">4 người</option>
+              <option value="5">5 người</option>
+            </select>
+          </label>
+          <label>
+            <span>Số lượng xe máy</span>
+            <select name="number_vehicles">
+              <option value="0">Không có xe</option>
+              <option value="1" selected>1 xe máy</option>
+              <option value="2">2 xe máy</option>
+              <option value="3">3 xe máy</option>
+            </select>
+          </label>
+          <label>
+            <span>Có mang theo thú cưng?</span>
+            <select name="have_pet">
+              <option value="N" selected>Không nuôi thú cưng</option>
+              <option value="Y">Có nuôi thú cưng</option>
+            </select>
+          </label>
+          
+          <label class="full">
+            <span>Thời gian dự kiến chuyển vào ở</span>
+            <select name="estimated_time">
+              <option value="ONgay">Cần phòng ở ngay</option>
+              <option value="3D">Trong vòng 3 ngày</option>
+              <option value="7D">Trong vòng 7 ngày</option>
+              <option value="StartNextMonth" selected>Đầu tháng sau</option>
+              <option value="FinishViewToChoose">Xem xong thực tế mới chọn</option>
+            </select>
+          </label>
+          <label class="full">
+            <span>Ghi chú thêm cho chủ nhà (tùy chọn)</span>
+            <textarea name="remark" rows="3" placeholder="Nhập yêu cầu đặc biệt của bạn (ví dụ: cần phòng tầng cao, ban công rộng)..."></textarea>
+          </label>
+        </div>
+        
+        <div class="booking-submit-row">
+          <button class="btn btn-primary" type="submit" id="submitBookingBtn">Gửi yêu cầu đặt lịch ngay</button>
+          <div id="bookingAlert" class="booking-alert"></div>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <section class="section">
+    <div class="shell section-head">
+      <div>
+        <span class="eyebrow">Đề xuất liên quan</span>
+        <h2>Phòng trọ, căn hộ tương tự có thể bạn quan tâm</h2>
+      </div>
+    </div>
+    <div class="shell card-grid">
+      {% for item in related_listings %}
+      <article class="listing-card">
+        <a class="listing-media" href="{% url 'listings:listing_detail' item.id %}">
+          <img src="{{ item.image }}" alt="{{ item.title }}">
+          <span class="media-badge">{{ item.hero_badge }}</span>
+        </a>
+        <div class="listing-body">
+          <h3><a href="{% url 'listings:listing_detail' item.id %}">{{ item.title }}</a></h3>
+          <p class="listing-address">{{ item.address }}</p>
+          <div class="listing-meta">
+            <strong>{{ item.price_text }}</strong>
+            <span>{{ item.area_text }}</span>
+          </div>
+        </div>
+      </article>
+      {% empty %}
+      <p>Không có phòng trọ liên quan phù hợp.</p>
+      {% endfor %}
+    </div>
+  </section>
+</main>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const bookingForm = document.getElementById('viewingBookingForm');
+    const bookingAlert = document.getElementById('bookingAlert');
+    const submitBtn = document.getElementById('submitBookingBtn');
+    
+    if (bookingForm) {
+      bookingForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        submitBtn.disabled = true;
+        submitBtn.innerText = 'Đang gửi yêu cầu...';
+        
+        bookingAlert.style.display = 'none';
+        bookingAlert.className = 'booking-alert';
+        
+        const formData = new FormData(bookingForm);
+        const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+        
+        try {
+          const response = await fetch("{% url 'listings:book_viewing' %}", {
+            method: 'POST',
+            body: formData,
+            headers: {
+              'X-CSRFToken': csrfToken
+            }
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            bookingAlert.innerText = result.message;
+            bookingAlert.classList.add('success');
+            bookingAlert.style.display = 'block';
+            bookingForm.reset();
+          } else {
+            bookingAlert.innerText = result.message || 'Gửi yêu cầu thất bại.';
+            bookingAlert.classList.add('error');
+            bookingAlert.style.display = 'block';
+          }
+        } catch (error) {
+          bookingAlert.innerText = 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
+          bookingAlert.classList.add('error');
+          bookingAlert.style.display = 'block';
+          console.error('Error submitting booking:', error);
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.innerText = 'Gửi yêu cầu đặt lịch ngay';
+        }
+      });
+    }
+  });
+</script>
+{% endblock %}

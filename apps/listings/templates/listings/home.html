@@ -1,0 +1,142 @@
+{% extends "listings/base.html" %}
+
+{% block title %}nhatrovn.vn - Tìm kiếm phòng trọ, căn hộ dịch vụ thật giá tốt{% endblock %}
+
+{% block content %}
+<main>
+  <section class="hero">
+    <div class="shell hero-grid">
+      <div class="hero-copy">
+        <span class="eyebrow">Trải nghiệm Tìm Trọ Thế Hệ Mới</span>
+        <h1>Hệ thống tìm phòng trọ thật, căn hộ dịch vụ thật uy tín hàng đầu.</h1>
+        <p>
+          Tìm kiếm phòng trọ, giường tầng KTX, sleepbox, studio nhanh chóng bằng bộ lọc thông minh.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="{% url 'listings:listing_list' %}">Bắt đầu tìm phòng</a>
+          <a class="btn btn-secondary" href="#featured">Xem danh sách nổi bật</a>
+        </div>
+      </div>
+      
+      <div class="search-card">
+        <h2>Bộ lọc thông minh</h2>
+        <form class="search-grid" action="{% url 'listings:listing_list' %}" method="GET">
+          <label>
+            <span>Thành phố</span>
+            <select name="city">
+              {% for city in cities %}
+              <option value="{{ city|slugify }}">{{ city }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Danh mục</span>
+            <select name="category">
+              {% for category in categories %}
+              <option value="{{ category|slugify }}">{{ category }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Khoảng giá</span>
+            <select name="price_range">
+              <option value="">Tất cả mức giá</option>
+              <option value="0-3">Dưới 3 triệu</option>
+              <option value="3-5">3 - 5 triệu</option>
+              <option value="5-7">5 - 7 triệu</option>
+              <option value="7-99">Trên 7 triệu</option>
+            </select>
+          </label>
+          <label>
+            <span>Nhu cầu lọc nhanh</span>
+            <select name="quick_filter">
+              <option value="">Không yêu cầu</option>
+              <option value="may_lanh">Có máy lạnh</option>
+              <option value="gac">Có gác lửng</option>
+              <option value="toilet_rieng">Toilet riêng</option>
+              <option value="curfew_free">Giờ giấc tự do</option>
+            </select>
+          </label>
+
+          <div class="full">
+            <button class="btn btn-primary" style="width:100%; min-height:44px;" type="submit">Tìm kiếm ngay</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="shell stats-grid">
+      <article class="stat-card"><strong>420+</strong><span>Dãy trọ & tòa nhà thực</span></article>
+      <article class="stat-card"><strong>13</strong><span>Phân khúc phòng</span></article>
+      <article class="stat-card"><strong>5</strong><span>Đô thị phát triển tốt nhất</span></article>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="shell trend-grid">
+      <article class="trend-card">
+        <span class="eyebrow">Tìm trọ theo danh mục</span>
+        <h2>Xu hướng tìm kiếm phòng</h2>
+        <div class="trend-tags">
+          {% for category in categories %}
+          <a href="{% url 'listings:listing_list' %}?category={{ category|slugify }}">{{ category }}</a>
+          {% endfor %}
+        </div>
+      </article>
+      <article class="trend-card">
+        <span class="eyebrow">Trải nghiệm tương tác</span>
+        <h2>Thử thách chatbot RAG</h2>
+        <ul class="scenario-list">
+          <li>"Tìm phòng trọ 2 người ở gần UEH, có wifi và kệ bếp giá dưới 5 triệu"</li>
+          <li>"Gợi ý căn hộ studio đầy đủ tiện nghi tại Thủ Đức"</li>
+          <li>"Cần phòng trọ giờ giấc tự do, có chỗ để xe máy điện dưới 4 triệu"</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section id="featured" class="section">
+    <div class="shell section-head">
+      <div>
+        <span class="eyebrow">Tin nổi bật</span>
+        <h2>Phòng trống nổi bật hàng tuần</h2>
+      </div>
+      <a class="text-link" href="{% url 'listings:listing_list' %}">Xem tất cả phòng trống</a>
+    </div>
+    
+    <div class="shell card-grid">
+      {% for listing in featured_listings %}
+      <article class="listing-card">
+        <a class="listing-media" href="{% url 'listings:listing_detail' listing.id %}">
+          <img src="{{ listing.image }}" alt="{{ listing.title }}">
+          <span class="media-badge">{{ listing.hero_badge }}</span>
+        </a>
+        <div class="listing-body">
+          <div class="pill-row">
+            {% for tag in listing.tags %}
+            <span class="pill {% if tag == 'Đã xác thực' or tag == 'Da xac thuc' %}success{% elif tag == 'Hot' %}pill{% else %}warning{% endif %}">{{ tag }}</span>
+            {% endfor %}
+          </div>
+          <h3><a href="{% url 'listings:listing_detail' listing.id %}">{{ listing.title }}</a></h3>
+          <p class="listing-address">{{ listing.address }}</p>
+          <div class="listing-meta">
+            <strong>{{ listing.price_text }}</strong>
+            <span>{{ listing.area_text }}</span>
+          </div>
+          <div class="amenity-row" style="margin-top: 10px;">
+            {% for amenity in listing.amenities|slice:":4" %}
+            <span>{{ amenity }}</span>
+            {% endfor %}
+          </div>
+        </div>
+      </article>
+      {% empty %}
+      <p class="full">Đang cập nhật danh sách phòng nổi bật.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+</main>
+{% endblock %}

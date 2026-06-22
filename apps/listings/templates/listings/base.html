@@ -1,0 +1,279 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}nhatrovn.vn - Cho thuê phòng trọ, căn hộ dịch vụ giá rẻ{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'listings/demo.css' %}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner header-grid">
+      <div class="header-left">
+        <a class="brand" href="{% url 'listings:home' %}">
+          <span class="brand-mark">N</span>
+          <span>
+            <strong>nhatrovn.vn</strong>
+            <small>Tìm trọ thật - Giá thật</small>
+          </span>
+        </a>
+        <nav class="main-nav">
+          <a href="{% url 'listings:home' %}">Trang chủ</a>
+          <a href="{% url 'listings:listing_list' %}">Tìm phòng</a>
+          <a href="#">Dành cho chủ nhà</a>
+          <a href="#chatbot">Chatbot AI</a>
+        </nav>
+      </div>
+      <div class="trust-strip">
+        <div class="trust-item"><strong>4,788</strong><span>Chủ nhà tin cậy</span></div>
+        <div class="trust-item"><strong>224,679</strong><span>Lượt tải app</span></div>
+        <div class="trust-item"><strong>439,380</strong><span>Khách đặt lịch</span></div>
+      </div>
+      <div class="header-right">
+        <a class="header-link" href="#">Đăng nhập</a>
+        <a class="header-pill" href="{% url 'listings:listing_list' %}">Tìm phòng ngay</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-banner">
+    <div class="shell app-banner-inner">
+      <div class="app-banner-badge">Tải App</div>
+      <div>
+        <strong>Tìm trọ trên di động - nhatrovn.vn</strong>
+        <p>Quét mã QR hoặc tải ứng dụng trên AppStore / CHPlay để trải nghiệm tiện lợi hơn.</p>
+      </div>
+    </div>
+  </div>
+
+  {% block content %}{% endblock %}
+
+  <footer class="mobile-footer-preview">
+    <a href="{% url 'listings:home' %}" class="footer-item active">Trang chủ</a>
+    <a href="{% url 'listings:listing_list' %}" class="footer-item">Tìm phòng</a>
+    <a href="#" class="footer-item">Tìm việc</a>
+    <a href="#chatbot" class="footer-item">Nhắn tin</a>
+  </footer>
+
+  <button id="chatbot" class="chat-fab" type="button" onclick="openChatDrawer()">
+    <span class="chat-fab-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 12a8 8 0 0 1 16 0"></path>
+        <path d="M4 13v3a2 2 0 0 0 2 2h2v-7H6a2 2 0 0 0-2 2Z"></path>
+        <path d="M20 13v3a2 2 0 0 1-2 2h-2v-7h2a2 2 0 0 1 2 2Z"></path>
+        <path d="M12 19a3 3 0 0 1-3 3h3"></path>
+      </svg>
+    </span>
+    <span class="chat-fab-copy">
+      <span class="chat-fab-eyebrow">CSKH</span>
+      <strong>Chăm sóc khách hàng</strong>
+      <small>Hỗ trợ tìm phòng nhanh</small>
+    </span>
+  </button>
+
+  <!-- Chat Backdrop Overlay -->
+  <div id="chatDrawerBackdrop" class="chat-backdrop" onclick="closeChatDrawer()"></div>
+
+  <!-- Chat Drawer (3/4 Screen Width) -->
+  <div id="chatDrawer" class="chat-drawer">
+    <div class="chat-drawer-header">
+      <div class="chat-header-info">
+        <span class="chat-header-icon">AI</span>
+        <div>
+          <h3>Trợ lý tìm phòng</h3>
+          <small>Tìm theo giá, khu vực, tiện ích</small>
+        </div>
+      </div>
+      <div class="chat-header-actions">
+        <button class="chat-reset-btn" type="button" onclick="resetChatDrawer()">Làm mới đoạn chat</button>
+        <button class="chat-close-btn" type="button" onclick="closeChatDrawer()" aria-label="Đóng chat">&times;</button>
+      </div>
+    </div>
+    
+    <div class="chat-messages-wrap" id="chatMessagesWrap">
+      <div class="chat-content-column">
+        <div class="chat-bubble bot chat-bubble--welcome">
+          Chào bạn, mình là CSKH của nhatrovn. Bạn cứ nhắn nhu cầu tìm phòng, mình sẽ hỗ trợ bạn ngay.
+        </div>
+      </div>
+    </div>
+    
+    <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
+      {% csrf_token %}
+      <div class="chat-input-shell">
+        <input type="text" id="chatMessageInput" placeholder="Nhập câu hỏi tìm phòng của bạn tại đây..." required autocomplete="off">
+        <button type="submit" id="chatSendBtn">Gửi</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const CHAT_WELCOME_HTML = `
+      <div class="chat-content-column">
+        <div class="chat-bubble bot chat-bubble--welcome">
+          Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+        </div>
+      </div>
+    `;
+
+    function openChatDrawer() {
+      document.getElementById('chatDrawer').classList.add('open');
+      document.getElementById('chatDrawerBackdrop').classList.add('open');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeChatDrawer() {
+      document.getElementById('chatDrawer').classList.remove('open');
+      document.getElementById('chatDrawerBackdrop').classList.remove('open');
+      document.body.style.overflow = '';
+    }
+
+    function resetChatDrawer() {
+      const messagesWrap = document.getElementById('chatMessagesWrap');
+      const inputEl = document.getElementById('chatMessageInput');
+      messagesWrap.innerHTML = CHAT_WELCOME_HTML;
+      inputEl.value = '';
+      inputEl.focus();
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      const chatbotTriggers = document.querySelectorAll('a[href="#chatbot"], a[href="#chatbot-preview"]');
+      chatbotTriggers.forEach(el => {
+        el.addEventListener('click', function(e) {
+          e.preventDefault();
+          openChatDrawer();
+        });
+      });
+    });
+
+    function sendSuggestion(text) {
+      document.getElementById('chatMessageInput').value = text;
+      document.getElementById('chatDrawerForm').dispatchEvent(new Event('submit'));
+    }
+
+    function buildFollowUps(chips) {
+      const values = chips && chips.length ? chips : ['Rẻ hơn', 'Gần trung tâm hơn', 'Có ban công', 'Chỉ ở Quận 10', 'So sánh 3 phòng này'];
+      const wrapper = document.createElement('div');
+      wrapper.className = 'chat-follow-up-wrap';
+      wrapper.innerHTML = `
+        <div class="chat-suggestions follow-up-chips">
+          ${values.map(value => `<button class="suggestion-chip suggestion-chip--follow-up" type="button" onclick="sendSuggestion('${value.replace(/'/g, "\\'")}')">${value}</button>`).join('')}
+        </div>
+      `;
+      return wrapper;
+    }
+
+    async function handleChatSubmit(e) {
+      e.preventDefault();
+      const inputEl = document.getElementById('chatMessageInput');
+      const message = inputEl.value.trim();
+      if (!message) return;
+
+      inputEl.value = '';
+      
+      const messagesWrap = document.getElementById('chatMessagesWrap');
+      
+      // 1. Add User Bubble
+      const userBubble = document.createElement('div');
+      userBubble.className = 'chat-bubble user';
+      userBubble.innerText = message;
+      messagesWrap.appendChild(userBubble);
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+
+      const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
+      existingSuggestions.forEach(el => el.remove());
+
+      // 2. Add Typing Indicator Bubble
+      const typingBubble = document.createElement('div');
+      typingBubble.className = 'chat-bubble bot typing';
+      typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+      messagesWrap.appendChild(typingBubble);
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+
+      // 3. Post to backend
+      const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
+      try {
+        const response = await fetch("{% url 'listings:api_chat' %}", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken
+          },
+          body: JSON.stringify({ message: message })
+        });
+        
+        const result = await response.json();
+        
+        // Remove typing bubble
+        typingBubble.remove();
+        
+        if (result.success) {
+          // Add Bot reply bubble
+          const botBubble = document.createElement('div');
+          botBubble.className = 'chat-bubble bot';
+          botBubble.innerHTML = formatMarkdown(result.reply);
+          messagesWrap.appendChild(botBubble);
+          
+          // Render results as inline cards
+          if (result.listings && result.listings.length > 0) {
+            const cardsContainer = document.createElement('div');
+            cardsContainer.className = 'chat-cards-grid';
+            
+            result.listings.forEach(listing => {
+              const card = document.createElement('a');
+              card.className = 'chat-card-inline';
+              card.href = `/tim-phong/${listing.id}/`;
+              card.innerHTML = `
+                <img src="${listing.image}" alt="${listing.title}">
+                <div class="chat-card-body">
+                  <div class="chat-card-topline">
+                    <span class="chat-card-location">${listing.district || ''}${listing.city ? ' • ' + listing.city : ''}</span>
+                  </div>
+                  <h4>${listing.title}</h4>
+                  <p class="price">${listing.price_text}</p>
+                  <p class="meta">${listing.area_text} • ${listing.category}${listing.available_room_count ? ' • Còn ' + listing.available_room_count + ' phòng' : ''}</p>
+                  <div class="chat-card-amenities">${(listing.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
+                  <p class="address">${listing.address}</p>
+                  <span class="chat-card-cta">Xem chi tiết</span>
+                </div>
+              `;
+              cardsContainer.appendChild(card);
+            });
+            
+            messagesWrap.appendChild(cardsContainer);
+          }
+
+          if (result.follow_ups && result.follow_ups.length) {
+            messagesWrap.appendChild(buildFollowUps(result.follow_ups));
+          }
+        } else {
+          const botBubble = document.createElement('div');
+          botBubble.className = 'chat-bubble bot error';
+          botBubble.innerText = result.message || 'Đã xảy ra lỗi.';
+          messagesWrap.appendChild(botBubble);
+        }
+      } catch (err) {
+        typingBubble.remove();
+        const botBubble = document.createElement('div');
+        botBubble.className = 'chat-bubble bot error';
+        botBubble.innerText = 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
+        messagesWrap.appendChild(botBubble);
+        console.error(err);
+      }
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    function formatMarkdown(text) {
+      if (!text) return '';
+      return text
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/\n/g, '<br>');
+    }
+  </script>
+</body>
+</html>

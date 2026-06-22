@@ -797,16 +797,80 @@ Mục tiêu: trả lời tự nhiên như trợ lý tìm nhà.
 Nếu bạn muốn demo nhanh và dễ:
 
 - Backend: Django REST Framework
-- Database: MongoDB
+- Database: MongoDB Atlas
 - Vector DB: Chroma
 - Embedding: model embedding qua API
 - LLM: model chat để tổng hợp câu trả lời
 
 Stack đề xuất cho bản demo hiện tại:
 
-- `MongoDB + Chroma + Django`
+- `Django + MongoDB Atlas + Chroma + Railway`
 
-## 16. Kết luận
+## 16. Kiến trúc triển khai đề xuất
+
+Để demo nhanh, dễ quản lý và dễ trình bày, nên triển khai theo kiến trúc sau:
+
+- `Django`: xử lý API, crawler, logic tìm kiếm và chatbot
+- `MongoDB Atlas`: lưu dữ liệu gốc của listing, queue crawl, log chat
+- `Chroma`: lưu vector embedding để semantic search
+- `Railway`: deploy Django app và chạy cron crawl định kỳ
+
+### 16.1. Luồng triển khai
+
+```text
+Frontend / Chat UI
+    ->
+Railway (Django API)
+    |- MongoDB Atlas
+    |- Chroma
+    ->
+LLM / Embedding API
+```
+
+### 16.2. Vai trò từng thành phần
+
+#### Django
+
+- cung cấp API chat
+- crawl dữ liệu từ website nguồn
+- chuẩn hóa dữ liệu trước khi lưu
+- tạo `embedding_text`
+- gọi embedding model và LLM
+- truy vấn MongoDB Atlas và Chroma
+
+#### MongoDB Atlas
+
+- lưu `listings`
+- lưu `crawl_urls`
+- lưu `crawl_jobs`
+- lưu `chat_logs`
+
+#### Chroma
+
+- lưu vector embedding của mỗi listing
+- tìm top K listing gần nghĩa nhất
+
+#### Railway
+
+- deploy backend Django
+- lưu biến môi trường
+- chạy web service
+- có thể cấu hình cron để crawl theo lịch
+
+### 16.3. Biến môi trường gợi ý
+
+```env
+MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/demo_rag_nhatro?retryWrites=true&w=majority
+MONGODB_DB=demo_rag_nhatro
+CHROMA_DIR=/app/data/chroma
+EMBEDDING_API_KEY=your_embedding_key
+LLM_API_KEY=your_llm_key
+DJANGO_SECRET_KEY=your_secret_key
+DEBUG=False
+ALLOWED_HOSTS=your-railway-domain.up.railway.app
+```
+
+## 17. Kết luận
 
 Đối với bài toán này, phần quan trọng nhất không chỉ là chatbot mà là:
 
@@ -814,6 +878,6 @@ Stack đề xuất cho bản demo hiện tại:
 2. crawl đủ dữ liệu thật từ nhiều địa điểm
 3. chuẩn hóa dữ liệu để query tốt
 4. tạo `embedding_text` để semantic search hoạt động đúng
-5. kết hợp MongoDB filter + Chroma retrieval + LLM answer
+5. kết hợp MongoDB Atlas filter + Chroma retrieval + LLM answer
 
 Đây là một bài toán `hybrid RAG` dựa trên dữ liệu crawl thực tế, không phải chỉ vector search đơn thuần.
