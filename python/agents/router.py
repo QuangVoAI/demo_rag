@@ -1,7 +1,14 @@
 """
-Router Agent — Phân loại intent cho EmpathAI.
-3 intent: COMPLAINT / INQUIRY / CASUAL
-Embedding-based, KHÔNG dùng LLM.
+Router Agent — Phân loại loại tương tác của người dùng trên nhatro.vn.
+
+3 loại:
+  SEARCH    : Đang tìm / lọc phòng
+  QUESTION  : Hỏi thông tin về phòng cụ thể, chi phí, thủ tục
+  CASUAL    : Chào hỏi, cảm ơn, câu hỏi chung
+
+Chiến lược:
+  1. Fast classify bằng keyword (không cần model)
+  2. Embedding similarity khi keyword không đủ rõ
 """
 import numpy as np
 import sys
@@ -11,146 +18,116 @@ sys.path.append(str(Path(__file__).parent.parent))
 from agents.model_registry import get_embed_model
 from utils.console import console
 
-_complaint_centroid = None
-_inquiry_centroid = None
-_casual_centroid = None
+# Singleton centroids cho embedding-based classification
+_search_centroid: np.ndarray | None = None
+_question_centroid: np.ndarray | None = None
+_casual_centroid: np.ndarray | None = None
 
-COMPLAINT_KEYWORDS = [
-    "lỗi", "hỏng", "hư", "bể", "nát", "sai", "nhầm", "tệ",
-    "lừa đảo", "ăn cướp", "bực mình", "tức giận", "thất vọng",
-    "khiếu nại", "phàn nàn", "bức xúc", "mệt mỏi",
-    "hoàn tiền", "đổi trả", "bồi thường", "bảo hành",
-    "không được", "không hoạt động", "không phản hồi",
-    "chờ quá lâu", "quá chậm", "trễ hạn", "mất hàng",
-    "tính sai tiền", "trừ tiền", "không nhận được",
-    "giao sai", "giao trễ", "vỡ", "rác", "ngu",
-    "report", "kiện", "phốt", "đổ lỗi", "không chấp nhận",
-    "quá tệ", "kinh khủng", "nguy hiểm", "dị ứng", "hư hỏng",
-    "gian lận", "sale ảo", "voucher lỗi", "không áp dụng",
+# ---------------------------------------------------------------------------
+# Từ khóa tốc độ nhanh (không dùng embedding)
+# ---------------------------------------------------------------------------
+_SEARCH_FAST = [
+    "tìm phòng", "tim phong", "phòng trọ", "phong tro",
+    "thuê phòng", "thue phong", "cần phòng", "can phong",
+    "phòng dưới", "phong duoi", "khu vực", "gần trường",
+    "studio", "căn hộ", "can ho", "nhà nguyên căn",
 ]
-
-INQUIRY_KEYWORDS = [
-    "hỏi", "thắc mắc", "muốn biết", "cho tôi hỏi",
-    "hướng dẫn", "cách làm", "làm sao", "thế nào",
-    "báo giá", "giá bao nhiêu", "có sẵn không",
-    "tư vấn", "gợi ý", "khuyên", "đề xuất",
-    "thời gian", "bao lâu", "khi nào",
-    "chính sách", "điều kiện", "quy định",
-    "ship", "giao hàng", "phí ship", "vận chuyển",
-    "thanh toán", "chuyển khoản", "trả góp",
-    "ưu đãi", "khuyến mãi", "giảm giá",
+_QUESTION_FAST = [
+    "phòng này", "phong nay", "chi phí", "tiền cọc",
+    "tổng chi phí", "so sánh", "hợp đồng", "thủ tục",
+    "có nuôi mèo", "có nuôi chó", "diện tích", "tiện ích",
+    "tính tiền", "mã phòng", "ưu điểm", "hạn chế",
 ]
-
-CASUAL_KEYWORDS = [
+_CASUAL_FAST = [
     "xin chào", "chào bạn", "hello", "hi", "hey",
-    "cảm ơn", "cảm ơn bạn", "thanks", "thank you",
-    "tạm biệt", "bye", "bai bai",
-    "bạn là ai", "tên gì", "bạn làm được gì",
-    "bạn khỏe không", "oke", "ok", "vâng", "ừ",
+    "cảm ơn", "thanks", "cám ơn", "bạn là ai",
+    "tạm biệt", "bye", "oke", "ok", "được rồi",
 ]
 
-CASUAL_SHORT_ONLY = ["chào", "hi", "hey", "ok", "ừ", "vâng", "dạ"]
+# Từ khóa ngắn chỉ khớp khi câu ngắn hơn 15 ký tự
+_CASUAL_SHORT = ["chào", "hi", "hey", "ok", "ừ", "vâng", "dạ", "uh"]
+
+# Từ khóa ngữ nghĩa để tính centroid embedding
+_SEARCH_SEEDS = [
+    "tìm phòng trọ", "thuê nhà", "phòng dưới 5 triệu", "căn hộ quận 7",
+    "phòng có máy lạnh", "gần trường đại học", "tìm nơi ở",
+]
+_QUESTION_SEEDS = [
+    "phòng này có gì", "chi phí ban đầu", "tiền cọc bao nhiêu",
+    "hợp đồng thuê nhà", "thủ tục thuê phòng", "phòng có nuôi chó không",
+]
+_CASUAL_SEEDS = [
+    "xin chào bạn", "cảm ơn nhiều", "bạn giúp được gì",
+    "tạm biệt", "mình hiểu rồi", "ok cảm ơn",
+]
 
 
-def _ensure_centroids():
-    global _complaint_centroid, _inquiry_centroid, _casual_centroid
-    if _complaint_centroid is not None:
+def _ensure_centroids() -> None:
+    global _search_centroid, _question_centroid, _casual_centroid
+    if _search_centroid is not None:
         return
-
     model = get_embed_model()
-    console.print("[dim]  Router: computing centroids...[/]")
+    console.print("[dim]  Router: đang tính centroids...[/]")
 
-    comp_emb = model.encode(COMPLAINT_KEYWORDS, normalize_embeddings=True, batch_size=64)
-    _complaint_centroid = np.mean(comp_emb, axis=0)
-    _complaint_centroid /= np.linalg.norm(_complaint_centroid)
+    def _centroid(seeds: list[str]) -> np.ndarray:
+        embs = model.encode(seeds, normalize_embeddings=True, batch_size=32)
+        c = np.mean(embs, axis=0)
+        return c / np.linalg.norm(c)
 
-    inq_emb = model.encode(INQUIRY_KEYWORDS, normalize_embeddings=True, batch_size=64)
-    _inquiry_centroid = np.mean(inq_emb, axis=0)
-    _inquiry_centroid /= np.linalg.norm(_inquiry_centroid)
-
-    cas_emb = model.encode(CASUAL_KEYWORDS, normalize_embeddings=True, batch_size=64)
-    _casual_centroid = np.mean(cas_emb, axis=0)
-    _casual_centroid /= np.linalg.norm(_casual_centroid)
-
-    console.print("[dim]  Router: centroids ready[/]")
+    _search_centroid   = _centroid(_SEARCH_SEEDS)
+    _question_centroid = _centroid(_QUESTION_SEEDS)
+    _casual_centroid   = _centroid(_CASUAL_SEEDS)
+    console.print("[dim]  Router: centroids sẵn sàng[/]")
 
 
-COMPLAINT_FAST = [
-    "khiếu nại", "phàn nàn", "bức xúc", "hoàn tiền", "đổi trả",
-    "bồi thường", "bảo hành", "lừa đảo", "ăn cướp",
-    "hỏng", "hư", "lỗi", "bể", "nát", "sai",
-    "giao trễ", "giao sai", "mất hàng", "không nhận",
-    "tính sai", "trừ tiền", "report", "kiện",
-    "tệ hại", "rác", "thất vọng", "bực mình", "tức giận",
-]
-
-INQUIRY_FAST = [
-    "cho tôi hỏi", "muốn biết", "làm sao", "thế nào",
-    "báo giá", "giá bao nhiêu", "có sẵn không",
-    "hướng dẫn", "tư vấn", "chính sách", "quy định",
-    "phí ship", "thanh toán", "trả góp",
-]
-
-CASUAL_FAST = [
-    "xin chào", "chào bạn", "hello", "cảm ơn",
-    "bạn là ai", "bạn làm được gì", "tạm biệt", "bye",
-    "bạn khỏe", "how are you",
-]
-
-
-def _fast_classify(question):
+def _fast_classify(question: str) -> str | None:
+    """Phân loại nhanh bằng keyword, không cần embedding."""
     q = question.lower().strip()
 
-    # COMPLAINT first (bias an toàn cho CSKH)
-    for p in COMPLAINT_FAST:
-        if p in q:
-            return "COMPLAINT"
-
-    # Casual short
+    # Câu rất ngắn — khả năng cao là casual
     if len(q) < 15:
-        for p in CASUAL_SHORT_ONLY:
-            if q.startswith(p) or q == p:
+        for kw in _CASUAL_SHORT:
+            if q.startswith(kw) or q == kw:
                 return "CASUAL"
 
-    # Casual patterns
-    for p in CASUAL_FAST:
-        if p in q:
+    for kw in _SEARCH_FAST:
+        if kw in q:
+            return "SEARCH"
+    for kw in _QUESTION_FAST:
+        if kw in q:
+            return "QUESTION"
+    for kw in _CASUAL_FAST:
+        if kw in q:
             return "CASUAL"
-
-    # Inquiry patterns
-    for p in INQUIRY_FAST:
-        if p in q:
-            return "INQUIRY"
-
     return None
 
 
-def classify(question):
-    """Phân loại intent: COMPLAINT / INQUIRY / CASUAL."""
+def classify(question: str) -> str:
+    """
+    Phân loại loại tương tác: SEARCH / QUESTION / CASUAL.
+
+    Dùng fast keyword trước, embedding similarity làm fallback.
+    """
     fast = _fast_classify(question)
     if fast:
-        console.print(f"[dim]  Router: FAST -> {fast}[/]")
+        console.print(f"[dim]  Router: FAST → {fast}[/]")
         return fast
 
     _ensure_centroids()
     model = get_embed_model()
     q_emb = model.encode(question, normalize_embeddings=True)
 
-    comp_sim = float(np.dot(q_emb, _complaint_centroid))
-    inq_sim = float(np.dot(q_emb, _inquiry_centroid))
-    cas_sim = float(np.dot(q_emb, _casual_centroid))
-
-    # Bias toward COMPLAINT (an toàn hơn cho CSKH)
-    COMPLAINT_BIAS = 0.03
     scores = {
-        "COMPLAINT": comp_sim + COMPLAINT_BIAS,
-        "INQUIRY": inq_sim,
-        "CASUAL": cas_sim,
+        "SEARCH":   float(np.dot(q_emb, _search_centroid)),    # type: ignore[arg-type]
+        "QUESTION": float(np.dot(q_emb, _question_centroid)),  # type: ignore[arg-type]
+        "CASUAL":   float(np.dot(q_emb, _casual_centroid)),    # type: ignore[arg-type]
     }
+    # Ưu tiên nhẹ cho SEARCH — đây là luồng chính của nhatro.vn
+    scores["SEARCH"] += 0.02
 
-    intent = max(scores, key=scores.get)
+    result = max(scores, key=scores.get)  # type: ignore[arg-type]
     console.print(
-        f"[dim]  Router: comp={comp_sim:.3f} inq={inq_sim:.3f} "
-        f"cas={cas_sim:.3f} -> {intent}[/]"
+        f"[dim]  Router: search={scores['SEARCH']:.3f} "
+        f"question={scores['QUESTION']:.3f} casual={scores['CASUAL']:.3f} → {result}[/]"
     )
-    return intent
+    return result

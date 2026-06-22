@@ -1,160 +1,165 @@
 """
-Reviewer Agent — Empathy Quality Checker.
-Kiểm tra phản hồi có THỰC SỰ thấu cảm không, có văn mẫu bị cấm không.
+Reviewer Agent — Kiểm duyệt chất lượng câu trả lời của Nhatrovn Assistant.
+
+Hai tầng kiểm tra:
+  1. Rule-based nhanh (0 token): phát hiện vi phạm cứng (hứa hẹn sai, hallucinate)
+  2. LLM verify (Groq FAST): kiểm tra tính chính xác và tự nhiên
+
+Chỉ trigger LLM review khi câu trả lời liên quan đến giá, cọc, hợp đồng
+hoặc có dấu hiệu hallucination.
 """
 import json
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from agents.llm_client import groq_complete, vertex_custom_complete, GROQ_MODEL_FAST
-from config import EMPATHY_MODE
+from agents.llm_client import groq_complete, GROQ_MODEL_FAST
 from utils.console import console
 
-REVIEWER_SYSTEM_PROMPT = """\
-You are an Empathy Quality Reviewer for a Vietnamese customer service AI.
+# Các cụm từ bị cấm — assistant không được hứa hẹn thao tác mình không làm được
+_BANNED_PHRASES = [
+    "mình sẽ đặt lịch",
+    "mình sẽ nhắn chủ",
+    "mình sẽ giữ phòng",
+    "mình sẽ thanh toán",
+    "mình sẽ liên hệ chủ nhà",
+    "đã đặt lịch cho bạn",
+    "đã giữ phòng",
+    "đã thanh toán",
+    "chúng tôi cam kết",
+    "100% phù hợp",
+    "chắc chắn còn phòng",
+]
 
-TASK: Check if the AI response meets these criteria:
-1. GENUINE EMPATHY — NOT robotic "We apologize for the inconvenience"
-2. NO BANNED PHRASES — Must NOT contain: "Chung toi rat tiec", "Theo chinh sach", "Xin loi vi su bat tien", "Xin quy khach vui long"
-3. SPECIFIC COMPENSATION — If policy allows, response must suggest specific compensation (voucher amount, refund %)
-4. OPEN-ENDED QUESTION — Response should end with an open question for the customer
-5. NO BLAME — Must NOT blame the customer or make excuses
-6. NATURAL TONE — Should sound like a real person texting, not a corporate robot
+# Từ khóa trigger LLM review (rủi ro sai thông tin cao)
+_REVIEW_TRIGGERS = [
+    "tiền cọc", "tong chi phi", "tổng chi phí", "hợp đồng", "phí",
+    "bao gồm", "tổng cộng", "cam kết", "đảm bảo", "chắc chắn",
+]
 
-RESPOND in JSON:
-{
-    "is_approved": true/false,
-    "issues": ["Issue 1", "Issue 2"],
-    "suggestion": "Brief suggestion if issues found"
-}
+_REVIEWER_SYSTEM_PROMPT = """\
+Bạn là người kiểm duyệt câu trả lời cho chatbot tìm phòng trọ nhatro.vn.
+
+Kiểm tra câu trả lời theo 4 tiêu chí:
+1. KHÔNG hứa hẹn thao tác bot không làm được (đặt lịch, nhắn chủ, giữ phòng, thanh toán)
+2. KHÔNG đưa số tiền/thông tin không có trong dữ liệu đã xác minh
+3. Ngôn ngữ tự nhiên, thân thiện, không máy móc
+4. Nếu không có dữ liệu thì thành thật nói "chưa có dữ liệu"
+
+Trả về JSON (không giải thích thêm):
+{"is_approved": true/false, "issues": ["lỗi 1", "lỗi 2"], "suggestion": "gợi ý sửa ngắn gọn"}
 """
 
-BANNED_PHRASES = [
-    "chúng tôi rất tiếc",
-    "theo chính sách",
-    "xin lỗi vì sự bất tiện",
-    "xin quý khách vui lòng",
-    "chúng tôi sẽ chuyển",
-    "vui lòng chờ",
-    "hệ thống đang xử lý",
-    "cảm ơn quý khách đã thông báo",
-]
 
-MAX_REVIEW_RETRIES = 1  # Keep low — each Vertex retry costs ~30s
-
-REVIEW_TRIGGER_KEYWORDS = [
-    "bồi thường", "hoàn tiền", "voucher", "đền bù",
-    "lừa đảo", "ăn cướp", "kiện", "report",
-    "bức xúc", "tức giận", "phẫn nộ",
-    "toxic", "frustrated",
-]
-
-
-def needs_review(question):
-    """Check xem response có cần review không."""
-    q = question.lower()
-    return any(kw in q for kw in REVIEW_TRIGGER_KEYWORDS)
-
-
-def _check_banned_phrases(answer):
-    """Quick check banned phrases (no LLM needed)."""
+def _check_banned_phrases(answer: str) -> list[str]:
+    """Kiểm tra nhanh các cụm từ bị cấm, không cần LLM."""
     answer_lower = answer.lower()
-    found = [p for p in BANNED_PHRASES if p in answer_lower]
-    return found
+    return [phrase for phrase in _BANNED_PHRASES if phrase in answer_lower]
 
 
-async def review(question, answer, evidence):
-    """Review phản hồi."""
-    # Quick ban check first
+def needs_review(question: str, answer: str) -> bool:
+    """Xác định có cần LLM review không (tránh tốn token không cần thiết)."""
+    combined = (question + " " + answer).lower()
+    return any(kw in combined for kw in _REVIEW_TRIGGERS)
+
+
+async def review(question: str, answer: str, listing_context: str = "") -> dict:
+    """
+    Kiểm duyệt câu trả lời.
+
+    Returns:
+        dict với is_approved, issues, suggestion.
+    """
+    # Tầng 1: Rule-based check
     banned = _check_banned_phrases(answer)
     if banned:
         return {
             "is_approved": False,
-            "issues": [f"Sử dụng văn mẫu bị cấm: '{p}'" for p in banned],
-            "suggestion": "Viết lại thấu cảm hơn, không dùng văn mẫu.",
+            "issues": [f"Vi phạm: '{phrase}'" for phrase in banned],
+            "suggestion": "Bỏ lời hứa thao tác; chỉ tư vấn và đọc dữ liệu.",
         }
 
-    # LLM review
-    user_prompt = (
-        f"CUSTOMER MESSAGE: {question}\n\n"
-        f"AI RESPONSE TO CHECK:\n{answer}\n\n"
-        f"POLICY CONTEXT:\n{evidence[:2000]}\n\n"
-        f"Check and respond in JSON:"
+    # Nếu không trigger → approve ngay (tiết kiệm token)
+    if not needs_review(question, answer):
+        return {"is_approved": True, "issues": [], "suggestion": ""}
+
+    # Tầng 2: LLM review
+    prompt = (
+        f"Câu hỏi người dùng: {question}\n\n"
+        f"Câu trả lời của assistant:\n{answer}\n\n"
+        f"Dữ liệu đã xác minh (nếu có):\n{listing_context[:1500]}\n\n"
+        f"Kiểm tra và trả về JSON:"
     )
-    messages = [
-        {"role": "system", "content": REVIEWER_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
-
-    # Always use Groq for review — it's fast and just needs to output JSON
-    response = await groq_complete(
-        prompt=user_prompt,
-        system_prompt=REVIEWER_SYSTEM_PROMPT,
-        model=GROQ_MODEL_FAST,
-        max_tokens=256,
-        temperature=0.0,
-    )
-
-    return _parse_result(response)
+    try:
+        raw = await groq_complete(
+            prompt=prompt,
+            system_prompt=_REVIEWER_SYSTEM_PROMPT,
+            model=GROQ_MODEL_FAST,
+            max_tokens=200,
+            temperature=0.0,
+        )
+        return _parse_result(raw)
+    except Exception:
+        # Lỗi LLM reviewer → approve để không chặn trả lời
+        return {"is_approved": True, "issues": [], "suggestion": ""}
 
 
-def _parse_result(response):
+def _parse_result(response: str) -> dict:
     try:
         start = response.find("{")
         end = response.rfind("}") + 1
         if start >= 0 and end > start:
             result = json.loads(response[start:end])
             return {
-                "is_approved": result.get("is_approved", True),
-                "issues": result.get("issues", []),
-                "suggestion": result.get("suggestion", ""),
+                "is_approved": bool(result.get("is_approved", True)),
+                "issues": list(result.get("issues", [])),
+                "suggestion": str(result.get("suggestion", "")),
             }
     except (json.JSONDecodeError, KeyError):
         pass
     return {"is_approved": True, "issues": [], "suggestion": ""}
 
 
-async def review_with_retry(question, answer, evidence):
-    """Review + retry nếu fail."""
+async def review_with_retry(
+    question: str,
+    answer: str,
+    listing_context: str = "",
+    max_retries: int = 1,
+) -> tuple[str, dict]:
+    """
+    Review + tự sửa nếu phát hiện vi phạm.
+
+    Giới hạn max_retries để tránh tốn quá nhiều token.
+    """
     current_answer = answer
-    retry_count = 0
+    result = {"is_approved": True, "issues": [], "suggestion": ""}
 
-    for attempt in range(MAX_REVIEW_RETRIES + 1):
-        result = await review(question, current_answer, evidence)
+    for attempt in range(max_retries + 1):
+        result = await review(question, current_answer, listing_context)
 
-        if result["is_approved"] or attempt >= MAX_REVIEW_RETRIES:
-            result["retry_count"] = retry_count
-            return current_answer, result
+        if result["is_approved"] or attempt >= max_retries:
+            break
 
-        console.print(f"[yellow]  Reviewer retry #{attempt+1}: {result['issues']}[/]")
+        console.print(f"[yellow]  Reviewer retry #{attempt + 1}: {result['issues']}[/]")
 
+        # Thử sửa lại câu trả lời dựa trên gợi ý
         issues_str = "; ".join(result["issues"])
         retry_prompt = (
-            f"Phản hồi trước bị lỗi: {issues_str}\n\n"
-            f"KHACH HANG: {question}\n\n"
-            f"CHINH SACH: {evidence[:2000]}\n\n"
-            f"Viết lại phản hồi thấu cảm, tránh các lỗi trên. "
-            f"KHÔNG dùng văn mẫu, phải tự nhiên như người thật nhắn tin."
+            f"Câu trả lời bị lỗi: {issues_str}\n"
+            f"Câu hỏi gốc: {question}\n"
+            f"Dữ liệu xác minh: {listing_context[:1500]}\n\n"
+            f"Viết lại câu trả lời tự nhiên, đúng sự thật, không vi phạm:"
         )
-
-        retry_messages = [
-            {"role": "system", "content": "Bạn là EmpathAI. Viết phản hồi thấu cảm, tự nhiên."},
-            {"role": "user", "content": retry_prompt},
-        ]
-        
-        # Always use Groq for retries — fast, no 30s Vertex latency
         try:
             current_answer = await groq_complete(
                 prompt=retry_prompt,
-                system_prompt="Bạn là EmpathAI. Viết phản hồi thấu cảm, tự nhiên, ngắn gọn.",
+                system_prompt="Bạn là trợ lý tìm phòng nhatro.vn. Trả lời ngắn gọn, trung thực.",
                 model=GROQ_MODEL_FAST,
                 max_tokens=400,
-                temperature=0.7,
+                temperature=0.2,
             )
-        except Exception as e:
-            print(f"Groq retry error: {e}")
-            break  # Give up and return current_answer
-        retry_count += 1
+        except Exception:
+            break  # Giữ answer cũ nếu retry lỗi
 
+    result["retry_count"] = max_retries
     return current_answer, result

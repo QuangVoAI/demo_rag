@@ -1,10 +1,11 @@
 """Workflow chính cho Nhatrovn Room Assistant (chỉ đọc, không ghi).
 
 Luồng xử lý mỗi lượt người dùng:
-  normalize_input → parse_intent_async (regex + LLM)
+  normalize_input → parse_intent_async (regex + LLM fallback)
+  → analyze_mood (embedding-based, 0 token)
   → load_session_state → merge_and_validate_state
   → route_workflow → execute_read_only_tools
-  → grounding_check → compose_answer (LLM hoặc template)
+  → grounding_check → compose_answer (response_writer + reviewer)
   → persist_state_and_trace → END
 
 Assistant KHÔNG thực hiện: đặt lịch, nhắn chủ, giữ chỗ, thanh toán,
@@ -89,9 +90,17 @@ async def run_room_assistant(
 
     state_before = load_session_state(session_id, store)
 
-    # Phân tích intent với regex + LLM fallback (async)
+    # Tầng 1: Phân tích intent với regex + LLM fallback
     parsed = await parse_intent_async(question, state_before)
     merged_state, applied_operations = apply_operations(state_before, parsed["operations"])
+
+    # Tầng 2: Phân tích cảm xúc người dùng (embedding-based, không tốn token)
+    user_mood = "normal"
+    try:
+        from agents.sentiment_analyzer import analyze_mood
+        user_mood, _ = analyze_mood(question)
+    except Exception:
+        pass
 
     context = ToolExecutionContext(repository=repo, semantic_index=semantic_index)
     tool_results: dict[str, Any] = {}
@@ -124,8 +133,10 @@ async def run_room_assistant(
 
     grounding = _build_grounding_context(parsed, next_state, tool_results)
 
-    # Sinh câu trả lời bằng LLM nếu context đủ phong phú, fallback về template
-    answer = await _compose_answer_async(question, parsed, grounding, tool_results, history or [])
+    # Sinh câu trả lời: dùng response_writer (điều chỉnh theo mood) + reviewer
+    answer = await _compose_answer_async(
+        question, parsed, grounding, tool_results, history or [], user_mood
+    )
     suggested_questions = _suggest_questions(parsed["intent"], listings, current_listing_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
@@ -142,13 +153,14 @@ async def run_room_assistant(
         "agent_trace": {
             "workflow": [
                 "normalize_input",
-                "parse_intent_and_constraint_patch",
+                "parse_intent_async",
+                "analyze_mood",
                 "load_session_state",
                 "merge_and_validate_state",
                 "route_workflow",
                 "execute_read_only_tools",
                 "grounding_check",
-                "compose_response",
+                "compose_answer_with_review",
                 "persist_state_and_trace",
             ],
             "intent": parsed["intent"],
@@ -454,14 +466,20 @@ async def _compose_answer_async(
     grounding: dict[str, Any],
     tool_results: dict[str, Any],
     history: list[dict[str, Any]],
+    user_mood: str = "normal",
 ) -> str:
-    """Sinh câu trả lời bằng LLM nếu có dữ liệu thực, fallback về template.
+    """Sinh câu trả lời qua pipeline: response_writer → reviewer → fallback template.
 
-    LLM chỉ được dùng để diễn đạt lại dữ liệu đã có — không được bịa thêm.
+    Luồng:
+      1. REQUEST_ACTION / CALCULATE_COST / lỗi → dùng template (an toàn, nhất quán).
+      2. Không có dữ liệu thực → dùng template (tránh hallucinate).
+      3. Có dữ liệu → response_writer sinh câu trả lời điều chỉnh theo mood.
+      4. Reviewer kiểm tra vi phạm → tự sửa nếu cần.
+      5. Fallback về template nếu mọi thứ thất bại.
     """
     intent = parsed["intent"]
 
-    # Một số intent luôn dùng template để đảm bảo an toàn và nhất quán
+    # Intent luôn dùng template để đảm bảo an toàn
     if intent in {"REQUEST_ACTION", "CALCULATE_COST"} or tool_results.get("error"):
         return _compose_answer_template(parsed, grounding, tool_results)
 
@@ -472,37 +490,43 @@ async def _compose_answer_async(
     if not listings and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
         return _compose_answer_template(parsed, grounding, tool_results)
 
-    # Thử dùng LLM để sinh câu trả lời tự nhiên hơn
+    # Dùng response_writer để sinh câu trả lời điều chỉnh theo mood
+    verified_data = _build_llm_context(grounding, tool_results)
+    answer = ""
     try:
-        from agents.llm_client import groq_chat_complete, GROQ_MODEL_FAST
+        from agents.response_writer import write_response, write_no_result_response
 
-        verified_data = _build_llm_context(grounding, tool_results)
-
-        # Xây dựng lịch sử hội thoại gần nhất (tối đa 3 lượt)
-        messages: list[dict[str, str]] = [{"role": "system", "content": _ANSWER_SYSTEM_PROMPT}]
-        for turn in history[-6:]:
-            role = turn.get("role", "user")
-            if role in {"user", "assistant"}:
-                messages.append({"role": role, "content": str(turn.get("content", ""))[:500]})
-
-        messages.append({
-            "role": "user",
-            "content": f"Câu hỏi: {question}\n\n[DỮ LIỆU ĐÃ XÁC MINH]\n{verified_data}",
-        })
-
-        answer = await groq_chat_complete(
-            messages=messages,
-            model=GROQ_MODEL_FAST,
-            max_tokens=600,
-            temperature=0.2,
-        )
-        if answer and len(answer.strip()) > 20:
-            return answer.strip()
+        if not listings and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+            # Không tìm được phòng → gợi ý điều chỉnh điều kiện
+            constraints = grounding.get("constraints", {})
+            answer = await write_no_result_response(question, constraints, user_mood)
+        else:
+            answer = await write_response(
+                question=question,
+                verified_context=verified_data,
+                history=history,
+                mood=user_mood,
+            )
     except Exception:
         pass
 
-    # Fallback về template nếu LLM lỗi hoặc trả về rỗng
-    return _compose_answer_template(parsed, grounding, tool_results)
+    # Nếu response_writer trả về rỗng → fallback template
+    if not answer or len(answer.strip()) < 20:
+        return _compose_answer_template(parsed, grounding, tool_results)
+
+    # Reviewer kiểm duyệt câu trả lời
+    try:
+        from agents.reviewer import review_with_retry
+        answer, _ = await review_with_retry(
+            question=question,
+            answer=answer,
+            listing_context=verified_data,
+            max_retries=1,
+        )
+    except Exception:
+        pass  # Bỏ qua lỗi reviewer, giữ câu trả lời gốc
+
+    return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
 
 
 def _extract_listings(tool_results: dict[str, Any]) -> list[dict[str, Any]]:

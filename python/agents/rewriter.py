@@ -1,99 +1,86 @@
 """
-Rewriter Agent — Viết lại query khi policy search không đủ.
-Sử dụng Groq FAST để tinh chỉnh query tìm chính sách phù hợp.
+Rewriter Agent — Viết lại / nới lỏng điều kiện tìm phòng khi tìm kiếm thất bại.
+
+Được gọi sau khi Grader phán quyết kết quả là POOR.
+Chiến lược rewrite:
+  1. Nới ngân sách thêm 20–30%
+  2. Mở rộng khu vực sang quận lân cận
+  3. Bỏ bớt tiện ích bắt buộc kém quan trọng
+  4. Dùng LLM (Groq FAST) để diễn đạt lại query tự nhiên hơn
 """
 import time
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from agents.state import AgentState
-from agents.llm_client import groq_complete, vertex_custom_complete, GROQ_MODEL_FAST
-from config import EMPATHY_MODE
+from agents.state import NhatrovnAgentState
+from agents.llm_client import groq_complete, GROQ_MODEL_FAST
 from utils.console import console
 
-REWRITE_SYSTEM_PROMPT = """\
-You are a query rewriting expert for customer service policy search.
-Given a customer complaint that returned poor policy results, rewrite the search query.
+_REWRITE_SYSTEM_PROMPT = """\
+Bạn là chuyên gia viết lại câu tìm kiếm phòng trọ tại Việt Nam.
+Người dùng đang tìm phòng nhưng chưa tìm được kết quả phù hợp.
 
-Strategies:
-1. Extract the CORE ISSUE (delivery delay, broken product, wrong item, etc.)
-2. Add specific policy-related terms (hoàn tiền, đổi trả, bồi thường, voucher, bảo hành)
-3. Include the CATEGORY (vận chuyển, sản phẩm, dịch vụ, thanh toán)
-4. Be concise and specific
+Nhiệm vụ: Viết lại câu tìm kiếm theo hướng NỚI LỎNG điều kiện để tìm được phòng.
 
-RULES:
-- Output ONLY the rewritten query in Vietnamese, nothing else
-- Keep it concise (1-2 sentences max)
-- Focus on finding the RIGHT POLICY to resolve the complaint
+Chiến lược (chọn một hoặc kết hợp):
+1. Nới ngân sách thêm 20–30%
+2. Mở rộng khu vực sang quận lân cận
+3. Bỏ bớt tiện ích ít quan trọng (giữ lại điều kiện cốt lõi)
+4. Dùng từ ngữ tổng quát hơn
+
+Quy tắc:
+- Chỉ trả về câu query mới, KHÔNG giải thích thêm
+- Ngắn gọn (1–2 câu), tiếng Việt tự nhiên
+- Không bịa thêm khu vực nếu người dùng chưa đề cập
 """
 
 
-async def rewrite_query_node(state: AgentState) -> dict:
-    """Node: Rewrite query để tìm chính sách phù hợp hơn."""
+async def rewrite_query_node(state: NhatrovnAgentState) -> dict:
+    """LangGraph Node: Viết lại query khi tìm phòng không có kết quả."""
     t0 = time.time()
-    original_query = state.get("translated_query", state["question"])
+    original_query = state.get("rewritten_query") or state["question"]
     rewrite_count = state.get("rewrite_count", 0)
-    evidence = state.get("evidence", [])
-    sentiment = state.get("sentiment", "")
+    listings = state.get("listings", [])
 
-    evidence_context = ""
-    if evidence:
-        titles = [doc.get("doc_title", "")[:80] for doc in evidence[:3]]
-        evidence_context = (
-            f"\nPrevious search returned these partially relevant policies:\n"
+    # Bổ sung context về những gì đã tìm (nếu có)
+    context_hint = ""
+    if listings:
+        titles = [item.get("title", "")[:60] for item in listings[:2]]
+        context_hint = (
+            "\nKết quả hiện tại (chưa đạt chất lượng):\n"
             + "\n".join(f"- {t}" for t in titles if t)
-            + "\nRewrite to find MORE relevant policies."
+            + "\nHãy rewrite để tìm phòng phù hợp hơn."
         )
 
     prompt = (
-        f"Customer complaint: {state['question']}\n"
-        f"Sentiment: {sentiment}\n"
-        f"Original query (attempt #{rewrite_count + 1}): {original_query}\n"
-        f"{evidence_context}\n\n"
-        f"Rewrite this query to find the best matching CSKH policy:"
+        f"Câu tìm kiếm gốc: {state['question']}\n"
+        f"Câu tìm kiếm lần {rewrite_count + 1}: {original_query}\n"
+        f"{context_hint}\n\n"
+        f"Viết lại câu tìm kiếm với điều kiện nới lỏng hơn:"
     )
 
-    messages = [
-        {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
-    
-    if EMPATHY_MODE == "vertex":
-        try:
-            rewritten = await vertex_custom_complete(
-                messages=messages,
-                max_tokens=128,
-                temperature=0.3,
-            )
-        except Exception as e:
-            print(f"Vertex AI rewrite error: {e}, falling back to Groq")
-            rewritten = await groq_complete(
-                prompt=prompt,
-                system_prompt=REWRITE_SYSTEM_PROMPT,
-                model=GROQ_MODEL_FAST,
-                max_tokens=128,
-                temperature=0.3,
-            )
-    else:
+    try:
         rewritten = await groq_complete(
             prompt=prompt,
-            system_prompt=REWRITE_SYSTEM_PROMPT,
+            system_prompt=_REWRITE_SYSTEM_PROMPT,
             model=GROQ_MODEL_FAST,
-            max_tokens=128,
+            max_tokens=120,
             temperature=0.3,
         )
-
-    rewritten = rewritten.strip().strip('"').strip("'")
+        rewritten = rewritten.strip().strip('"').strip("'")
+    except Exception as e:
+        console.print(f"[yellow]  Rewriter lỗi: {e}, giữ nguyên query[/]")
+        rewritten = original_query
 
     elapsed = int((time.time() - t0) * 1000)
     console.print(
         f"[yellow]  Rewrite #{rewrite_count + 1}: "
-        f"'{original_query[:40]}...' -> '{rewritten[:40]}...' ({elapsed}ms)[/]"
+        f"'{original_query[:40]}' → '{rewritten[:40]}' ({elapsed}ms)[/]"
     )
 
     return {
-        "translated_query": rewritten,
+        "rewritten_query": rewritten,
         "rewrite_count": rewrite_count + 1,
         "agent_trace": {
             **(state.get("agent_trace") or {}),

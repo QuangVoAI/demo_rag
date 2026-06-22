@@ -1,46 +1,43 @@
+"""State dùng chung cho Nhatrovn Agent pipeline.
+
+Định nghĩa NhatrovnAgentState — trạng thái luân chuyển qua các node
+trong luồng xử lý mỗi lượt hội thoại.
 """
-Agent State — Shared state definition cho LangGraph EmpathAI pipeline.
-"""
-from typing import Any, Optional
+from typing import Any
 from typing_extensions import TypedDict
 
 
-class AgentState(TypedDict, total=False):
-    """State chung cho EmpathAI LangGraph pipeline."""
+class NhatrovnAgentState(TypedDict, total=False):
+    """Trạng thái chung cho Nhatrovn Agent pipeline."""
 
-    # --- Input ---
+    # --- Input người dùng ---
     session_id: str
-    question: str               # Tin nhan cua khach hang
-    history: list[dict]         # Chat history [{role, content}, ...]
+    question: str           # Câu hỏi của người dùng
+    history: list[dict]     # Lịch sử hội thoại [{role, content}, ...]
 
-    # --- Router Output ---
-    intent: str                 # "COMPLAINT" | "INQUIRY" | "CASUAL"
+    # --- Phân tích cảm xúc người dùng ---
+    user_mood: str          # "frustrated" | "urgent" | "normal"
+    user_mood_score: float  # Độ tin cậy 0.0 – 1.0
 
-    # --- Sentiment Analysis Output ---
-    sentiment: str              # "toxic" | "frustrated" | "disappointed" | "neutral"
-    sentiment_score: float      # 0.0 - 1.0
+    # --- Kết quả tìm kiếm phòng ---
+    listings: list[dict]    # Danh sách phòng tìm được
+    listing_context: str    # Context đầy đủ của phòng đang xem
 
-    # --- Retrieval Output ---
-    evidence: list[dict]        # Retrieved & reranked policy chunks
-    evidence_text: str          # Formatted policy context cho LLM
-    policy_context: str         # Chinh sach ap dung cu the
-    compensation: str           # Goi y boi thuong tu RAG
+    # --- Viết lại query ---
+    rewritten_query: str    # Query sau khi được rewrite để tìm lại
+    rewrite_count: int      # Số lần đã rewrite
 
-    # --- Rewrite Loop ---
-    rewrite_count: int
-    is_evidence_sufficient: bool
-    translated_query: str       # Query da duoc rewrite (khong dich, chi rewrite)
+    # --- Đánh giá chất lượng kết quả ---
+    grade_result: str       # "GOOD" | "POOR" — chất lượng kết quả tìm kiếm
 
-    # --- Generation Output ---
-    answer: str                 # Phan hoi thau cam cuoi cung
+    # --- Sinh câu trả lời ---
+    answer: str             # Câu trả lời cuối cùng gửi cho người dùng
 
-    # --- Reviewer Output ---
-    reviewer_triggered: bool
-    reviewer_result: dict       # {is_approved, issues, retry_count}
+    # --- Kiểm duyệt câu trả lời ---
+    reviewer_approved: bool
+    reviewer_issues: list[str]
 
     # --- Metadata ---
     agent_trace: dict
     processing_time_ms: int
-
-    # --- Streaming ---
     stream_callback: Any
