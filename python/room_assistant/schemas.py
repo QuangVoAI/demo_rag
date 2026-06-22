@@ -1,4 +1,8 @@
-"""Shared schemas and constants for the Nhatrovn room assistant."""
+"""Schemas và hằng số dùng chung cho Nhatrovn Room Assistant.
+
+Mô tả các intent, operation paths, và cấu trúc session state
+phù hợp với luồng tìm phòng trọ trên nhatro.vn.
+"""
 
 from __future__ import annotations
 
@@ -8,15 +12,16 @@ from typing import Any, Literal, TypedDict
 
 
 Intent = Literal[
-    "SEARCH_ROOM",
-    "REFINE_SEARCH",
-    "ASK_ABOUT_ROOM",
-    "CALCULATE_COST",
-    "COMPARE_ROOMS",
-    "FIND_SIMILAR",
-    "SUMMARIZE_ROOM",
-    "GENERAL_HELP",
-    "REQUEST_ACTION",
+    "SEARCH_ROOM",      # Tìm phòng mới theo tiêu chí
+    "REFINE_SEARCH",    # Điều chỉnh tiêu chí tìm kiếm đang có
+    "ASK_ABOUT_ROOM",   # Hỏi chi tiết về một phòng cụ thể
+    "CALCULATE_COST",   # Tính chi phí ban đầu (cọc, phí phát sinh)
+    "COMPARE_ROOMS",    # So sánh tối đa 3 phòng với nhau
+    "FIND_SIMILAR",     # Tìm phòng tương tự phòng đang xem
+    "SUMMARIZE_ROOM",   # Tóm tắt ưu / nhược điểm phòng
+    "REQUEST_FAQ",      # Hỏi quy trình thuê, hợp đồng, thủ tục
+    "GENERAL_HELP",     # Câu hỏi chung hoặc không xác định được
+    "REQUEST_ACTION",   # Yêu cầu thao tác nghiệp vụ (đặt lịch, nhắn chủ...)
 ]
 
 OP_TYPES = {"set", "remove", "append", "replace", "clear"}
@@ -29,18 +34,21 @@ INTENTS: tuple[str, ...] = (
     "COMPARE_ROOMS",
     "FIND_SIMILAR",
     "SUMMARIZE_ROOM",
+    "REQUEST_FAQ",
     "GENERAL_HELP",
     "REQUEST_ACTION",
 )
 
+# Danh sách tool được phép đăng ký trong ReadOnlyToolRegistry.
+# Không được thêm tool có side-effect ghi dữ liệu vào đây.
 READ_ONLY_TOOLS: tuple[str, ...] = (
-    "search_listings",
-    "get_listing_detail",
-    "retrieve_listing_context",
-    "retrieve_faq",
-    "calculate_cost_estimate",
-    "compare_listings",
-    "find_similar_listings",
+    "search_listings",          # Tìm phòng theo constraint
+    "get_listing_detail",       # Lấy chi tiết một phòng
+    "retrieve_listing_context", # Lấy context đầy đủ của phòng
+    "retrieve_faq",             # Trả lời câu hỏi thường gặp (hợp đồng, thủ tục)
+    "calculate_cost_estimate",  # Tính chi phí ban đầu deterministic
+    "compare_listings",         # So sánh tối đa 3 phòng
+    "find_similar_listings",    # Tìm phòng tương tự
 )
 
 MAX_READ_TOOL_CALLS_PER_TURN = 3

@@ -1,4 +1,15 @@
-"""Production workflow for the read-only Nhatrovn room assistant."""
+"""Workflow chính cho Nhatrovn Room Assistant (chỉ đọc, không ghi).
+
+Luồng xử lý mỗi lượt người dùng:
+  normalize_input → parse_intent_async (regex + LLM)
+  → load_session_state → merge_and_validate_state
+  → route_workflow → execute_read_only_tools
+  → grounding_check → compose_answer (LLM hoặc template)
+  → persist_state_and_trace → END
+
+Assistant KHÔNG thực hiện: đặt lịch, nhắn chủ, giữ chỗ, thanh toán,
+chỉnh sửa tin đăng hoặc bất kỳ thao tác ghi nào.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +17,7 @@ import time
 import uuid
 from typing import Any, Callable, Awaitable
 
-from .intent import parse_intent_and_constraint_patch
+from .intent import parse_intent_and_constraint_patch, parse_intent_async
 from .repository import ListingRepository, create_listing_repository
 from .retrieval import ListingSemanticIndex
 from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, public_session_state
@@ -63,7 +74,12 @@ async def run_room_assistant(
     session_store: SessionStore | None = None,
     semantic_index: ListingSemanticIndex | None = None,
 ) -> dict[str, Any]:
-    """Run one user turn. Streaming callback is accepted but final-only by design."""
+    """Chạy một lượt hội thoại của người dùng.
+
+    Streaming callback được chấp nhận cho tương thích API nhưng assistant
+    chỉ trả về câu trả lời cuối cùng đã được grounding, không stream token
+    trung gian chưa xác minh.
+    """
     started = time.time()
     session_id = session_id or str(uuid.uuid4())
     store = session_store or _get_session_store()
@@ -72,7 +88,9 @@ async def run_room_assistant(
     ttl_seconds = _session_ttl_seconds()
 
     state_before = load_session_state(session_id, store)
-    parsed = parse_intent_and_constraint_patch(question, state_before)
+
+    # Phân tích intent với regex + LLM fallback (async)
+    parsed = await parse_intent_async(question, state_before)
     merged_state, applied_operations = apply_operations(state_before, parsed["operations"])
 
     context = ToolExecutionContext(repository=repo, semantic_index=semantic_index)
@@ -105,7 +123,9 @@ async def run_room_assistant(
     save_session_state(next_state, store, ttl_seconds)
 
     grounding = _build_grounding_context(parsed, next_state, tool_results)
-    answer = _compose_answer(parsed, grounding, tool_results)
+
+    # Sinh câu trả lời bằng LLM nếu context đủ phong phú, fallback về template
+    answer = await _compose_answer_async(question, parsed, grounding, tool_results, history or [])
     suggested_questions = _suggest_questions(parsed["intent"], listings, current_listing_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
@@ -154,6 +174,7 @@ def _execute_workflow(
     state: dict[str, Any],
     context: ToolExecutionContext,
 ) -> dict[str, Any]:
+    """Route đến tool phù hợp theo intent đã phân loại."""
     intent = parsed["intent"]
     constraints = state.get("constraints", {})
     current_listing_id = (
@@ -220,6 +241,15 @@ def _execute_workflow(
     if intent == "REQUEST_ACTION":
         return {"requested_action": parsed.get("requested_action")}
 
+    if intent == "REQUEST_FAQ":
+        # Lấy câu trả lời FAQ từ tool retrieve_faq
+        faq_results = _tool_registry.execute(
+            "retrieve_faq",
+            {"question": question},
+            context,
+        )
+        return {"faq_results": faq_results}
+
     return {}
 
 
@@ -261,56 +291,129 @@ def _build_grounding_context(
     }
 
 
-def _compose_answer(
+# ---------------------------------------------------------------------------
+# System prompt cho LLM sinh câu trả lời tự nhiên
+# ---------------------------------------------------------------------------
+_ANSWER_SYSTEM_PROMPT = """Bạn là trợ lý tìm phòng trọ cho nhatro.vn — nền tảng cho thuê phòng lớn tại Việt Nam.
+Nhiệm vụ: Dựa vào dữ liệu listing đã xác minh, trả lời ngắn gọn, thân thiện bằng tiếng Việt.
+
+Quy tắc bắt buộc:
+- CHỈ dùng thông tin trong [DỮ LIỆU ĐÃ XÁC MINH]. Không bịa thêm.
+- Nếu thiếu dữ liệu, thành thật nói "chưa có dữ liệu" thay vì đoán.
+- Không thực hiện: đặt lịch, nhắn chủ nhà, giữ chỗ, thanh toán, sửa tin đăng.
+- Trả lời ngắn gọn, dùng danh sách khi liệt kê nhiều phòng.
+- Format giá theo triệu VND cho dễ đọc (VD: 4.500.000 VND → 4,5 triệu).
+"""
+
+
+def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) -> str:
+    """Xây dựng phần [DỮ LIỆU ĐÃ XÁC MINH] để đưa vào prompt LLM."""
+    parts: list[str] = []
+
+    listings = grounding.get("listings", [])
+    if listings:
+        parts.append("Danh sách phòng phù hợp:")
+        for listing in listings[:5]:
+            rent = format_vnd(listing.get("rent_price"))
+            amenities = ", ".join(listing.get("amenities") or []) or "chưa có dữ liệu"
+            parts.append(
+                f"- [{listing.get('listing_id')}] {listing.get('title')} | "
+                f"{rent}/tháng | {listing.get('district') or 'chưa rõ khu vực'} | "
+                f"Diện tích: {listing.get('area_m2') or '?'} m² | "
+                f"Tiện ích: {amenities}"
+            )
+
+    estimate = tool_results.get("cost_estimate")
+    if estimate and estimate.get("available"):
+        parts.append("\nƯớc tính chi phí:")
+        for item in estimate.get("items", []):
+            parts.append(f"  - {item['name']}: {format_vnd(item.get('amount'))}")
+        parts.append(f"  Tổng: {format_vnd(estimate.get('total_initial_cost'))}")
+        if estimate.get("unknown"):
+            parts.append(f"  Chưa có dữ liệu: {', '.join(estimate['unknown'])}")
+
+    comparison = tool_results.get("comparison")
+    if comparison and comparison.get("rows"):
+        parts.append("\nBảng so sánh:")
+        for row in comparison["rows"]:
+            parts.append(
+                f"  - #{row.get('listing_id')}: {format_vnd(row.get('rent_price'))}/tháng, "
+                f"{row.get('area_m2') or '?'} m², {row.get('district') or 'chưa rõ'}"
+            )
+
+    faq = tool_results.get("faq_results")
+    if faq:
+        parts.append("\nThông tin FAQ:")
+        for item in faq:
+            parts.append(f"  [{item.get('topic')}] {item.get('answer')}")
+
+    if grounding.get("unknown"):
+        parts.append(f"\nCác trường chưa có dữ liệu: {', '.join(grounding['unknown'])}")
+
+    return "\n".join(parts) if parts else "Không có dữ liệu phù hợp."
+
+
+def _compose_answer_template(
     parsed: dict[str, Any],
     grounding: dict[str, Any],
     tool_results: dict[str, Any],
 ) -> str:
+    """Sinh câu trả lời bằng template khi không dùng LLM."""
     intent = parsed["intent"]
+
     if tool_results.get("error") == "tool_budget_exceeded":
         return "Mình cần giới hạn số lần đọc dữ liệu trong một lượt. Bạn thử hỏi lại hẹp hơn với tối đa 3 phòng hoặc một nhu cầu cụ thể nhé."
 
     if intent == "REQUEST_ACTION":
-        action = parsed.get("requested_action") or "business_action"
+        action = parsed.get("requested_action") or "thao tác nghiệp vụ"
         return (
-            "Mình chỉ có thể tư vấn và đọc dữ liệu, không thể tự thực hiện thao tác như đặt lịch, nhắn chủ nhà, lưu phòng, giữ chỗ hay thanh toán. "
-            f"Với yêu cầu `{action}`, bạn cần tự xác nhận trên giao diện Nhatrovn nếu nút thao tác đó có sẵn."
+            "Mình chỉ có thể tư vấn và đọc dữ liệu — không thể tự thực hiện: đặt lịch, "
+            "nhắn chủ nhà, lưu phòng, giữ chỗ hay thanh toán. "
+            f"Với yêu cầu '{action}', bạn vui lòng thao tác trực tiếp trên giao diện nhatro.vn."
         )
 
     listings = grounding["listings"]
+
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
         if not listings:
-            return "Mình chưa tìm thấy phòng phù hợp trong dữ liệu hiện có. Dữ liệu crawler có thể chưa đầy đủ; bạn có thể nới ngân sách, đổi khu vực hoặc bỏ bớt tiện ích bắt buộc."
-        lines = ["Mình tìm được các phòng phù hợp nhất theo dữ liệu đã xác nhận:"]
+            return (
+                "Mình chưa tìm thấy phòng phù hợp với điều kiện hiện tại. "
+                "Bạn thử nới ngân sách, đổi khu vực hoặc bỏ bớt tiện ích bắt buộc nhé."
+            )
+        lines = ["Dưới đây là các phòng phù hợp nhất theo dữ liệu đã xác nhận trên nhatro.vn:"]
         for idx, listing in enumerate(listings[:5], 1):
-            lines.append(f"{idx}. {listing.get('title')} (#{listing.get('listing_id')}) - {format_vnd(listing.get('rent_price'))}/tháng, {listing.get('district') or 'chưa rõ khu vực'}.")
-        lines.append("Giá, trạng thái còn phòng và thông tin chi tiết được lấy lại từ listing repository trước khi trả lời.")
+            lines.append(
+                f"{idx}. **{listing.get('title')}** (#{listing.get('listing_id')}) — "
+                f"{format_vnd(listing.get('rent_price'))}/tháng, "
+                f"{listing.get('district') or 'chưa rõ khu vực'}."
+            )
+        lines.append("\n_Giá và trạng thái còn phòng được lấy trực tiếp từ dữ liệu listing._")
         return "\n".join(lines)
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         if not listings:
-            return "Mình chưa xác định được phòng đang xem. Bạn gửi mã phòng hoặc chọn một phòng từ kết quả tìm kiếm trước nhé."
+            return "Mình chưa xác định được phòng đang xem. Bạn gửi mã phòng hoặc chọn phòng từ kết quả tìm kiếm nhé."
         listing = listings[0]
         unknown = _unknown_fields(listing)
         parts = [
-            f"{listing.get('title')} (#{listing.get('listing_id')}) hiện có giá {format_vnd(listing.get('rent_price'))}/tháng.",
+            f"**{listing.get('title')}** (#{listing.get('listing_id')}) — giá {format_vnd(listing.get('rent_price'))}/tháng.",
             f"Khu vực: {listing.get('address') or listing.get('district') or 'chưa rõ'}.",
-            f"Tiện ích đã ghi nhận: {', '.join(listing.get('amenities') or []) or 'chưa có dữ liệu'}.",
+            f"Tiện ích: {', '.join(listing.get('amenities') or []) or 'chưa có dữ liệu'}.",
         ]
         if unknown:
-            parts.append(f"Dữ liệu chưa xác nhận: {', '.join(unknown)}.")
+            parts.append(f"_Dữ liệu chưa xác nhận: {', '.join(unknown)}._")
         return "\n".join(parts)
 
     if intent == "CALCULATE_COST":
         estimate = tool_results.get("cost_estimate") or {}
         if not estimate.get("available"):
             return "Mình chưa có đủ dữ liệu phòng để tính chi phí. Bạn gửi mã phòng cụ thể hơn nhé."
-        lines = ["Ước tính chi phí ban đầu bằng tính toán deterministic:"]
+        lines = ["**Ước tính chi phí ban đầu** (tính toán deterministic từ dữ liệu đã xác nhận):"]
         for item in estimate.get("items", []):
             lines.append(f"- {item['name']}: {format_vnd(item.get('amount'))}")
-        lines.append(f"Tổng tạm tính: {format_vnd(estimate.get('total_initial_cost'))}.")
+        lines.append(f"\n**Tổng tạm tính:** {format_vnd(estimate.get('total_initial_cost'))}")
         if estimate.get("unknown"):
-            lines.append(f"Chưa có dữ liệu cho: {', '.join(estimate['unknown'])}.")
+            lines.append(f"_Chưa có dữ liệu: {', '.join(estimate['unknown'])}._")
         return "\n".join(lines)
 
     if intent == "COMPARE_ROOMS":
@@ -318,15 +421,88 @@ def _compose_answer(
         rows = comparison.get("rows", [])
         if not rows:
             return "Mình cần tối đa 3 mã phòng để so sánh. Bạn gửi dạng `so sánh #A #B #C` nhé."
-        lines = ["So sánh tối đa 3 phòng theo dữ liệu đã xác nhận:"]
+        lines = ["**So sánh phòng** theo dữ liệu đã xác nhận:"]
         for row in rows:
-            lines.append(f"- #{row.get('listing_id')}: {format_vnd(row.get('rent_price'))}/tháng, {row.get('area_m2') or 'chưa rõ'} m2, {row.get('district') or 'chưa rõ khu vực'}.")
+            lines.append(
+                f"- **#{row.get('listing_id')}**: {format_vnd(row.get('rent_price'))}/tháng, "
+                f"{row.get('area_m2') or 'chưa rõ'} m², {row.get('district') or 'chưa rõ khu vực'}."
+            )
         return "\n".join(lines)
 
+    if intent == "REQUEST_FAQ":
+        faq = tool_results.get("faq_results") or []
+        if faq:
+            lines = []
+            for item in faq:
+                lines.append(f"**[{item.get('topic')}]** {item.get('answer')}")
+            return "\n".join(lines)
+        return (
+            "Mình có thể hỗ trợ thông tin về: quy trình thuê phòng, hợp đồng thuê nhà, "
+            "tiền cọc tiêu chuẩn, và các thủ tục liên quan. Bạn hỏi cụ thể hơn nhé."
+        )
+
     return (
-        "Mình có thể giúp tìm phòng, lọc lại điều kiện, hỏi đáp về phòng đang xem, tính chi phí, so sánh tối đa 3 phòng và gợi ý phòng tương tự. "
-        "Mình không thực hiện các thao tác nghiệp vụ như đặt lịch, nhắn chủ nhà, giữ chỗ hoặc thanh toán."
+        "Mình có thể giúp tìm phòng, lọc điều kiện, hỏi đáp về phòng đang xem, "
+        "tính chi phí, so sánh tối đa 3 phòng và gợi ý phòng tương tự trên nhatro.vn. "
+        "Mình không thực hiện: đặt lịch, nhắn chủ nhà, giữ chỗ hoặc thanh toán."
     )
+
+
+async def _compose_answer_async(
+    question: str,
+    parsed: dict[str, Any],
+    grounding: dict[str, Any],
+    tool_results: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> str:
+    """Sinh câu trả lời bằng LLM nếu có dữ liệu thực, fallback về template.
+
+    LLM chỉ được dùng để diễn đạt lại dữ liệu đã có — không được bịa thêm.
+    """
+    intent = parsed["intent"]
+
+    # Một số intent luôn dùng template để đảm bảo an toàn và nhất quán
+    if intent in {"REQUEST_ACTION", "CALCULATE_COST"} or tool_results.get("error"):
+        return _compose_answer_template(parsed, grounding, tool_results)
+
+    listings = grounding.get("listings", [])
+    faq = tool_results.get("faq_results")
+
+    # Không có dữ liệu thực → template (tránh LLM hallucinate)
+    if not listings and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
+        return _compose_answer_template(parsed, grounding, tool_results)
+
+    # Thử dùng LLM để sinh câu trả lời tự nhiên hơn
+    try:
+        from agents.llm_client import groq_chat_complete, GROQ_MODEL_FAST
+
+        verified_data = _build_llm_context(grounding, tool_results)
+
+        # Xây dựng lịch sử hội thoại gần nhất (tối đa 3 lượt)
+        messages: list[dict[str, str]] = [{"role": "system", "content": _ANSWER_SYSTEM_PROMPT}]
+        for turn in history[-6:]:
+            role = turn.get("role", "user")
+            if role in {"user", "assistant"}:
+                messages.append({"role": role, "content": str(turn.get("content", ""))[:500]})
+
+        messages.append({
+            "role": "user",
+            "content": f"Câu hỏi: {question}\n\n[DỮ LIỆU ĐÃ XÁC MINH]\n{verified_data}",
+        })
+
+        answer = await groq_chat_complete(
+            messages=messages,
+            model=GROQ_MODEL_FAST,
+            max_tokens=600,
+            temperature=0.2,
+        )
+        if answer and len(answer.strip()) > 20:
+            return answer.strip()
+    except Exception:
+        pass
+
+    # Fallback về template nếu LLM lỗi hoặc trả về rỗng
+    return _compose_answer_template(parsed, grounding, tool_results)
 
 
 def _extract_listings(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
