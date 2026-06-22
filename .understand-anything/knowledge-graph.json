@@ -1,0 +1,1529 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "nhatrovn-assistant",
+    "languages": [
+      "python",
+      "rust",
+      "javascript",
+      "html",
+      "css",
+      "dockerfile",
+      "yaml",
+      "shell",
+      "toml"
+    ],
+    "frameworks": [
+      "actix-web",
+      "tokio",
+      "qdrant",
+      "kafka (redpanda)",
+      "pymongo",
+      "sentence-transformers",
+      "tailwindcss",
+      "docker-compose"
+    ],
+    "description": "Nhatrovn Assistant - read-only AI chatbot for the Vietnamese room rental marketplace nhatro.vn. Search, refine, compare, cost estimate, FAQ, summarize, find similar. Strictly read-only: never books, messages, holds, pays, or edits.",
+    "analyzedAt": "2026-06-22T06:51:41.777581+00:00",
+    "gitCommitHash": "10fb9a6f98b9b666f750cc3876f00762ea6e3513"
+  },
+  "nodes": [
+    {
+      "id": "file:frontend/index.html",
+      "type": "file",
+      "name": "Frontend HTML",
+      "filePath": "frontend/index.html",
+      "summary": "Material-styled chat UI. Tailwind via CDN. Vietnamese/English aware header.",
+      "tags": [
+        "frontend",
+        "ui",
+        "tailwindcss",
+        "chat-client",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:frontend/app.js",
+      "type": "file",
+      "name": "Frontend WebSocket Client",
+      "filePath": "frontend/app.js",
+      "summary": "Browser controller. WebSocket + session sidebar + reconnect logic.",
+      "tags": [
+        "frontend",
+        "websocket",
+        "chat-client",
+        "reconnect",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:assets/empathai_logo.png",
+      "type": "resource",
+      "name": "Brand Logo",
+      "filePath": "assets/empathai_logo.png",
+      "summary": "Brand logo image (3 KB).",
+      "tags": [
+        "asset",
+        "logo",
+        "brand"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:rust_backend/src/main.rs",
+      "type": "file",
+      "name": "Rust Gateway Entry Point",
+      "filePath": "rust_backend/src/main.rs",
+      "summary": "Actix Web server. Wires SQLite, Qdrant, Kafka, CORS, tracing, and serves the static frontend at /.",
+      "tags": [
+        "rust",
+        "gateway",
+        "actix-web",
+        "kafka",
+        "entry-point",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:rust_backend/src/config.rs",
+      "type": "file",
+      "name": "AppConfig",
+      "filePath": "rust_backend/src/config.rs",
+      "summary": "Loads host/port, Kafka brokers, Qdrant URL/API key, env settings via dotenvy.",
+      "tags": [
+        "rust",
+        "config",
+        "env"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:rust_backend/src/errors.rs",
+      "type": "file",
+      "name": "Error Types",
+      "filePath": "rust_backend/src/errors.rs",
+      "summary": "Shared error enums and From conversions.",
+      "tags": [
+        "rust",
+        "errors",
+        "thiserror"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:rust_backend/src/routes/ws.rs",
+      "type": "file",
+      "name": "WebSocket /ws/chat",
+      "filePath": "rust_backend/src/routes/ws.rs",
+      "summary": "WebSocket handler. Forwards question to Kafka query.request and pumps query.response tokens back to client.",
+      "tags": [
+        "rust",
+        "websocket",
+        "kafka",
+        "streaming",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:rust_backend/src/routes/health.rs",
+      "type": "file",
+      "name": "Health Check",
+      "filePath": "rust_backend/src/routes/health.rs",
+      "summary": "Liveness endpoint.",
+      "tags": [
+        "rust",
+        "health"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:rust_backend/src/routes/history.rs",
+      "type": "file",
+      "name": "Chat History REST",
+      "filePath": "rust_backend/src/routes/history.rs",
+      "summary": "REST API: list/fetch/delete chat sessions backed by SQLite. Source of truth for the frontend sidebar.",
+      "tags": [
+        "rust",
+        "rest-api",
+        "sqlite",
+        "history"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:rust_backend/src/services/database.rs",
+      "type": "file",
+      "name": "SQLite Database Service",
+      "filePath": "rust_backend/src/services/database.rs",
+      "summary": "SQLite connection + schema migrations for the chat_history table.",
+      "tags": [
+        "rust",
+        "sqlite",
+        "persistence"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:rust_backend/src/services/kafka.rs",
+      "type": "file",
+      "name": "Kafka Service",
+      "filePath": "rust_backend/src/services/kafka.rs",
+      "summary": "rdkafka producer + response consumer. Background task forwards query.response to the right WebSocket by session_id.",
+      "tags": [
+        "rust",
+        "kafka",
+        "streaming"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:rust_backend/src/services/qdrant.rs",
+      "type": "file",
+      "name": "Qdrant Service",
+      "filePath": "rust_backend/src/services/qdrant.rs",
+      "summary": "Thin Qdrant client wrapper used at startup to verify connectivity.",
+      "tags": [
+        "rust",
+        "qdrant"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/kafka_workers/kafka_config.py",
+      "type": "file",
+      "name": "Kafka Topics Config",
+      "filePath": "python/kafka_workers/kafka_config.py",
+      "summary": "Topic names, group ids, brokers, and serialize/deserialize helpers used by both workers.",
+      "tags": [
+        "python",
+        "kafka",
+        "config"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/kafka_workers/query_worker.py",
+      "type": "file",
+      "name": "Query Worker (Kafka Consumer)",
+      "filePath": "python/kafka_workers/query_worker.py",
+      "summary": "Consumes query.request events, pre-warms models, runs the room assistant, publishes each token to query.response, and emits the final grounded answer. 2-min timeout, graceful shutdown.",
+      "tags": [
+        "python",
+        "kafka",
+        "worker",
+        "read-only",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/kafka_workers/listing_index_worker.py",
+      "type": "file",
+      "name": "Listing Index Worker",
+      "filePath": "python/kafka_workers/listing_index_worker.py",
+      "summary": "Consumes listing.changed events, fetches the latest listing from Mongo, embeds it with BAAI/bge-m3, and upserts/deletes the corresponding Qdrant point. Permanent/retry-exhausted failures go to listing.index.dlq.",
+      "tags": [
+        "python",
+        "kafka",
+        "indexing",
+        "qdrant",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/room_assistant/schemas.py",
+      "type": "file",
+      "name": "Domain Schemas",
+      "filePath": "python/room_assistant/schemas.py",
+      "summary": "10 read-only Intents, 7 read-only tools, operation paths (location, budget, occupants, vehicles, pets, amenities), session state shape, and the listing normalization contract. Strong room-rental semantics: districts/wards, rent_price, deposit, area_m2, electric_bike_allowed, pets_allowed.",
+      "tags": [
+        "python",
+        "schemas",
+        "domain:nhatro-vn",
+        "read-only"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/room_assistant/intent.py",
+      "type": "file",
+      "name": "Intent Parser",
+      "filePath": "python/room_assistant/intent.py",
+      "summary": "Two-tier intent + constraint-patch parser. ~85% matched by deterministic regex over Vietnamese keywords (tim phong, so sanh, tinh tien, tuong tu, dat lich, etc.). Remaining cases fall back to a small LLM JSON call. Strictly read-only.",
+      "tags": [
+        "python",
+        "intent",
+        "regex",
+        "vietnamese",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/room_assistant/tools.py",
+      "type": "file",
+      "name": "Read-Only Tool Registry",
+      "filePath": "python/room_assistant/tools.py",
+      "summary": "Implements the 7 read-only tools (search_listings, get_listing_detail, retrieve_listing_context, retrieve_faq, calculate_cost_estimate, compare_listings, find_similar_listings) and enforces write_tool_calls_per_turn=0 / max_read_tool_calls_per_turn<=3.",
+      "tags": [
+        "python",
+        "tools",
+        "read-only",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/room_assistant/repository.py",
+      "type": "file",
+      "name": "Listing Repository",
+      "filePath": "python/room_assistant/repository.py",
+      "summary": "Protocol + three implementations: EmptyListingRepository (no-data fallback), InMemoryListingRepository (tests), MongoListingRepository (production). Mongo query builder maps the room-rental constraints to indexed filters with Vietnamese-aware district normalization.",
+      "tags": [
+        "python",
+        "repository",
+        "mongo",
+        "vietnamese-normalization",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/room_assistant/session_store.py",
+      "type": "file",
+      "name": "Session State Store",
+      "filePath": "python/room_assistant/session_store.py",
+      "summary": "SessionStore Protocol with InMemorySessionStore and RedisSessionStore (Upstash REST). Validated apply_operations supports set/remove/append/replace/clear on whitelisted constraint paths.",
+      "tags": [
+        "python",
+        "session-state",
+        "redis",
+        "in-memory"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/room_assistant/workflow.py",
+      "type": "file",
+      "name": "Room Assistant Workflow",
+      "filePath": "python/room_assistant/workflow.py",
+      "summary": "Main orchestrator. Production flow: normalize_input -> parse_intent_async -> analyze_mood -> load_session_state -> merge_and_validate_state -> route_workflow -> execute_read_only_tools -> grounding_check -> compose_answer_with_review -> persist_state_and_trace -> END.",
+      "tags": [
+        "python",
+        "workflow",
+        "orchestrator",
+        "read-only",
+        "domain:nhatro-vn",
+        "entry-point"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/room_assistant/retrieval.py",
+      "type": "file",
+      "name": "Hybrid Retrieval",
+      "filePath": "python/room_assistant/retrieval.py",
+      "summary": "search_listings_with_hard_filters: enforces Mongo/in-memory hard constraints FIRST, then re-ranks with Qdrant semantic search. Authoritative results are always re-fetched from the repository to avoid serving stale vectors.",
+      "tags": [
+        "python",
+        "retrieval",
+        "hybrid",
+        "ranking"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/room_assistant/indexing.py",
+      "type": "file",
+      "name": "Listing Indexing Service",
+      "filePath": "python/room_assistant/indexing.py",
+      "summary": "Continuous indexing contract. build_canonical_embedding_text combines title/description/space_features/amenities/neighborhood/rules/highlights into a Vietnamese-aware canonical text. Handles upsert/delete/publish/unpublish, content-hash dedup, version skipping, retry/backoff, DLQ on permanent errors.",
+      "tags": [
+        "python",
+        "indexing",
+        "bge-m3",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/room_assistant/qdrant_index.py",
+      "type": "file",
+      "name": "Qdrant Listing Index Adapters",
+      "filePath": "python/room_assistant/qdrant_index.py",
+      "summary": "Adapters that implement ListingSemanticIndex and ListingVectorIndex Protocols on top of QdrantWrapper. Used both for serving search and for the indexing worker.",
+      "tags": [
+        "python",
+        "qdrant",
+        "adapter"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/agents/graph.py",
+      "type": "file",
+      "name": "Graph Entry Point",
+      "filePath": "python/agents/graph.py",
+      "summary": "Compatibility entry point. Production flow goes straight into room_assistant.workflow.run_room_assistant. The legacy support graph is intentionally NOT imported here.",
+      "tags": [
+        "python",
+        "entry-point",
+        "compatibility",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/agents/router.py",
+      "type": "file",
+      "name": "Interaction Router",
+      "filePath": "python/agents/router.py",
+      "summary": "Classifies the user message into SEARCH/QUESTION/CASUAL using fast Vietnamese keyword lists and embedding-similarity centroids. Domain seeds explicitly mention nhatro.vn room queries.",
+      "tags": [
+        "python",
+        "router",
+        "embedding",
+        "vietnamese",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/agents/response_writer.py",
+      "type": "file",
+      "name": "Response Writer",
+      "filePath": "python/agents/response_writer.py",
+      "summary": "Builds the final Vietnamese response with mood-aware tone (frustrated/urgent/normal). Strict rules: only verified data, never invent prices, never promise booking/messaging/payment. Groq Smart primary, Groq Fast fallback.",
+      "tags": [
+        "python",
+        "llm",
+        "groq",
+        "vietnamese",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/agents/reviewer.py",
+      "type": "file",
+      "name": "Answer Reviewer",
+      "filePath": "python/agents/reviewer.py",
+      "summary": "Reviews the candidate answer against verified data to catch hallucinations, missing sources, and unverified claims before persistence.",
+      "tags": [
+        "python",
+        "reviewer",
+        "grounding",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/agents/rewriter.py",
+      "type": "file",
+      "name": "Query Rewriter",
+      "filePath": "python/agents/rewriter.py",
+      "summary": "Rewrites a user query when the first retrieval returns empty. Bounded retries (MAX_REWRITE_RETRIES=2) before giving up.",
+      "tags": [
+        "python",
+        "rewriter",
+        "llm",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/agents/sentiment_analyzer.py",
+      "type": "file",
+      "name": "Mood / Sentiment Analyzer",
+      "filePath": "python/agents/sentiment_analyzer.py",
+      "summary": "Embedding-based mood detector (frustrated/urgent/normal). Zero LLM tokens, used to tune the response tone.",
+      "tags": [
+        "python",
+        "sentiment",
+        "embedding"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/agents/state.py",
+      "type": "file",
+      "name": "Agent State Helpers",
+      "filePath": "python/agents/state.py",
+      "summary": "Helpers for the LangGraph state object used by the legacy support flow. Not on the production read-only path.",
+      "tags": [
+        "python",
+        "langgraph",
+        "legacy"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/agents/grader.py",
+      "type": "file",
+      "name": "Retrieval Grader",
+      "filePath": "python/agents/grader.py",
+      "summary": "Scores retrieved chunks against the user query against GRADE_SCORE_THRESHOLD=0.15.",
+      "tags": [
+        "python",
+        "grader",
+        "retrieval"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/agents/llm_client.py",
+      "type": "file",
+      "name": "LLM Client",
+      "filePath": "python/agents/llm_client.py",
+      "summary": "Groq/Vertex AI HTTP client with rate limiting, timeouts, retries, and JSON parsing helpers used by router/rewriter/response_writer/reviewer.",
+      "tags": [
+        "python",
+        "llm-client",
+        "groq",
+        "vertex"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/agents/model_registry.py",
+      "type": "file",
+      "name": "Model Registry (Singletons)",
+      "filePath": "python/agents/model_registry.py",
+      "summary": "Loads BAAI/bge-m3 and BAAI/bge-reranker-v2-m3 once. Selects CUDA fp16 vs CPU fp32 based on free VRAM. warmup() is called by the query worker to avoid cold-start latency.",
+      "tags": [
+        "python",
+        "model-registry",
+        "bge-m3",
+        "singleton"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/retrieval/qdrant_client.py",
+      "type": "file",
+      "name": "Qdrant Wrapper",
+      "filePath": "python/retrieval/qdrant_client.py",
+      "summary": "Qdrant collection management + dense + BM25 sparse hybrid vectors. Stop-words cover both English and Vietnamese function words. Used by both serving and indexing paths.",
+      "tags": [
+        "python",
+        "qdrant",
+        "hybrid-search",
+        "bm25",
+        "vietnamese"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/retrieval/hybrid_search.py",
+      "type": "file",
+      "name": "Hybrid Search RRF",
+      "filePath": "python/retrieval/hybrid_search.py",
+      "summary": "Reciprocal Rank Fusion over dense + sparse vectors. RRF_DENSE_WEIGHT=0.6 / RRF_SPARSE_WEIGHT=0.4 / RRF_K=60.",
+      "tags": [
+        "python",
+        "rrf",
+        "hybrid-search"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/retrieval/reranker.py",
+      "type": "file",
+      "name": "Reranker",
+      "filePath": "python/retrieval/reranker.py",
+      "summary": "BAAI/bge-reranker-v2-m3 wrapper used to rerank top-K results before final answer generation.",
+      "tags": [
+        "python",
+        "reranker",
+        "bge-reranker"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/retrieval/cache.py",
+      "type": "file",
+      "name": "Answer Cache",
+      "filePath": "python/retrieval/cache.py",
+      "summary": "Upstash Redis cache for static FAQ / non-dynamic answers. Dynamic listing answers are OFF by default (ENABLE_DYNAMIC_LISTING_ANSWER_CACHE=false).",
+      "tags": [
+        "python",
+        "cache",
+        "redis",
+        "upstash"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/config.py",
+      "type": "file",
+      "name": "Project Config",
+      "filePath": "python/config.py",
+      "summary": "Loads .env, defines EMBEDDING_MODEL, KAFKA_BROKERS, QDRANT_URL, MONGO_URI, REDIS, Langfuse, RRF, and listing-index retry settings.",
+      "tags": [
+        "python",
+        "config",
+        "env"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/utils/console.py",
+      "type": "file",
+      "name": "Rich Console",
+      "filePath": "python/utils/console.py",
+      "summary": "Shared rich Console singleton for pretty CLI logs.",
+      "tags": [
+        "python",
+        "utils",
+        "rich"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/utils/observability.py",
+      "type": "file",
+      "name": "Langfuse Observability",
+      "filePath": "python/utils/observability.py",
+      "summary": "Langfuse tracing wrapper for LLM calls and indexing events.",
+      "tags": [
+        "python",
+        "observability",
+        "langfuse"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/data_processing/llm_data_pipeline.py",
+      "type": "file",
+      "name": "DPO/SFT Training Pipeline",
+      "filePath": "python/data_processing/llm_data_pipeline.py",
+      "summary": "Four-stage LLM training data pipeline: merge+clean DPO data, edge-case augmentation, DPO->SFT conversion, and train/dev/test split. Used to fine-tune the LLM that powers the room assistant. NOT on the request-time production path.",
+      "tags": [
+        "python",
+        "training",
+        "dpo",
+        "sft",
+        "vertex-ai"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/data_processing/policy_loader.py",
+      "type": "file",
+      "name": "Policy Loader",
+      "filePath": "python/data_processing/policy_loader.py",
+      "summary": "Loads and chunks the MyKingdom policy JSON into per-section embeddings. NOTE: leftover from a previous (MyKingdom children-products) chatbot. NOT used by the production room assistant flow.",
+      "tags": [
+        "python",
+        "training",
+        "legacy",
+        "mykingdom"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/data_processing/rag_augment.py",
+      "type": "file",
+      "name": "RAG Augmentation",
+      "filePath": "python/data_processing/rag_augment.py",
+      "summary": "Gemini 2.5 Flash augmentation of MyKingdom policies into JSONL for retrieval-style training. Same legacy scope as policy_loader.py.",
+      "tags": [
+        "python",
+        "training",
+        "legacy",
+        "mykingdom",
+        "gemini"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:python/data_processing/chunker.py",
+      "type": "file",
+      "name": "Text Chunker",
+      "filePath": "python/data_processing/chunker.py",
+      "summary": "Section-aware chunker used by policy_loader for training data.",
+      "tags": [
+        "python",
+        "chunker"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/data_processing/prompts.py",
+      "type": "file",
+      "name": "DPO Prompts",
+      "filePath": "python/data_processing/prompts.py",
+      "summary": "Six customer-service scenarios with chosen/rejected response rules used for DPO training data synthesis.",
+      "tags": [
+        "python",
+        "training",
+        "prompts"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/data_processing/utils.py",
+      "type": "file",
+      "name": "Data Processing Utils",
+      "filePath": "python/data_processing/utils.py",
+      "summary": "JSON loaders, sanitizers, and Gemini client wrapper used by the training pipeline.",
+      "tags": [
+        "python",
+        "training",
+        "utils"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:scripts/backfill_listings.py",
+      "type": "script",
+      "name": "Backfill Listings",
+      "filePath": "scripts/backfill_listings.py",
+      "summary": "Iterates every listing in the repository and either (a) publishes a listing.changed Kafka event (mode=events) or (b) indexes directly into Qdrant (mode=direct). Supports --dry-run, --resume, and a JSON checkpoint file.",
+      "tags": [
+        "scripts",
+        "backfill",
+        "indexing",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:docker-compose.yml",
+      "type": "config",
+      "name": "Docker Compose",
+      "filePath": "docker-compose.yml",
+      "summary": "Local stack: Qdrant 1.9.7, Redpanda 24.1.9 (Kafka API on 9092), Redpanda Console on 8888, Mongo 7.0. Persistent volumes.",
+      "tags": [
+        "infrastructure",
+        "docker-compose",
+        "qdrant",
+        "redpanda",
+        "mongo"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:.env.example",
+      "type": "config",
+      "name": "Env Example",
+      "filePath": ".env.example",
+      "summary": "Template for HOST/PORT, KAFKA, QDRANT, Mongo, Redis, Langfuse, Vertex. LLM/observability keys are optional - the system has read-only and in-memory fallbacks.",
+      "tags": [
+        "config",
+        "env",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:Cargo.toml",
+      "type": "config",
+      "name": "Rust Cargo Manifest",
+      "filePath": "rust_backend/Cargo.toml",
+      "summary": "actix-web 4, actix-ws 0.3, rdkafka 0.36 with cmake-build, qdrant-client 1, rusqlite 0.31 (bundled), tracing, dotenvy.",
+      "tags": [
+        "rust",
+        "cargo",
+        "manifest"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:python/requirements.txt",
+      "type": "config",
+      "name": "Python Requirements",
+      "filePath": "python/requirements.txt",
+      "summary": "Core ML: torch, sentence-transformers, qdrant-client, confluent-kafka, pymongo. LLM: aiohttp, tiktoken, tenacity. AI: langgraph, langchain-core. Observability: langfuse. Caching: upstash-redis. Training: datasets, google-cloud-aiplatform.",
+      "tags": [
+        "python",
+        "requirements",
+        "manifest"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:README.md",
+      "type": "document",
+      "name": "Project README",
+      "filePath": "README.md",
+      "summary": "Documents the Nhatrovn read-only room assistant: architecture, production flow, read-only tool registry, invariants, session state, event schema, Qdrant schema, and local setup.",
+      "tags": [
+        "docs",
+        "readme",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/tests/test_room_assistant_core.py",
+      "type": "config",
+      "name": "Room Assistant Core Tests",
+      "filePath": "python/tests/test_room_assistant_core.py",
+      "summary": "Unit tests for intent parsing, budget parsing, session patch + remove operations, in-memory session TTL, repository constraints, and the read-only tool registry budget.",
+      "tags": [
+        "tests",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:python/tests/test_room_assistant_workflow_indexing.py",
+      "type": "config",
+      "name": "Workflow Indexing Tests",
+      "filePath": "python/tests/test_room_assistant_workflow_indexing.py",
+      "summary": "Integration tests for workflow + listing indexing + version skipping + DLQ paths.",
+      "tags": [
+        "tests",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "concept:read-only-invariant",
+      "type": "concept",
+      "name": "Read-Only Invariant",
+      "filePath": null,
+      "summary": "Hard project invariant: write_tool_calls_per_turn=0 and max_read_tool_calls_per_turn<=3. Enforced by ReadOnlyToolRegistry. Any tool that mutates a listing, session, booking, or payment is explicitly out of scope.",
+      "tags": [
+        "invariant",
+        "read-only",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "concept:grounded-answer",
+      "type": "concept",
+      "name": "Grounded Answer",
+      "filePath": null,
+      "summary": "Final response generation only uses data fetched by the read-only tools. The response_writer and reviewer re-validate the answer against the verified context before persistence.",
+      "tags": [
+        "invariant",
+        "grounding",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "concept:room-rental-domain",
+      "type": "concept",
+      "name": "Room Rental Domain (nhatro.vn)",
+      "filePath": null,
+      "summary": "The product is centered on finding a room to rent in Vietnam. Core entities: Listing (rent_price, deposit, district, ward, amenities, pets_allowed, electric_bike_allowed, area_m2). Core actions: search / refine / ask / cost / compare / similar / summarize / FAQ. Hard NO actions: booking, messaging landlord, holding, payment, edit listing, negotiation.",
+      "tags": [
+        "domain",
+        "vietnamese",
+        "nhatro-vn"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "concept:listing-event-flow",
+      "type": "concept",
+      "name": "Listing Change Event Flow",
+      "filePath": null,
+      "summary": "listing.changed Kafka event with operation in {upsert, delete, publish, unpublish} is consumed by the index worker, which fetches the authoritative listing from Mongo, embeds it, and upserts/deletes the corresponding Qdrant point. Permanent failures go to listing.index.dlq.",
+      "tags": [
+        "event-flow",
+        "kafka",
+        "indexing",
+        "domain:nhatro-vn"
+      ],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:frontend/index.html",
+      "target": "file:frontend/app.js",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:frontend/app.js",
+      "target": "file:rust_backend/src/routes/ws.rs",
+      "type": "calls",
+      "weight": 0.7
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/routes/ws.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/routes/health.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/routes/history.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/services/database.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/services/kafka.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/services/qdrant.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/config.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:rust_backend/src/errors.rs",
+      "type": "contains",
+      "weight": 1.0
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:frontend/index.html",
+      "type": "serves",
+      "weight": 0.5
+    },
+    {
+      "source": "file:rust_backend/src/routes/ws.rs",
+      "target": "file:rust_backend/src/services/kafka.rs",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:rust_backend/src/routes/ws.rs",
+      "target": "file:rust_backend/src/services/database.rs",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:rust_backend/src/routes/history.rs",
+      "target": "file:rust_backend/src/services/database.rs",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:rust_backend/src/services/kafka.rs",
+      "target": "file:python/kafka_workers/query_worker.py",
+      "type": "triggers",
+      "weight": 0.6
+    },
+    {
+      "source": "file:python/kafka_workers/query_worker.py",
+      "target": "file:python/agents/graph.py",
+      "type": "calls",
+      "weight": 0.8
+    },
+    {
+      "source": "file:python/agents/graph.py",
+      "target": "file:python/room_assistant/workflow.py",
+      "type": "calls",
+      "weight": 0.8
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/intent.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/session_store.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/tools.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/retrieval.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/schemas.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/room_assistant/qdrant_index.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/agents/response_writer.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "file:python/agents/sentiment_analyzer.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/intent.py",
+      "target": "file:python/room_assistant/schemas.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/session_store.py",
+      "target": "file:python/room_assistant/schemas.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/tools.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/tools.py",
+      "target": "file:python/room_assistant/retrieval.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/tools.py",
+      "target": "file:python/room_assistant/schemas.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/repository.py",
+      "target": "file:python/room_assistant/schemas.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/retrieval.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/qdrant_index.py",
+      "target": "file:python/retrieval/qdrant_client.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/qdrant_index.py",
+      "target": "file:python/retrieval/hybrid_search.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/indexing.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/indexing.py",
+      "target": "file:python/agents/model_registry.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/indexing.py",
+      "target": "file:python/room_assistant/qdrant_index.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/kafka_workers/listing_index_worker.py",
+      "target": "file:python/kafka_workers/kafka_config.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/kafka_workers/listing_index_worker.py",
+      "target": "file:python/room_assistant/indexing.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/kafka_workers/listing_index_worker.py",
+      "target": "file:python/room_assistant/qdrant_index.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/kafka_workers/listing_index_worker.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/kafka_workers/query_worker.py",
+      "target": "file:python/agents/model_registry.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/kafka_workers/query_worker.py",
+      "target": "file:python/kafka_workers/kafka_config.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/router.py",
+      "target": "file:python/agents/model_registry.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/response_writer.py",
+      "target": "file:python/agents/llm_client.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/reviewer.py",
+      "target": "file:python/agents/llm_client.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/rewriter.py",
+      "target": "file:python/agents/llm_client.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/sentiment_analyzer.py",
+      "target": "file:python/agents/model_registry.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/data_processing/llm_data_pipeline.py",
+      "target": "file:python/data_processing/prompts.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/data_processing/llm_data_pipeline.py",
+      "target": "file:python/data_processing/utils.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/data_processing/policy_loader.py",
+      "target": "file:python/data_processing/chunker.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/data_processing/rag_augment.py",
+      "target": "file:python/data_processing/policy_loader.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/room_assistant/schemas.py",
+      "target": "concept:room-rental-domain",
+      "type": "defines_schema",
+      "weight": 0.8
+    },
+    {
+      "source": "file:python/room_assistant/tools.py",
+      "target": "concept:read-only-invariant",
+      "type": "validates",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/room_assistant/workflow.py",
+      "target": "concept:grounded-answer",
+      "type": "validates",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/room_assistant/indexing.py",
+      "target": "concept:listing-event-flow",
+      "type": "implements",
+      "weight": 0.8
+    },
+    {
+      "source": "file:python/kafka_workers/listing_index_worker.py",
+      "target": "concept:listing-event-flow",
+      "type": "implements",
+      "weight": 0.8
+    },
+    {
+      "source": "file:python/tests/test_room_assistant_core.py",
+      "target": "file:python/room_assistant/intent.py",
+      "type": "tested_by",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/tests/test_room_assistant_core.py",
+      "target": "file:python/room_assistant/session_store.py",
+      "type": "tested_by",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/tests/test_room_assistant_core.py",
+      "target": "file:python/room_assistant/tools.py",
+      "type": "tested_by",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/tests/test_room_assistant_core.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "tested_by",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/tests/test_room_assistant_workflow_indexing.py",
+      "target": "file:python/room_assistant/workflow.py",
+      "type": "tested_by",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/tests/test_room_assistant_workflow_indexing.py",
+      "target": "file:python/room_assistant/indexing.py",
+      "type": "tested_by",
+      "weight": 0.5
+    },
+    {
+      "source": "file:docker-compose.yml",
+      "target": "file:python/room_assistant/qdrant_index.py",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:docker-compose.yml",
+      "target": "file:python/kafka_workers/kafka_config.py",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:.env.example",
+      "target": "file:python/config.py",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:README.md",
+      "target": "file:python/room_assistant/workflow.py",
+      "type": "documents",
+      "weight": 0.5
+    },
+    {
+      "source": "file:scripts/backfill_listings.py",
+      "target": "file:python/room_assistant/repository.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:scripts/backfill_listings.py",
+      "target": "file:python/room_assistant/indexing.py",
+      "type": "calls",
+      "weight": 0.7
+    },
+    {
+      "source": "file:scripts/backfill_listings.py",
+      "target": "file:python/room_assistant/qdrant_index.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:scripts/backfill_listings.py",
+      "target": "file:python/kafka_workers/kafka_config.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/grader.py",
+      "target": "file:python/agents/model_registry.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/agents/state.py",
+      "target": "file:python/agents/graph.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/retrieval/reranker.py",
+      "target": "file:python/retrieval/qdrant_client.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:python/retrieval/cache.py",
+      "target": "file:python/agents/llm_client.py",
+      "type": "imports",
+      "weight": 0.7
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:python/retrieval/qdrant_client.py",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:rust_backend/src/main.rs",
+      "target": "file:.env.example",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:python/config.py",
+      "target": "file:python/requirements.txt",
+      "type": "imports",
+      "weight": 0.5
+    },
+    {
+      "source": "file:Cargo.toml",
+      "target": "file:rust_backend/src/main.rs",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:python/requirements.txt",
+      "target": "file:python/config.py",
+      "type": "configures",
+      "weight": 0.6
+    },
+    {
+      "source": "file:python/utils/console.py",
+      "target": "file:python/config.py",
+      "type": "imports",
+      "weight": 0.5
+    },
+    {
+      "source": "file:python/utils/observability.py",
+      "target": "file:python/agents/llm_client.py",
+      "type": "imports",
+      "weight": 0.5
+    },
+    {
+      "source": "file:assets/empathai_logo.png",
+      "target": "file:frontend/index.html",
+      "type": "serves",
+      "weight": 0.5
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer:frontend",
+      "name": "Frontend (Chat UI)",
+      "description": "Browser chat interface served as static files. Connects to the Rust WebSocket and renders streamed tokens, sources, suggested questions, and a sessions sidebar.",
+      "nodeIds": [
+        "file:frontend/index.html",
+        "file:frontend/app.js",
+        "file:assets/empathai_logo.png"
+      ]
+    },
+    {
+      "id": "layer:rust-gateway",
+      "name": "Rust Gateway (Actix + Kafka + SQLite)",
+      "description": "Stateless WebSocket/REST gateway. Bridges the browser to Kafka (query.request) and pumps streamed responses back. Persists session history to SQLite.",
+      "nodeIds": [
+        "file:rust_backend/src/main.rs",
+        "file:rust_backend/src/config.rs",
+        "file:rust_backend/src/errors.rs",
+        "file:rust_backend/src/routes/ws.rs",
+        "file:rust_backend/src/routes/health.rs",
+        "file:rust_backend/src/routes/history.rs",
+        "file:rust_backend/src/services/database.rs",
+        "file:rust_backend/src/services/kafka.rs",
+        "file:rust_backend/src/services/qdrant.rs",
+        "file:Cargo.toml"
+      ]
+    },
+    {
+      "id": "layer:kafka-workers",
+      "name": "Kafka Workers (Transport Boundary)",
+      "description": "Bridge between Kafka and the Python AI core. The query worker runs the room assistant. The listing index worker keeps Qdrant in sync with Mongo.",
+      "nodeIds": [
+        "file:python/kafka_workers/kafka_config.py",
+        "file:python/kafka_workers/query_worker.py",
+        "file:python/kafka_workers/listing_index_worker.py"
+      ]
+    },
+    {
+      "id": "layer:room-assistant",
+      "name": "Room Assistant (Read-Only Domain Core)",
+      "description": "Strictly read-only production domain logic for nhatro.vn. Implements the read-only tool registry, intent parser, session state, repository, hybrid retrieval, and workflow.",
+      "nodeIds": [
+        "file:python/room_assistant/schemas.py",
+        "file:python/room_assistant/intent.py",
+        "file:python/room_assistant/tools.py",
+        "file:python/room_assistant/repository.py",
+        "file:python/room_assistant/session_store.py",
+        "file:python/room_assistant/workflow.py",
+        "file:python/room_assistant/retrieval.py",
+        "file:python/room_assistant/indexing.py",
+        "file:python/room_assistant/qdrant_index.py"
+      ]
+    },
+    {
+      "id": "layer:shared-agents",
+      "name": "Shared AI / Agents",
+      "description": "Cross-cutting AI components: LLM client, model registry, router, mood analyzer, response writer, reviewer, and rewriter. All callers go through the room assistant workflow.",
+      "nodeIds": [
+        "file:python/agents/graph.py",
+        "file:python/agents/router.py",
+        "file:python/agents/response_writer.py",
+        "file:python/agents/reviewer.py",
+        "file:python/agents/rewriter.py",
+        "file:python/agents/sentiment_analyzer.py",
+        "file:python/agents/grader.py",
+        "file:python/agents/state.py",
+        "file:python/agents/llm_client.py",
+        "file:python/agents/model_registry.py"
+      ]
+    },
+    {
+      "id": "layer:retrieval-infra",
+      "name": "Retrieval & Caching Infrastructure",
+      "description": "Vector store, hybrid search, reranker, and answer cache. Used by both the room assistant (serving) and the index worker (writes).",
+      "nodeIds": [
+        "file:python/retrieval/qdrant_client.py",
+        "file:python/retrieval/hybrid_search.py",
+        "file:python/retrieval/reranker.py",
+        "file:python/retrieval/cache.py"
+      ]
+    },
+    {
+      "id": "layer:config-and-utils",
+      "name": "Config and Utilities",
+      "description": "Project-wide config and small utility modules (rich console, Langfuse observability).",
+      "nodeIds": [
+        "file:python/config.py",
+        "file:python/utils/console.py",
+        "file:python/utils/observability.py",
+        "file:.env.example"
+      ]
+    },
+    {
+      "id": "layer:training-data-pipeline",
+      "name": "Training Data Pipeline (Legacy / Off-Path)",
+      "description": "DPO/SFT data preparation for the LLM. References a MyKingdom children-products policy set; this is NOT on the production request-time path and is a leftover from an earlier project.",
+      "nodeIds": [
+        "file:python/data_processing/llm_data_pipeline.py",
+        "file:python/data_processing/policy_loader.py",
+        "file:python/data_processing/rag_augment.py",
+        "file:python/data_processing/chunker.py",
+        "file:python/data_processing/prompts.py",
+        "file:python/data_processing/utils.py"
+      ]
+    },
+    {
+      "id": "layer:scripts-and-infra",
+      "name": "Scripts, Tests, and Infrastructure",
+      "description": "Backfill scripts, unit tests, docker-compose stack, and the project README.",
+      "nodeIds": [
+        "file:scripts/backfill_listings.py",
+        "file:python/tests/test_room_assistant_core.py",
+        "file:python/tests/test_room_assistant_workflow_indexing.py",
+        "file:docker-compose.yml",
+        "file:python/requirements.txt",
+        "file:README.md"
+      ]
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "title": "Project overview",
+      "description": "Nhatrovn Assistant is a strictly read-only AI chatbot for the Vietnamese room-rental marketplace nhatro.vn. It can search, refine, compare, estimate cost, and answer FAQs about listings. It must NEVER book, message landlords, hold rooms, accept payments, or edit listings.",
+      "nodeIds": [
+        "file:README.md",
+        "concept:room-rental-domain",
+        "concept:read-only-invariant"
+      ]
+    },
+    {
+      "order": 2,
+      "title": "End-to-end request flow",
+      "description": "Frontend WebSocket -> Rust gateway (Kafka publish to query.request) -> Python query worker -> room_assistant.workflow (intent -> session -> tools -> grounding -> answer) -> Kafka publish to query.response -> Rust streams tokens back to the browser.",
+      "nodeIds": [
+        "file:frontend/app.js",
+        "file:rust_backend/src/routes/ws.rs",
+        "file:rust_backend/src/services/kafka.rs",
+        "file:python/kafka_workers/query_worker.py",
+        "file:python/agents/graph.py",
+        "file:python/room_assistant/workflow.py"
+      ]
+    },
+    {
+      "order": 3,
+      "title": "Domain core (room_assistant)",
+      "description": "All read-only domain logic. The Intent enum, the 7 read-only tools, the session state, the listing repository (Mongo/in-memory/empty), and hybrid retrieval that always re-validates from the source of truth.",
+      "nodeIds": [
+        "file:python/room_assistant/schemas.py",
+        "file:python/room_assistant/intent.py",
+        "file:python/room_assistant/tools.py",
+        "file:python/room_assistant/session_store.py",
+        "file:python/room_assistant/repository.py",
+        "file:python/room_assistant/retrieval.py",
+        "concept:grounded-answer"
+      ]
+    },
+    {
+      "order": 4,
+      "title": "Continuous indexing pipeline",
+      "description": "External crawlers publish listing.changed events to Kafka. The index worker fetches the latest listing from Mongo, embeds it with BAAI/bge-m3, and upserts/deletes the corresponding Qdrant point. Permanent/retry-exhausted failures go to listing.index.dlq. scripts/backfill_listings.py replays the same flow on demand.",
+      "nodeIds": [
+        "concept:listing-event-flow",
+        "file:python/kafka_workers/listing_index_worker.py",
+        "file:python/room_assistant/indexing.py",
+        "file:python/room_assistant/qdrant_index.py",
+        "file:scripts/backfill_listings.py"
+      ]
+    },
+    {
+      "order": 5,
+      "title": "Local infrastructure and tests",
+      "description": "docker-compose brings up Qdrant, Redpanda (Kafka API), and Mongo. SQLite lives inside the Rust gateway. Tests cover the intent parser, budget parsing, repository constraints, the read-only tool budget, and the indexing/version/DLQ paths.",
+      "nodeIds": [
+        "file:docker-compose.yml",
+        "file:rust_backend/src/services/database.rs",
+        "file:python/tests/test_room_assistant_core.py",
+        "file:python/tests/test_room_assistant_workflow_indexing.py"
+      ]
+    }
+  ]
+}

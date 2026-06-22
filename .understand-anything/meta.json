@@ -1,0 +1,8 @@
+﻿{
+    "version":  "1.0.0",
+    "gitCommitHash":  "10fb9a6f98b9b666f750cc3876f00762ea6e3513",
+    "analyzerNote":  "Manual knowledge graph built by codex after reading all source files. The full /understand pipeline (pnpm + sub-agents) was not executed because pnpm is not installed in this environment. The graph structure follows the skill\u0027s KnowledgeGraph schema (v1.0.0).",
+    "lastAnalyzedAt":  "2026-06-22T06:51:41Z",
+    "analyzedFiles":  59,
+    "analyzer":  "codex-manual-review"
+}
