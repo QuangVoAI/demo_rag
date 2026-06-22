@@ -63,6 +63,10 @@ struct WsAnswerMessage {
     cost_estimate: Option<serde_json::Value>,
     comparison: Option<serde_json::Value>,
     suggested_questions: Vec<String>,
+    retrieval_confidence: Option<f64>,
+    retrieval_low_confidence: Option<bool>,
+    retrieval_feedback_retry_count: usize,
+    retrieval_attempts: Vec<serde_json::Value>,
     sources: Vec<serde_json::Value>,
     agent_trace: serde_json::Value,
     processing_time_ms: u64,
@@ -246,6 +250,14 @@ pub async fn ws_chat_handler(
                                                 comparison: response_event.comparison,
                                                 suggested_questions: response_event
                                                     .suggested_questions,
+                                                retrieval_confidence: response_event
+                                                    .retrieval_confidence,
+                                                retrieval_low_confidence: response_event
+                                                    .retrieval_low_confidence,
+                                                retrieval_feedback_retry_count: response_event
+                                                    .retrieval_feedback_retry_count,
+                                                retrieval_attempts: response_event
+                                                    .retrieval_attempts,
                                                 sources: response_event.sources,
                                                 agent_trace: response_event.agent_trace,
                                                 processing_time_ms: response_event

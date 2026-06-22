@@ -6,6 +6,8 @@ use anyhow::Result;
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub qdrant_url: String,
+    pub qdrant_grpc_url: String,
+    pub qdrant_skip_compat_check: bool,
     pub qdrant_collection: String,
     pub host: String,
     pub port: u16,
@@ -20,6 +22,8 @@ impl AppConfig {
         Ok(Self {
             qdrant_url: std::env::var("QDRANT_URL")
                 .unwrap_or_else(|_| "http://localhost:6333".to_string()),
+            qdrant_grpc_url: qdrant_grpc_url(),
+            qdrant_skip_compat_check: env_bool("QDRANT_SKIP_COMPAT_CHECK", true),
             qdrant_collection: std::env::var("QDRANT_LISTINGS_COLLECTION")
                 .or_else(|_| std::env::var("QDRANT_COLLECTION"))
                 .unwrap_or_else(|_| "listings_v1".to_string()),
@@ -31,5 +35,30 @@ impl AppConfig {
             kafka_brokers: std::env::var("KAFKA_BROKERS")
                 .unwrap_or_else(|_| "localhost:9092".to_string()),
         })
+    }
+}
+
+fn qdrant_grpc_url() -> String {
+    if let Ok(url) = std::env::var("QDRANT_GRPC_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let rest_url = std::env::var("QDRANT_URL")
+        .unwrap_or_else(|_| "http://localhost:6333".to_string());
+    if rest_url.ends_with(":6333") {
+        return format!("{}:6334", rest_url.trim_end_matches(":6333"));
+    }
+    rest_url
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => default,
     }
 }

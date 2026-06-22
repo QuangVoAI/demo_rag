@@ -6,7 +6,10 @@ import hashlib
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from .repository import ListingRepository
 

@@ -13,7 +13,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import numpy as np
 from rich.console import Console
 
-from config import TOP_K_RETRIEVAL, TOP_K_RERANK
+from config import EVIDENCE_MAX_CHARS, TOP_K_RETRIEVAL, TOP_K_RERANK, USE_RERANKER
 from retrieval.qdrant_client import QdrantWrapper
 from retrieval.hybrid_search import hybrid_search
 from retrieval.reranker import rerank
@@ -83,6 +83,10 @@ def retrieve_and_rerank(
         console.print("[yellow]⚠️ No results from hybrid search[/]")
         return []
 
+    if not USE_RERANKER:
+        console.print("[dim]  Reranker disabled; using hybrid order[/]")
+        return candidates[:top_k_rerank]
+
     return rerank(
         query=query,
         documents=candidates,
@@ -124,5 +128,5 @@ def format_evidence(documents: list[dict]) -> str:
             f"{text}\n"
         )
 
-    return "\n---\n".join(parts)
+    return "\n---\n".join(parts)[:EVIDENCE_MAX_CHARS]
 

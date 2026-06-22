@@ -16,6 +16,13 @@ class ListingRepository(Protocol):
     ) -> list[dict[str, Any]]:
         ...
 
+    def search_by_metadata(
+        self,
+        query_text: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        ...
+
     def get_by_id(self, listing_id: str) -> dict[str, Any] | None:
         ...
 
@@ -37,6 +44,9 @@ class EmptyListingRepository:
     """No-data repository for local runs before the crawler/MongoDB exists."""
 
     def search_by_constraints(self, constraints: dict[str, Any], limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return []
+
+    def search_by_metadata(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
         return []
 
     def get_by_id(self, listing_id: str) -> dict[str, Any] | None:
@@ -68,6 +78,21 @@ class InMemoryListingRepository:
             if listing_matches_constraints(listing, constraints)
         ]
         return matches[offset:offset + limit]
+
+    def search_by_metadata(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
+        from retrieval.metadata_search import extract_metadata_signals, score_metadata_hit
+        from config import METADATA_FIELDS
+
+        signals = extract_metadata_signals(query_text)
+        scored = []
+        for listing in self._listings.values():
+            score = score_metadata_hit(listing, signals, METADATA_FIELDS)
+            if score > 0:
+                item = dict(listing)
+                item["_metadata_score"] = score
+                scored.append(item)
+        scored.sort(key=lambda item: item.get("_metadata_score", 0), reverse=True)
+        return scored[:max(limit, 1)]
 
     def get_by_id(self, listing_id: str) -> dict[str, Any] | None:
         listing = self._listings.get(str(listing_id))
@@ -119,6 +144,58 @@ class MongoListingRepository:
             .limit(max(limit, 1))
         )
         return [item for item in (normalize_listing(doc) for doc in cursor) if item]
+
+    def search_by_metadata(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
+        import re
+        from retrieval.metadata_search import extract_metadata_signals, metadata_signal_present, score_metadata_hit
+        from config import METADATA_FIELDS
+
+        signals = extract_metadata_signals(query_text)
+        if not metadata_signal_present(signals):
+            return []
+
+        clauses: list[dict[str, Any]] = []
+        for listing_id in signals.get("listing_id", []) or []:
+            clauses.extend([
+                {"listing_id": str(listing_id)},
+                {"id": str(listing_id)},
+                {"slug": str(listing_id)},
+            ])
+        for snippet in signals.get("district", []) or []:
+            escaped = re.escape(str(snippet))
+            clauses.extend([
+                {"district": {"$regex": escaped, "$options": "i"}},
+                {"location.district": {"$regex": escaped, "$options": "i"}},
+                {"title": {"$regex": escaped, "$options": "i"}},
+                {"address": {"$regex": escaped, "$options": "i"}},
+                {"embedding_text": {"$regex": escaped, "$options": "i"}},
+                {"summary": {"$regex": escaped, "$options": "i"}},
+            ])
+        for arxiv_id in signals.get("arxiv_like", []) or []:
+            escaped = re.escape(str(arxiv_id))
+            clauses.extend([
+                {"arxiv_id": str(arxiv_id)},
+                {"title": {"$regex": escaped, "$options": "i"}},
+                {"embedding_text": {"$regex": escaped, "$options": "i"}},
+            ])
+        if not clauses:
+            return []
+
+        cursor = self._collection.find({
+            "$and": [
+                {"available": {"$ne": False}},
+                {"$or": [{"status": {"$in": ["active", "published"]}}, {"status": {"$exists": False}}]},
+                {"$or": clauses},
+            ]
+        }).limit(max(limit, 1))
+        results = []
+        for item in (normalize_listing(doc) for doc in cursor):
+            if not item:
+                continue
+            item["_metadata_score"] = score_metadata_hit(item, signals, METADATA_FIELDS)
+            results.append(item)
+        results.sort(key=lambda item: item.get("_metadata_score", 0), reverse=True)
+        return results
 
     def get_by_id(self, listing_id: str) -> dict[str, Any] | None:
         query = {
@@ -209,6 +286,8 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
                 {"rent_price": {"$lte": budget["max"]}},
                 {"price.rent": {"$lte": budget["max"]}},
                 {"price.monthly": {"$lte": budget["max"]}},
+                {"price.min": {"$lte": budget["max"]}},
+                {"price.max": {"$lte": budget["max"]}},
             ]
         })
     if budget.get("min") is not None:
@@ -217,29 +296,39 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
                 {"rent_price": {"$gte": budget["min"]}},
                 {"price.rent": {"$gte": budget["min"]}},
                 {"price.monthly": {"$gte": budget["min"]}},
+                {"price.min": {"$gte": budget["min"]}},
+                {"price.max": {"$gte": budget["min"]}},
             ]
         })
 
     location = constraints.get("location") or {}
     if location.get("province"):
-        query["$and"].append({"$or": [{"province": location["province"]}, {"location.province": location["province"]}]})
+        query["$and"].append({
+            "$or": [
+                {"province": location["province"]}, 
+                {"location.province": location["province"]},
+                {"embedding_text": {"$regex": location["province"], "$options": "i"}},
+                {"summary": {"$regex": location["province"], "$options": "i"}}
+            ]
+        })
     if location.get("districts"):
         normalized_districts = [_normalize_location_value(item) for item in location["districts"]]
+        district_regexes = [{"embedding_text": {"$regex": d, "$options": "i"}} for d in location["districts"]] + \
+                           [{"summary": {"$regex": d, "$options": "i"}} for d in location["districts"]]
+        
         query["$and"].append({
             "$or": [
                 {"district": {"$in": location["districts"]}},
                 {"location.district": {"$in": location["districts"]}},
                 {"district_normalized": {"$in": normalized_districts}},
                 {"location.district_normalized": {"$in": normalized_districts}},
-            ]
+            ] + district_regexes
         })
     if location.get("wards"):
         query["$and"].append({"$or": [{"ward": {"$in": location["wards"]}}, {"location.ward": {"$in": location["wards"]}}]})
 
     if constraints.get("occupants"):
         query["$and"].append({"max_occupants": {"$gte": constraints["occupants"]}})
-    if constraints.get("amenities_required"):
-        query["$and"].append({"amenities": {"$all": constraints["amenities_required"]}})
     if constraints.get("pets_required"):
         query["$and"].append({"pets_allowed": True})
     if "electric_bike" in (constraints.get("vehicles") or []):

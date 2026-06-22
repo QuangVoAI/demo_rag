@@ -399,7 +399,7 @@ def _regex_classify(
 # Tầng 2: LLM fallback khi regex không chắc chắn
 # ---------------------------------------------------------------------------
 
-_LLM_SYSTEM_PROMPT = """Bạn là bộ phân loại intent cho chatbot tìm phòng trọ tại Việt Nam (nhatro.vn).
+_LLM_SYSTEM_PROMPT = """Bạn là bộ phân loại intent cho chatbot tìm phòng trọ tại Việt Nam (nhatrovn).
 Nhiệm vụ: Phân loại đúng intent từ câu hỏi tiếng Việt của người dùng.
 
 Danh sách intent hợp lệ:

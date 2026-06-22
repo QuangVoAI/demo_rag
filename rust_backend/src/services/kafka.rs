@@ -56,6 +56,14 @@ pub struct QueryResponseEvent {
     pub comparison: Option<serde_json::Value>,
     #[serde(default)]
     pub suggested_questions: Vec<String>,
+    #[serde(default)]
+    pub retrieval_confidence: Option<f64>,
+    #[serde(default)]
+    pub retrieval_low_confidence: Option<bool>,
+    #[serde(default)]
+    pub retrieval_feedback_retry_count: usize,
+    #[serde(default)]
+    pub retrieval_attempts: Vec<serde_json::Value>,
     pub sources: Vec<serde_json::Value>,
     pub agent_trace: serde_json::Value,
     pub processing_time_ms: u64,

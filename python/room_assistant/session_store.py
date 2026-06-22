@@ -130,9 +130,13 @@ def apply_operations(
             target = target.setdefault(part, {})
         key = parts[-1]
         value = operation.get("value")
+        changed = False
 
         if op == "set" or op == "replace":
-            target[key] = _clean_value(value)
+            cleaned = _clean_value(value)
+            if target.get(key) != cleaned:
+                target[key] = cleaned
+                changed = True
         elif op == "append":
             if path not in LIST_OPERATION_PATHS:
                 continue
@@ -143,18 +147,28 @@ def apply_operations(
             cleaned = _clean_value(value)
             if cleaned not in values:
                 values.append(cleaned)
+                changed = True
         elif op == "remove":
             cleaned = _clean_value(value)
             if path in LIST_OPERATION_PATHS:
                 values = target.get(key, [])
                 if isinstance(values, list):
-                    target[key] = [item for item in values if item != cleaned]
+                    filtered = [item for item in values if item != cleaned]
+                    if filtered != values:
+                        target[key] = filtered
+                        changed = True
             else:
-                target[key] = None
+                if target.get(key) is not None:
+                    target[key] = None
+                    changed = True
         elif op == "clear":
-            target[key] = [] if path in LIST_OPERATION_PATHS else None
+            cleared = [] if path in LIST_OPERATION_PATHS else None
+            if target.get(key) != cleared:
+                target[key] = cleared
+                changed = True
 
-        applied.append(operation)
+        if changed:
+            applied.append(operation)
 
     if applied:
         next_state["state_version"] = int(next_state.get("state_version", 1)) + 1

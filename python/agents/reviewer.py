@@ -38,7 +38,7 @@ _REVIEW_TRIGGERS = [
 ]
 
 _REVIEWER_SYSTEM_PROMPT = """\
-Bạn là người kiểm duyệt câu trả lời cho chatbot tìm phòng trọ nhatro.vn.
+Bạn là người kiểm duyệt câu trả lời cho chatbot tìm phòng trọ nhatrovn.
 
 Kiểm tra câu trả lời theo 4 tiêu chí:
 1. KHÔNG hứa hẹn thao tác bot không làm được (đặt lịch, nhắn chủ, giữ phòng, thanh toán)
@@ -153,7 +153,7 @@ async def review_with_retry(
         try:
             current_answer = await groq_complete(
                 prompt=retry_prompt,
-                system_prompt="Bạn là trợ lý tìm phòng nhatro.vn. Trả lời ngắn gọn, trung thực.",
+                system_prompt="Bạn là trợ lý tìm phòng nhatrovn. Trả lời ngắn gọn, trung thực.",
                 model=GROQ_MODEL_FAST,
                 max_tokens=400,
                 temperature=0.2,

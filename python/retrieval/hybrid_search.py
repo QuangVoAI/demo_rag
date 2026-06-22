@@ -59,6 +59,7 @@ def reciprocal_rank_fusion(
     for doc_id in sorted_ids:
         result = result_map[doc_id].copy()
         result["rrf_score"] = scores[doc_id]
+        result["combined_score"] = scores[doc_id]
         fused.append(result)
     
     return fused

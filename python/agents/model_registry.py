@@ -42,10 +42,15 @@ def get_embed_model():
         sys.path.append(str(Path(__file__).parent.parent))
 
         from sentence_transformers import SentenceTransformer
-        from config import EMBEDDING_MODEL
+        from config import EMBEDDING_DTYPE, EMBEDDING_MODEL
 
         device = _select_device(min_free_gb=1.3)
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        if EMBEDDING_DTYPE == "fp16" and device == "cuda":
+            dtype = torch.float16
+        elif EMBEDDING_DTYPE == "fp32":
+            dtype = torch.float32
+        else:
+            dtype = torch.float16 if device == "cuda" else torch.float32
         precision = "fp16" if dtype == torch.float16 else "fp32"
 
         console.print(
@@ -97,7 +102,14 @@ def warmup():
     """Pre-load tất cả models lúc startup thay vì lúc query đầu tiên."""
     console.print("[bold cyan]🔥 Warming up models...[/]")
     get_embed_model()
-    get_reranker_model()
+    try:
+        from config import USE_RERANKER
+    except Exception:
+        USE_RERANKER = False
+    if USE_RERANKER:
+        get_reranker_model()
+    else:
+        console.print("[dim]  Reranker warmup skipped (USE_RERANKER=false)[/]")
     if torch.cuda.is_available():
         used_bytes = torch.cuda.memory_allocated()
         total_bytes = torch.cuda.get_device_properties(0).total_memory

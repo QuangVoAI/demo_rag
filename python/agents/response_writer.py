@@ -1,5 +1,5 @@
 """
-Response Writer — Sinh câu trả lời thân thiện, đúng ngữ cảnh cho nhatro.vn.
+Response Writer — Sinh câu trả lời thân thiện, đúng ngữ cảnh cho nhatrovn.
 
 Điều chỉnh giọng điệu theo cảm xúc người dùng (mood):
   - frustrated : Đồng cảm, gợi ý thay đổi điều kiện tìm kiếm
@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from agents.llm_client import groq_chat_complete, GROQ_MODEL_SMART, GROQ_MODEL_FAST
+from config import ANSWER_MAX_TOKENS
 
 # ---------------------------------------------------------------------------
 # System prompts theo từng mood
@@ -25,11 +26,14 @@ Quy tắc bắt buộc:
 - KHÔNG hứa hẹn: đặt lịch, nhắn chủ nhà, giữ phòng, thanh toán.
 - Dùng "mình/bạn", không dùng "chúng tôi/quý khách".
 - Format giá: dùng triệu (VD: 4,5 triệu/tháng).
-- Ngắn gọn, dùng danh sách khi liệt kê nhiều phòng."""
+- Ngắn gọn, dùng danh sách khi liệt kê nhiều phòng.
+- Nếu câu hỏi yêu cầu chọn giữa A hay B, chọn trực tiếp trước rồi giải thích bằng dữ liệu đã xác minh.
+- Nếu dữ liệu có so sánh giữa lựa chọn/baseline/phương án, tách rõ từng bên; không trộn thuộc tính.
+- Không tự bịa ví dụ, kết quả, hạn chế, tiện ích hoặc điều kiện thuê ngoài dữ liệu đã xác minh."""
 
 _SYSTEM_PROMPTS: dict[str, str] = {
     "frustrated": (
-        "Bạn là trợ lý tìm phòng nhatro.vn — thấu cảm và thực tế.\n"
+        "Bạn là trợ lý tìm phòng nhatrovn — thấu cảm và thực tế.\n"
         "Người dùng đang bực bội vì chưa tìm được phòng phù hợp.\n"
         "Hãy: (1) thừa nhận khó khăn của họ, (2) gợi ý điều chỉnh điều kiện "
         "cụ thể (nới ngân sách, mở rộng khu vực, bỏ bớt tiện ích), "
@@ -37,13 +41,13 @@ _SYSTEM_PROMPTS: dict[str, str] = {
         + _BASE_RULES
     ),
     "urgent": (
-        "Bạn là trợ lý tìm phòng nhatro.vn — nhanh chóng và thiết thực.\n"
+        "Bạn là trợ lý tìm phòng nhatrovn — nhanh chóng và thiết thực.\n"
         "Người dùng cần phòng GẤP. Ưu tiên: phòng trống ngay, có thể dọn vào sớm.\n"
         "Đưa thông tin súc tích, rõ ràng. Tránh dài dòng.\n\n"
         + _BASE_RULES
     ),
     "normal": (
-        "Bạn là trợ lý tìm phòng nhatro.vn — thân thiện và chuyên nghiệp.\n"
+        "Bạn là trợ lý tìm phòng nhatrovn — thân thiện và chuyên nghiệp.\n"
         "Trả lời đầy đủ, rõ ràng dựa trên dữ liệu đã xác minh.\n\n"
         + _BASE_RULES
     ),
@@ -94,7 +98,10 @@ async def write_response(
     })
 
     # Thử model thông minh trước, fallback sang model nhanh
-    for model, max_tok in [(GROQ_MODEL_SMART, 600), (GROQ_MODEL_FAST, 400)]:
+    for model, max_tok in [
+        (GROQ_MODEL_SMART, min(600, ANSWER_MAX_TOKENS)),
+        (GROQ_MODEL_FAST, min(400, ANSWER_MAX_TOKENS)),
+    ]:
         try:
             answer = await groq_chat_complete(
                 messages=messages,
@@ -148,7 +155,7 @@ async def write_no_result_response(
                 {"role": "user", "content": prompt},
             ],
             model=GROQ_MODEL_FAST,
-            max_tokens=300,
+            max_tokens=min(300, ANSWER_MAX_TOKENS),
             temperature=0.3,
         )
         if answer and len(answer.strip()) > 20:

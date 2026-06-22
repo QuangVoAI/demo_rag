@@ -14,6 +14,8 @@ chỉnh sửa tin đăng hoặc bất kỳ thao tác ghi nào.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 import uuid
 from typing import Any, Callable, Awaitable
@@ -21,7 +23,7 @@ from typing import Any, Callable, Awaitable
 from .intent import parse_intent_and_constraint_patch, parse_intent_async
 from .repository import ListingRepository, create_listing_repository
 from .retrieval import ListingSemanticIndex
-from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, public_session_state
+from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, public_session_state, unknown_listing_fields
 from .session_store import (
     SessionStore,
     apply_operations,
@@ -36,20 +38,46 @@ from .tools import ReadOnlyToolRegistry, ToolBudgetExceeded, ToolExecutionContex
 _session_store: SessionStore | None = None
 _listing_repository: ListingRepository | None = None
 _semantic_index: ListingSemanticIndex | None = None
+_init_lock = threading.Lock()
 _tool_registry = ReadOnlyToolRegistry()
+
+
+async def startup(
+    repository: ListingRepository | None = None,
+    session_store: SessionStore | None = None,
+    semantic_index: ListingSemanticIndex | None = None,
+) -> None:
+    """Initialize shared dependencies once during service startup."""
+    global _session_store, _listing_repository, _semantic_index
+    with _init_lock:
+        _session_store = session_store or _session_store or create_session_store()
+        _listing_repository = repository or _listing_repository or create_listing_repository()
+        if semantic_index is not None:
+            _semantic_index = semantic_index
+        elif _semantic_index is None:
+            try:
+                from .qdrant_index import QdrantListingSemanticIndex
+
+                _semantic_index = QdrantListingSemanticIndex()
+            except Exception:
+                _semantic_index = None
 
 
 def _get_session_store() -> SessionStore:
     global _session_store
     if _session_store is None:
-        _session_store = create_session_store()
+        with _init_lock:
+            if _session_store is None:
+                _session_store = create_session_store()
     return _session_store
 
 
 def _get_listing_repository() -> ListingRepository:
     global _listing_repository
     if _listing_repository is None:
-        _listing_repository = create_listing_repository()
+        with _init_lock:
+            if _listing_repository is None:
+                _listing_repository = create_listing_repository()
     return _listing_repository
 
 
@@ -57,12 +85,15 @@ def _get_semantic_index() -> ListingSemanticIndex | None:
     global _semantic_index
     if _semantic_index is not None:
         return _semantic_index
-    try:
-        from .qdrant_index import QdrantListingSemanticIndex
+    with _init_lock:
+        if _semantic_index is not None:
+            return _semantic_index
+        try:
+            from .qdrant_index import QdrantListingSemanticIndex
 
-        _semantic_index = QdrantListingSemanticIndex()
-    except Exception:
-        _semantic_index = None
+            _semantic_index = QdrantListingSemanticIndex()
+        except Exception:
+            _semantic_index = None
     return _semantic_index
 
 
@@ -82,6 +113,7 @@ async def run_room_assistant(
     trung gian chưa xác minh.
     """
     started = time.time()
+    history = (history or [])[-8:]
     session_id = session_id or str(uuid.uuid4())
     store = session_store or _get_session_store()
     repo = repository or _get_listing_repository()
@@ -107,11 +139,12 @@ async def run_room_assistant(
     error_category = None
 
     try:
-        tool_results = _execute_workflow(
-            question=question,
-            parsed=parsed,
-            state=merged_state,
-            context=context,
+        tool_results = await asyncio.to_thread(
+            _execute_workflow,
+            question,
+            parsed,
+            merged_state,
+            context,
         )
     except ToolBudgetExceeded:
         error_category = "tool_budget_exceeded"
@@ -135,7 +168,7 @@ async def run_room_assistant(
 
     # Sinh câu trả lời: dùng response_writer (điều chỉnh theo mood) + reviewer
     answer = await _compose_answer_async(
-        question, parsed, grounding, tool_results, history or [], user_mood
+            question, parsed, grounding, tool_results, history, user_mood
     )
     suggested_questions = _suggest_questions(parsed["intent"], listings, current_listing_id)
     processing_time_ms = int((time.time() - started) * 1000)
@@ -150,6 +183,10 @@ async def run_room_assistant(
         "comparison": tool_results.get("comparison"),
         "suggested_questions": suggested_questions,
         "sources": grounding["sources"],
+        "retrieval_confidence": context.retrieval_trace.get("retrieval_confidence"),
+        "retrieval_low_confidence": context.retrieval_trace.get("retrieval_low_confidence"),
+        "retrieval_feedback_retry_count": context.retrieval_trace.get("retrieval_feedback_retry_count", 0),
+        "retrieval_attempts": context.retrieval_trace.get("retrieval_attempts", []),
         "agent_trace": {
             "workflow": [
                 "normalize_input",
@@ -170,9 +207,10 @@ async def run_room_assistant(
             "read_tool_calls": context.read_tool_calls,
             "write_tool_calls": context.write_tool_calls,
             "max_read_tool_calls_per_turn": MAX_READ_TOOL_CALLS_PER_TURN,
-            "client_history_messages_seen": min(len(history or []), 8),
+            "client_history_messages_seen": len(history),
             "error_category": error_category,
             "grounding_result": grounding["result"],
+            "retrieval": context.retrieval_trace,
         },
         "processing_time_ms": processing_time_ms,
         "is_final": True,
@@ -206,7 +244,7 @@ def _execute_workflow(
             retry_constraints["amenities_preferred"] = []
             listings = _tool_registry.execute(
                 "search_listings",
-                {"query_text": "", "constraints": retry_constraints, "top_k": 5},
+                {"query_text": question, "constraints": retry_constraints, "top_k": 5},
                 context,
             )
             return {"listings": listings, "retrieval_retry": True}
@@ -284,6 +322,11 @@ def _build_grounding_context(
             "listing_id": listing_id,
             "source_version": listing.get("source_version", 0),
             "title": listing.get("title"),
+            "score": _preferred_source_score(listing),
+            "rerank_score": listing.get("rerank_score"),
+            "combined_score": listing.get("combined_score"),
+            "rrf_score": listing.get("rrf_score"),
+            "metadata_score": listing.get("metadata_score"),
         })
         unknown.extend(f"{listing_id}.{field}" for field in _unknown_fields(listing))
 
@@ -301,21 +344,6 @@ def _build_grounding_context(
         "sources": sources,
         "source_versions": source_versions,
     }
-
-
-# ---------------------------------------------------------------------------
-# System prompt cho LLM sinh câu trả lời tự nhiên
-# ---------------------------------------------------------------------------
-_ANSWER_SYSTEM_PROMPT = """Bạn là trợ lý tìm phòng trọ cho nhatro.vn — nền tảng cho thuê phòng lớn tại Việt Nam.
-Nhiệm vụ: Dựa vào dữ liệu listing đã xác minh, trả lời ngắn gọn, thân thiện bằng tiếng Việt.
-
-Quy tắc bắt buộc:
-- CHỈ dùng thông tin trong [DỮ LIỆU ĐÃ XÁC MINH]. Không bịa thêm.
-- Nếu thiếu dữ liệu, thành thật nói "chưa có dữ liệu" thay vì đoán.
-- Không thực hiện: đặt lịch, nhắn chủ nhà, giữ chỗ, thanh toán, sửa tin đăng.
-- Trả lời ngắn gọn, dùng danh sách khi liệt kê nhiều phòng.
-- Format giá theo triệu VND cho dễ đọc (VD: 4.500.000 VND → 4,5 triệu).
-"""
 
 
 def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) -> str:
@@ -362,7 +390,12 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
     if grounding.get("unknown"):
         parts.append(f"\nCác trường chưa có dữ liệu: {', '.join(grounding['unknown'])}")
 
-    return "\n".join(parts) if parts else "Không có dữ liệu phù hợp."
+    context = "\n".join(parts) if parts else "Không có dữ liệu phù hợp."
+    try:
+        from config import EVIDENCE_MAX_CHARS
+        return context[:EVIDENCE_MAX_CHARS]
+    except Exception:
+        return context[:3500]
 
 
 def _compose_answer_template(
@@ -381,7 +414,7 @@ def _compose_answer_template(
         return (
             "Mình chỉ có thể tư vấn và đọc dữ liệu — không thể tự thực hiện: đặt lịch, "
             "nhắn chủ nhà, lưu phòng, giữ chỗ hay thanh toán. "
-            f"Với yêu cầu '{action}', bạn vui lòng thao tác trực tiếp trên giao diện nhatro.vn."
+            f"Với yêu cầu '{action}', bạn vui lòng thao tác trực tiếp trên giao diện nhatrovn."
         )
 
     listings = grounding["listings"]
@@ -392,7 +425,7 @@ def _compose_answer_template(
                 "Mình chưa tìm thấy phòng phù hợp với điều kiện hiện tại. "
                 "Bạn thử nới ngân sách, đổi khu vực hoặc bỏ bớt tiện ích bắt buộc nhé."
             )
-        lines = ["Dưới đây là các phòng phù hợp nhất theo dữ liệu đã xác nhận trên nhatro.vn:"]
+        lines = ["Dưới đây là các phòng phù hợp nhất theo dữ liệu đã xác nhận trên nhatrovn:"]
         for idx, listing in enumerate(listings[:5], 1):
             lines.append(
                 f"{idx}. **{listing.get('title')}** (#{listing.get('listing_id')}) — "
@@ -455,7 +488,7 @@ def _compose_answer_template(
 
     return (
         "Mình có thể giúp tìm phòng, lọc điều kiện, hỏi đáp về phòng đang xem, "
-        "tính chi phí, so sánh tối đa 3 phòng và gợi ý phòng tương tự trên nhatro.vn. "
+        "tính chi phí, so sánh tối đa 3 phòng và gợi ý phòng tương tự trên nhatrovn. "
         "Mình không thực hiện: đặt lịch, nhắn chủ nhà, giữ chỗ hoặc thanh toán."
     )
 
@@ -516,6 +549,9 @@ async def _compose_answer_async(
 
     # Reviewer kiểm duyệt câu trả lời
     try:
+        from config import ENABLE_REVIEWER
+        if not ENABLE_REVIEWER:
+            return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
         from agents.reviewer import review_with_retry
         answer, _ = await review_with_retry(
             question=question,
@@ -541,7 +577,19 @@ def _current_listing_from_results(intent: str, listings: list[dict[str, Any]]) -
 
 
 def _unknown_fields(listing: dict[str, Any]) -> list[str]:
-    return [field for field in ("rent_price", "deposit", "area_m2", "available_from", "pets_allowed") if listing.get(field) is None]
+    return unknown_listing_fields(listing)
+
+
+def _preferred_source_score(item: dict[str, Any]) -> float:
+    for key in ("rerank_score", "combined_score", "rrf_score", "score"):
+        value = item.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def _first_or_none(values: list[Any]) -> Any | None:

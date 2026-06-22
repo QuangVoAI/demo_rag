@@ -35,7 +35,10 @@ class QdrantListingSemanticIndex:
         return [
             {
                 "listing_id": item.get("listing_id"),
-                "score": item.get("rrf_score", item.get("score", 0)),
+                "score": item.get("rerank_score", item.get("combined_score", item.get("rrf_score", item.get("score", 0)))),
+                "rerank_score": item.get("rerank_score"),
+                "combined_score": item.get("combined_score"),
+                "rrf_score": item.get("rrf_score", item.get("score", 0)),
                 "source_version": item.get("source_version", 0),
             }
             for item in results
@@ -71,4 +74,3 @@ class QdrantListingVectorIndex:
 
     def delete_listing(self, listing_id: str) -> None:
         self.qdrant.delete_listing_points(listing_id)
-

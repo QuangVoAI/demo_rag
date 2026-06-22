@@ -1,5 +1,5 @@
 """
-Router Agent — Phân loại loại tương tác của người dùng trên nhatro.vn.
+Router Agent — Phân loại loại tương tác của người dùng trên nhatrovn.
 
 3 loại:
   SEARCH    : Đang tìm / lọc phòng
@@ -122,7 +122,7 @@ def classify(question: str) -> str:
         "QUESTION": float(np.dot(q_emb, _question_centroid)),  # type: ignore[arg-type]
         "CASUAL":   float(np.dot(q_emb, _casual_centroid)),    # type: ignore[arg-type]
     }
-    # Ưu tiên nhẹ cho SEARCH — đây là luồng chính của nhatro.vn
+    # Ưu tiên nhẹ cho SEARCH — đây là luồng chính của nhatrovn
     scores["SEARCH"] += 0.02
 
     result = max(scores, key=scores.get)  # type: ignore[arg-type]

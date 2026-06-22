@@ -8,7 +8,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from retrieval.cache import get_cached_answer
 from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.repository import InMemoryListingRepository, build_mongo_query, listing_matches_constraints
-from room_assistant.schemas import default_session_state
+from room_assistant.schemas import default_session_state, normalize_listing
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
 
@@ -45,6 +45,27 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(state["constraints"]["budget"]["max"], 6_000_000)
         self.assertEqual(state["constraints"]["amenities_required"], [])
         self.assertNotIn("unknown", state["constraints"])
+
+    def test_noop_append_does_not_increment_state_version(self):
+        state = default_session_state("s-noop")
+        state, applied = apply_operations(state, [
+            {"op": "append", "path": "amenities_required", "value": "air_conditioner"},
+        ])
+        version = state["state_version"]
+        state, applied = apply_operations(state, [
+            {"op": "append", "path": "amenities_required", "value": "air_conditioner"},
+        ])
+        self.assertEqual(applied, [])
+        self.assertEqual(state["state_version"], version)
+
+    def test_normalize_listing_extracts_amenities_one_line_only(self):
+        listing = normalize_listing({
+            "listing_id": "A101",
+            "embedding_text": "Tiện ích: wifi, window\nKhu vực xung quanh: gần trường",
+            "available": True,
+            "status": "active",
+        })
+        self.assertEqual(listing["amenities"], ["wifi", "window"])
 
     def test_in_memory_session_ttl(self):
         store = InMemorySessionStore()
@@ -92,6 +113,14 @@ class RoomAssistantCoreTests(unittest.TestCase):
         with self.assertRaises(ToolBudgetExceeded):
             registry.execute("retrieve_faq", {"question": "hello"}, context)
         self.assertEqual(context.write_tool_calls, 0)
+
+    def test_retrieve_faq_covers_deposit_and_fees(self):
+        repo = InMemoryListingRepository([])
+        registry = ReadOnlyToolRegistry()
+        context = ToolExecutionContext(repository=repo)
+        result = registry.execute("retrieve_faq", {"question": "Tiền cọc và phí nước thế nào?"}, context)
+        self.assertGreaterEqual(len(result), 1)
+        self.assertTrue({item["topic"] for item in result} & {"deposit", "fees"})
 
     def test_dynamic_listing_answer_cache_disabled_without_safe_context(self):
         self.assertIsNone(get_cached_answer("Phòng này có nuôi mèo không?", context=None, dynamic_listing=True))

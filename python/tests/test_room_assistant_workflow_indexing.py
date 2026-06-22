@@ -11,6 +11,7 @@ from room_assistant.indexing import (
     make_dlq_record,
 )
 from room_assistant.repository import InMemoryListingRepository
+from room_assistant.retrieval import search_listings_with_hard_filters
 from room_assistant.session_store import InMemorySessionStore
 from room_assistant.workflow import run_room_assistant
 
@@ -110,6 +111,27 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         self.assertEqual(semantic.candidate_ids, [["A101"]])
         self.assertEqual(result["agent_trace"]["write_tool_calls"], 0)
         self.assertLessEqual(result["agent_trace"]["read_tool_calls"], 3)
+
+    def test_metadata_hit_boosts_listing_and_records_trace(self):
+        repo = InMemoryListingRepository(FIXTURES)
+        semantic = RecordingSemanticIndex()
+        trace = {}
+
+        results = search_listings_with_hard_filters(
+            query_text="Cho mình xem #B202",
+            constraints={},
+            repository=repo,
+            semantic_index=semantic,
+            top_k=2,
+            trace=trace,
+        )
+
+        self.assertEqual(results[0]["listing_id"], "B202")
+        self.assertGreater(results[0]["metadata_score"], 0)
+        self.assertGreater(results[0]["combined_score"], results[0]["rrf_score"])
+        self.assertFalse(trace["retrieval_low_confidence"])
+        self.assertEqual(trace["retrieval_feedback_retry_count"], 0)
+        self.assertEqual(trace["retrieval_attempts"][0]["top_listing_ids"][0], "B202")
 
     def test_request_action_does_not_call_tools(self):
         result = asyncio.run(run_room_assistant(

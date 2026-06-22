@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from .repository import ListingRepository
 from .retrieval import ListingSemanticIndex, search_listings_with_hard_filters
-from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, READ_ONLY_TOOLS
+from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, READ_ONLY_TOOLS, unknown_listing_fields
 
 
 class ToolBudgetExceeded(RuntimeError):
@@ -21,6 +21,7 @@ class ToolExecutionContext:
     read_tool_calls: int = 0
     write_tool_calls: int = 0
     tool_latency_ms: dict[str, int] = field(default_factory=dict)
+    retrieval_trace: dict[str, Any] = field(default_factory=dict)
 
 
 class ReadOnlyToolRegistry:
@@ -59,6 +60,7 @@ def search_listings(args: dict[str, Any], context: ToolExecutionContext) -> list
         repository=context.repository,
         semantic_index=context.semantic_index,
         top_k=int(args.get("top_k", 5)),
+        trace=context.retrieval_trace,
     )
 
 
@@ -88,8 +90,45 @@ def retrieve_listing_context(args: dict[str, Any], context: ToolExecutionContext
 
 def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, str]]:
     question = (args.get("question") or "").lower()
-    if "đặt lịch" in question or "dat lich" in question:
-        return [{"topic": "booking", "answer": "Bạn cần tự thao tác đặt lịch trên giao diện Nhatrovn nếu tính năng đó có sẵn."}]
+    faq = [
+        {
+            "topic": "booking",
+            "keywords": ("đặt lịch", "dat lich", "xem phòng", "xem phong"),
+            "answer": "Bạn cần tự thao tác đặt lịch hoặc xem thông tin liên hệ trên giao diện nhatrovn nếu tính năng đó có sẵn.",
+        },
+        {
+            "topic": "deposit",
+            "keywords": ("tiền cọc", "tien coc", "đặt cọc", "dat coc", "cọc"),
+            "answer": "Tiền cọc phụ thuộc từng listing. Nếu dữ liệu phòng có trường cọc, mình sẽ dùng đúng số đó; nếu thiếu thì mình sẽ báo chưa có dữ liệu.",
+        },
+        {
+            "topic": "contract",
+            "keywords": ("hợp đồng", "hop dong", "thời hạn thuê", "thoi han thue"),
+            "answer": "Thông tin hợp đồng và thời hạn thuê cần đối chiếu theo từng phòng hoặc thỏa thuận với chủ nhà. Mình không tự tạo hay xác nhận hợp đồng thay bạn.",
+        },
+        {
+            "topic": "fees",
+            "keywords": ("phí", "phi", "điện", "dien", "nước", "nuoc", "wifi", "giữ xe", "giu xe"),
+            "answer": "Các khoản phí như điện, nước, wifi, giữ xe chỉ được xem là xác nhận khi có trong dữ liệu listing hoặc phần ước tính chi phí.",
+        },
+        {
+            "topic": "pets",
+            "keywords": ("nuôi mèo", "nuoi meo", "nuôi chó", "nuoi cho", "thú cưng", "thu cung"),
+            "answer": "Việc nuôi thú cưng phụ thuộc trường pets_allowed hoặc quy định của từng phòng. Nếu dữ liệu thiếu, mình sẽ nói rõ là chưa có dữ liệu.",
+        },
+        {
+            "topic": "payment",
+            "keywords": ("thanh toán", "thanh toan", "chuyển khoản", "chuyen khoan"),
+            "answer": "Mình không xử lý thanh toán hay giữ tiền. Bạn chỉ nên thanh toán qua kênh chính thức hoặc sau khi xác minh trực tiếp với bên cho thuê.",
+        },
+    ]
+    matches = [
+        {"topic": item["topic"], "answer": item["answer"]}
+        for item in faq
+        if any(keyword in question for keyword in item["keywords"])
+    ]
+    if matches:
+        return matches[:3]
     return []
 
 
@@ -167,8 +206,8 @@ def find_similar_listings(args: dict[str, Any], context: ToolExecutionContext) -
     constraints = {
         "location": {"districts": [source.get("district")] if source.get("district") else []},
         "budget": {
-            "min": None,
-            "max": int(source["rent_price"] * 1.15) if source.get("rent_price") else None,
+            "min": int(source["rent_price"] * 0.75) if source.get("rent_price") else None,
+            "max": int(source["rent_price"] * 1.25) if source.get("rent_price") else None,
             "type": "rent_only",
         },
         "amenities_required": [],
@@ -180,11 +219,10 @@ def find_similar_listings(args: dict[str, Any], context: ToolExecutionContext) -
         repository=context.repository,
         semantic_index=context.semantic_index,
         top_k=int(args.get("top_k", 5)) + 1,
+        trace=context.retrieval_trace,
     )
     return [item for item in results if item.get("listing_id") != listing_id][:int(args.get("top_k", 5))]
 
 
 def _unknown_listing_fields(listing: dict[str, Any]) -> list[str]:
-    fields = ("rent_price", "deposit", "area_m2", "available_from", "pets_allowed")
-    return [field for field in fields if listing.get(field) is None]
-
+    return unknown_listing_fields(listing)

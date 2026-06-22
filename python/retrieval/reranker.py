@@ -8,7 +8,7 @@ from rich.console import Console
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from config import RERANKER_MODEL, TOP_K_RERANK
+from config import RERANKER_MODEL, TOP_K_RERANK, USE_RERANKER
 from agents.model_registry import get_reranker_model
 
 from utils.console import console
@@ -37,6 +37,8 @@ def rerank(
     """
     if not documents:
         return []
+    if not USE_RERANKER:
+        return documents[:top_k]
     
     reranker = get_reranker_model()
     
