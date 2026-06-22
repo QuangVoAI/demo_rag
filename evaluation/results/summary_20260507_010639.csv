@@ -1,2 +1,0 @@
-Architecture,BLEU,ROUGE-L,BERTScore,Recall@5,Avg latency (s)
-Req1 | Groq base (no RAG),21.33,35.99,74.93,,0.81

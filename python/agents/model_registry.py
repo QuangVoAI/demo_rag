@@ -9,7 +9,6 @@ import torch
 from utils.console import console
 
 _embed_model = None
-_reranker_model = None
 
 
 def _select_device(min_free_gb: float = 1.3) -> str:
@@ -64,40 +63,10 @@ def get_embed_model():
     return _embed_model
 
 
-def get_reranker_model():
-    """Singleton reranker model (CrossEncoder)."""
-    global _reranker_model
-    if _reranker_model is None:
-        import sys
-        from pathlib import Path
-        sys.path.append(str(Path(__file__).parent.parent))
-
-        from sentence_transformers import CrossEncoder
-        from config import RERANKER_MODEL
-
-        device = _select_device(min_free_gb=0.6)
-        dtype = torch.float16 if device == "cuda" else torch.float32
-        precision = "fp16" if dtype == torch.float16 else "fp32"
-
-        console.print(
-            f"[cyan]🔄 Loading reranker model: {RERANKER_MODEL} "
-            f"({device}, {precision})...[/]"
-        )
-        _reranker_model = CrossEncoder(
-            RERANKER_MODEL,
-            max_length=512,
-            device=device,
-            automodel_args={"torch_dtype": dtype},
-        )
-        console.print("[green]✅ Reranker model ready[/]")
-    return _reranker_model
-
-
 def warmup():
     """Pre-load tất cả models lúc startup thay vì lúc query đầu tiên."""
     console.print("[bold cyan]🔥 Warming up models...[/]")
     get_embed_model()
-    get_reranker_model()
     if torch.cuda.is_available():
         used_bytes = torch.cuda.memory_allocated()
         total_bytes = torch.cuda.get_device_properties(0).total_memory
