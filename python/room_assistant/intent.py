@@ -102,6 +102,54 @@ AMENITY_ALIASES: dict[str, str] = {
     # Thú cưng
     "nuôi thú cưng": "pets_allowed",
     "nuoi thu cung": "pets_allowed",
+    # Sạc xe điện
+    "sạc xe điện": "ev_charging",
+    "sac xe dien": "ev_charging",
+    "nhận xe điện": "ev_charging",
+    "nhan xe dien": "ev_charging",
+    # Giờ giấc
+    "giờ tự do": "free_hours",
+    "gio tu do": "free_hours",
+    "tự do giờ giấc": "free_hours",
+    "tu do gio giac": "free_hours",
+}
+
+ROOM_TYPE_ALIASES: dict[str, str] = {
+    "phòng trọ": "phong_tro",
+    "phong tro": "phong_tro",
+    "nhà trọ": "phong_tro",
+    "nha tro": "phong_tro",
+    "căn hộ": "can_ho",
+    "can ho": "can_ho",
+    "studio": "studio",
+    "chdv": "chdv",
+    "căn hộ dịch vụ": "chdv",
+    "can ho dich vu": "chdv",
+    "1pn": "1pn",
+    "1 phòng ngủ": "1pn",
+    "2pn": "2pn",
+    "2 phòng ngủ": "2pn",
+    "3pn": "3pn",
+    "3 phòng ngủ": "3pn",
+    "duplex": "duplex",
+    "giường nam": "giuong_nam",
+    "giuong nam": "giuong_nam",
+    "giường nữ": "giuong_nu",
+    "giuong nu": "giuong_nu",
+    "giường": "giuong_tang",
+    "giuong": "giuong_tang",
+    "ktx": "giuong_tang",
+    "ký túc xá": "giuong_tang",
+    "ky tuc xa": "giuong_tang",
+    "sleepbox nữ": "sleepbox_nu",
+    "sleepbox nu": "sleepbox_nu",
+    "sleepbox nam": "sleepbox_nam",
+    "sleepbox": "sleepbox",
+    "nhà phố": "nha_pho",
+    "nha pho": "nha_pho",
+    "nhà nguyên căn": "nha_pho",
+    "mặt bằng": "mat_bang",
+    "mat bang": "mat_bang",
 }
 
 # Tùy chọn mềm — không loại phòng nhưng dùng để ranking
@@ -157,7 +205,8 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "SEARCH_ROOM": (
         "tim phong", "phong tro", "nha tro", "can ho", "studio",
         "thue phong", "muon thue", "can thue", "tim nha",
-        "phong cho thue", "nha cho thue",
+        "phong cho thue", "nha cho thue", "chdv", "duplex",
+        "sleepbox", "giuong", "mat bang", "nha pho",
     ),
     "REQUEST_FAQ": (
         "quy dinh", "dieu khoan", "chinh sach", "huong dan",
@@ -177,7 +226,7 @@ def _strip_accents(value: str) -> str:
 
 def _norm(text: str) -> str:
     """Chuẩn hoá text: bỏ dấu, viết thường, xóa khoảng trắng thừa."""
-    return re.sub(r"\s+", " ", _strip_accents(text).lower()).strip()
+    return re.sub(r"\s+", " ", _strip_accents(text).lower().replace("đ", "d")).strip()
 
 
 def _money_to_vnd(raw: str, unit: str | None) -> int:
@@ -233,7 +282,7 @@ def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> No
     money = r"(\d[\d\.,]*)\s*(triệu|trieu|tr|k|nghìn|nghin|vnd|đ|d)?"
 
     # Xử lý dạng rút gọn "3tr5" → 3.5 triệu
-    compact_million = re.search(r"\b(\d+)\s*(?:tr|trieu)\s*(\d+)\b", normalized)
+    compact_million = re.search(r"\b(\d+)\s*(?:tr|trieu)\s*(\d+)\b(?!\s*thang)", normalized)
     if compact_million:
         value = f"{compact_million.group(1)}.{compact_million.group(2)}"
         _append_unique(ops, "set", "budget.max", _money_to_vnd(value, "trieu"))
@@ -276,7 +325,7 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     for match in district_pattern.finditer(normalized):
         value = match.group(1).strip()
         # Cắt tại từ ngăn cách để tránh lấy thừa
-        value = re.split(r"\b(?:gan|duoi|tren|co|va|,|\.)\b", value)[0].strip()
+        value = re.split(r"\b(?:gan|duoi|tren|co|va|gia|,|\.)\b", value)[0].strip()
         if value and value not in districts:
             districts.append(f"quan {value}")
     for district in districts:
@@ -307,12 +356,18 @@ def _extract_people_and_pets(normalized: str, ops: list[dict[str, Any]]) -> None
         _append_unique(ops, "append", "pets_required", "dog")
 
     # Phương tiện đặc biệt
-    if re.search(r"xe\s*(dien|điện|electric)", normalized):
+    if re.search(r"(gui\s*xe|cho\s*de\s*xe)\s*(dien|electric)", normalized):
         _append_unique(ops, "append", "vehicles", "electric_bike")
     if re.search(r"xe\s*(may|máy|motor)", normalized):
         _append_unique(ops, "append", "vehicles", "motorbike")
     if re.search(r"\b(o\s*to|oto|car|xe\s*hoi)\b", normalized):
         _append_unique(ops, "append", "vehicles", "car")
+
+def _extract_categories(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
+    """Trích xuất loại phòng từ câu hỏi."""
+    for alias, canonical in ROOM_TYPE_ALIASES.items():
+        if _norm(alias) in normalized:
+            _append_unique(ops, "append", "categories", canonical)
 
 
 def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -329,6 +384,11 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
                 canonical,
             )
 
+    if re.search(r"khong\s*may\s*lanh", normalized) or "không máy lạnh" in text.lower():
+        _append_unique(ops, "append", "excluded_features", "air_conditioner")
+    if re.search(r"khong\s*gac", normalized) or "không gác" in text.lower():
+        _append_unique(ops, "append", "excluded_features", "mezzanine")
+
     for alias, canonical in SOFT_PREFERENCE_ALIASES.items():
         if _norm(alias) in normalized:
             _append_unique(ops, "append", "amenities_preferred", canonical)
@@ -336,8 +396,8 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
     # Lệnh xóa toàn bộ điều kiện tìm kiếm
     if re.search(r"(xoa het|xóa hết|clear|bo het|bỏ hết)\s*(dieu kien|điều kiện)", normalized):
         for path in (
+            "categories",
             "location.districts",
-            "location.wards",
             "location.near_landmarks",
             "vehicles",
             "pets_required",
@@ -399,7 +459,7 @@ def _regex_classify(
 # Tầng 2: LLM fallback khi regex không chắc chắn
 # ---------------------------------------------------------------------------
 
-_LLM_SYSTEM_PROMPT = """Bạn là bộ phân loại intent cho chatbot tìm phòng trọ tại Việt Nam (nhatrovn).
+_LLM_SYSTEM_PROMPT = """Bạn là bộ phân loại intent cho chatbot tìm phòng trọ tại Việt Nam (nhatrovn.vn).
 Nhiệm vụ: Phân loại đúng intent từ câu hỏi tiếng Việt của người dùng.
 
 Danh sách intent hợp lệ:
@@ -470,6 +530,7 @@ def parse_intent_and_constraint_patch(
     _extract_location(normalized, operations)
     _extract_people_and_pets(normalized, operations)
     _extract_amenities(text, normalized, operations)
+    _extract_categories(text, normalized, operations)
 
     referenced_listing_ids = _extract_listing_ids(text)
     action = _requested_action(normalized)
@@ -509,6 +570,7 @@ async def parse_intent_async(
     _extract_location(normalized, operations)
     _extract_people_and_pets(normalized, operations)
     _extract_amenities(text, normalized, operations)
+    _extract_categories(text, normalized, operations)
 
     referenced_listing_ids = _extract_listing_ids(text)
     action = _requested_action(normalized)

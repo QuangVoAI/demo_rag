@@ -42,24 +42,28 @@ def extract_text_for_embedding(doc: dict[str, Any]) -> str:
     
     return " ".join(parts)
 
+from room_assistant.schemas import normalize_listing
+
 def build_payload(doc: dict[str, Any]) -> dict[str, Any]:
     """Chuyển đổi dữ liệu Mongo thành Payload hợp lệ cho Qdrant."""
-    payload = dict(doc)
+    normalized = normalize_listing(doc)
+    if not normalized:
+        normalized = dict(doc)
+        
+    payload = dict(normalized)
     
-    # Qdrant không nhận ObjectId của Mongo, phải ép kiểu về string
+    # Đảm bảo không có _id để tránh lỗi Qdrant
     if "_id" in payload:
         payload["listing_id"] = str(payload["_id"])
         del payload["_id"]
-    if "property_id" in payload:
-        payload["property_id"] = str(payload["property_id"])
-    if "crawl_job_id" in payload:
-        payload["crawl_job_id"] = str(payload["crawl_job_id"])
-    
-    # Ép kiểu các _id trong object lồng nhau (nếu có)
+        
+    # Ép kiểu ObjectId trong dict
     for key, value in payload.items():
         if hasattr(value, "__class__") and value.__class__.__name__ == "ObjectId":
             payload[key] = str(value)
             
+    # Giữ lại các trường meta quan trọng cho vector DB
+    payload["chunk_type"] = "listing_summary"
     return payload
 
 def main():
@@ -86,20 +90,12 @@ def main():
     
     # 2. Connect to Qdrant
     console.print(f"[bold green]3. Kết nối Qdrant tại {QDRANT_URL}...[/]")
-    qclient = QdrantClient(url=QDRANT_URL)
+    from retrieval.qdrant_client import QdrantWrapper
+    from qdrant_client.http.models import SparseVector
     
-    # Kiểm tra/tạo collection Qdrant
-    collections_response = qclient.get_collections()
-    collection_names = [c.name for c in collections_response.collections]
-    
-    if QDRANT_COLLECTION not in collection_names:
-        console.print(f"   Tạo mới collection [bold blue]{QDRANT_COLLECTION}[/] (DIM={EMBEDDING_DIM})...")
-        qclient.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE)
-        )
-    else:
-        console.print(f"   Collection [bold blue]{QDRANT_COLLECTION}[/] đã tồn tại.")
+    wrapper = QdrantWrapper(url=QDRANT_URL, collection_name=QDRANT_COLLECTION)
+    wrapper.create_collection(recreate=True)
+    qclient = wrapper.client
 
     # 3. Chạy từng batch
     BATCH_SIZE = 50
@@ -115,8 +111,11 @@ def main():
         if not text.strip():
             continue
             
-        # Tạo vector
-        vector = embed_model.encode(text, normalize_embeddings=True).tolist()
+        # Tạo vector dense
+        vector_dense = embed_model.encode(text, normalize_embeddings=True).tolist()
+        # Tạo vector sparse
+        sparse_indices, sparse_values = wrapper._text_to_sparse(text)
+        
         payload = build_payload(doc)
         
         # UUID5 hash từ Mongo ObjectId để Qdrant Point ID luôn cố định
@@ -125,7 +124,13 @@ def main():
         batch_points.append(
             PointStruct(
                 id=point_id,
-                vector=vector,
+                vector={
+                    "dense": vector_dense,
+                    "sparse": SparseVector(
+                        indices=sparse_indices,
+                        values=sparse_values,
+                    )
+                },
                 payload=payload
             )
         )

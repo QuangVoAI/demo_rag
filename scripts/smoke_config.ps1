@@ -1,0 +1,2 @@
+﻿$env:PYTHONIOENCODING = "utf-8"
+& "C:\cygwin64\bin\python3.9.exe" -c "import sys; sys.path.insert(0, 'python'); import config; print('OK', config.RAG_LOW_VRAM_MODE, config.USE_RERANKER, config.TOP_K_RETRIEVAL, config.TOP_K_RERANK, config.EVIDENCE_MAX_CHARS, config.ANSWER_MAX_TOKENS, config.ENABLE_REVIEWER, config.MAX_REWRITE_RETRIES, config.ENABLE_FEEDBACK_RETRY, config.FEEDBACK_MAX_RETRIEVAL_RETRIES, config.LOW_CONFIDENCE_MIN_DOCS, config.LOW_CONFIDENCE_MIN_SCORE, config.METADATA_BOOST, config.METADATA_FIELDS)"

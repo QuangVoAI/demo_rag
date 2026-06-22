@@ -62,6 +62,7 @@ ALLOWED_OPERATION_PATHS: set[str] = {
     "budget.min",
     "budget.max",
     "budget.type",
+    "categories",
     "occupants",
     "vehicles",
     "pets_required",
@@ -72,6 +73,7 @@ ALLOWED_OPERATION_PATHS: set[str] = {
 }
 
 LIST_OPERATION_PATHS: set[str] = {
+    "categories",
     "location.districts",
     "location.wards",
     "location.near_landmarks",

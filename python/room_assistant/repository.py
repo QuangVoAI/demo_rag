@@ -198,27 +198,42 @@ class MongoListingRepository:
         return results
 
     def get_by_id(self, listing_id: str) -> dict[str, Any] | None:
-        query = {
-            "$or": [
-                {"listing_id": str(listing_id)},
-                {"id": str(listing_id)},
-                {"slug": str(listing_id)},
-            ]
-        }
-        doc = self._collection.find_one(query)
+        from bson import ObjectId
+        or_clauses = [
+            {"listing_id": str(listing_id)},
+            {"id": str(listing_id)},
+            {"slug": str(listing_id)},
+        ]
+        try:
+            or_clauses.append({"_id": ObjectId(str(listing_id))})
+        except Exception:
+            pass
+            
+        doc = self._collection.find_one({"$or": or_clauses})
         return normalize_listing(doc)
 
     def get_many_by_ids(self, listing_ids: list[str]) -> list[dict[str, Any]]:
+        from bson import ObjectId
         ids = [str(item) for item in listing_ids]
         if not ids:
             return []
-        cursor = self._collection.find({
-            "$or": [
-                {"listing_id": {"$in": ids}},
-                {"id": {"$in": ids}},
-                {"slug": {"$in": ids}},
-            ]
-        })
+            
+        or_clauses = [
+            {"listing_id": {"$in": ids}},
+            {"id": {"$in": ids}},
+            {"slug": {"$in": ids}},
+        ]
+        
+        object_ids = []
+        for item in ids:
+            try:
+                object_ids.append(ObjectId(item))
+            except Exception:
+                pass
+        if object_ids:
+            or_clauses.append({"_id": {"$in": object_ids}})
+            
+        cursor = self._collection.find({"$or": or_clauses})
         by_id = {
             item["listing_id"]: item
             for item in (normalize_listing(doc) for doc in cursor)
@@ -316,6 +331,18 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
         district_regexes = [{"embedding_text": {"$regex": d, "$options": "i"}} for d in location["districts"]] + \
                            [{"summary": {"$regex": d, "$options": "i"}} for d in location["districts"]]
         
+        # Thêm matching có dấu cho Quận/Huyện
+        for d in location["districts"]:
+            if d.startswith("quan "):
+                num_or_name = d.replace("quan ", "").strip()
+                district_regexes.append({"embedding_text": {"$regex": f"Quận {num_or_name}\\b", "$options": "i"}})
+                district_regexes.append({"summary": {"$regex": f"Quận {num_or_name}\\b", "$options": "i"}})
+            elif d.startswith("huyen "):
+                num_or_name = d.replace("huyen ", "").strip()
+                district_regexes.append({"embedding_text": {"$regex": f"Huyện {num_or_name}\\b", "$options": "i"}})
+                district_regexes.append({"summary": {"$regex": f"Huyện {num_or_name}\\b", "$options": "i"}})
+
+        
         query["$and"].append({
             "$or": [
                 {"district": {"$in": location["districts"]}},
@@ -327,6 +354,8 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     if location.get("wards"):
         query["$and"].append({"$or": [{"ward": {"$in": location["wards"]}}, {"location.ward": {"$in": location["wards"]}}]})
 
+    if constraints.get("categories"):
+        query["$and"].append({"category": {"$in": constraints["categories"]}})
     if constraints.get("occupants"):
         query["$and"].append({"max_occupants": {"$gte": constraints["occupants"]}})
     if constraints.get("pets_required"):
@@ -338,6 +367,18 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     if excluded:
         query["$and"].append({"amenities": {"$nin": excluded}})
 
+    
+    import json
+    # Print clean query for debug
+    def serialize_query(q):
+        if isinstance(q, dict):
+            return {k: serialize_query(v) for k, v in q.items()}
+        elif isinstance(q, list):
+            return [serialize_query(v) for v in q]
+        else:
+            return str(q) if hasattr(q, "__class__") and q.__class__.__name__ == "ObjectId" else q
+    
+    print("MONGO QUERY:", json.dumps(serialize_query(query), ensure_ascii=False))
     return query
 
 
@@ -362,6 +403,9 @@ def listing_matches_constraints(listing: dict[str, Any], constraints: dict[str, 
     if location.get("wards") and _normalize_location_value(listing.get("ward")) not in {
         _normalize_location_value(item) for item in location["wards"]
     }:
+        return False
+
+    if constraints.get("categories") and listing.get("category") not in constraints["categories"]:
         return False
 
     if constraints.get("occupants") and listing.get("max_occupants") is not None:
