@@ -13,10 +13,11 @@ build/
 # Environment
 .env
 .env.local
-.env.example
+rust_backend/.env.example
 
 # Data
 # data/raw/  # Uncomment if you have large raw files
+data/state/
 
 # Model cache & artifacts
 models_cache/
@@ -50,6 +51,7 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+.ai-router/
 
 # Node.js (if any frontend build)
 node_modules/

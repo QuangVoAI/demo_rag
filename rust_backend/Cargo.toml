@@ -1,8 +1,8 @@
 [package]
-name = "arxiv-rag-backend"
+name = "nhatrovn-assistant-backend"
 version = "0.3.0"
 edition = "2021"
-description = "Cross-lingual ArXiv RAG System - Rust Gateway with Kafka + WebSocket Streaming"
+description = "Nhatrovn read-only room assistant gateway with Kafka + WebSocket"
 
 [dependencies]
 # Web Framework

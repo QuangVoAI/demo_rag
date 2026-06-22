@@ -138,10 +138,7 @@ impl Database {
             "DELETE FROM messages WHERE session_id = ?1",
             params![session_id],
         )?;
-        let affected = conn.execute(
-            "DELETE FROM sessions WHERE id = ?1",
-            params![session_id],
-        )?;
+        let affected = conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
         Ok(affected > 0)
     }
 
@@ -188,10 +185,7 @@ impl Database {
     }
 
     /// Lấy tất cả messages của một session.
-    pub fn get_messages(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<ChatMessage>, rusqlite::Error> {
+    pub fn get_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, created_at
@@ -201,6 +195,40 @@ impl Database {
 
         let messages = stmt
             .query_map(params![session_id], |row| {
+                Ok(ChatMessage {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(messages)
+    }
+
+    /// Lấy N messages gần nhất, trả về theo thứ tự thời gian tăng dần.
+    pub fn get_recent_messages(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ChatMessage>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, created_at
+             FROM (
+                SELECT id, session_id, role, content, created_at
+                FROM messages
+                WHERE session_id = ?1
+                ORDER BY created_at DESC
+                LIMIT ?2
+             )
+             ORDER BY created_at ASC",
+        )?;
+
+        let messages = stmt
+            .query_map(params![session_id, limit as i64], |row| {
                 Ok(ChatMessage {
                     id: row.get(0)?,
                     session_id: row.get(1)?,

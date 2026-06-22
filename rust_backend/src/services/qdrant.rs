@@ -25,10 +25,7 @@ impl QdrantService {
 
     /// Kiểm tra kết nối
     pub async fn health_check(&self) -> Result<bool> {
-        let info = self
-            .client
-            .collection_info(&self.collection)
-            .await?;
+        let info = self.client.collection_info(&self.collection).await?;
         Ok(info.result.is_some())
     }
 }

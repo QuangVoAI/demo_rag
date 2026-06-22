@@ -32,7 +32,7 @@ struct WsQueryMessage {
     history: Vec<WsChatHistory>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct WsChatHistory {
     role: String,
     content: String,
@@ -57,6 +57,12 @@ struct WsAnswerMessage {
     msg_type: String,
     session_id: String,
     answer: String,
+    intent: Option<String>,
+    session_state: serde_json::Value,
+    listings: Vec<serde_json::Value>,
+    cost_estimate: Option<serde_json::Value>,
+    comparison: Option<serde_json::Value>,
+    suggested_questions: Vec<String>,
     sources: Vec<serde_json::Value>,
     agent_trace: serde_json::Value,
     processing_time_ms: u64,
@@ -101,9 +107,13 @@ pub async fn ws_chat_handler(
                 Some(Ok(Message::Text(text))) => {
                     match serde_json::from_str::<WsQueryMessage>(&text) {
                         Ok(query) => {
-                            let session_id = query.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                            let session_id = query
+                                .session_id
+                                .clone()
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-                            info!("📨 WS Query: '{}' (session: {})",
+                            info!(
+                                "📨 WS Query: '{}' (session: {})",
                                 &query.question[..query.question.len().min(50)],
                                 &session_id[..8]
                             );
@@ -118,7 +128,44 @@ pub async fn ws_chat_handler(
                             if let Err(e) = db_service.update_session_title(&session_id, &title) {
                                 warn!("DB update_title error: {}", e);
                             }
-                            if let Err(e) = db_service.save_message(&session_id, "user", &query.question) {
+
+                            let server_history =
+                                match db_service.get_recent_messages(&session_id, 8) {
+                                    Ok(messages) => messages
+                                        .into_iter()
+                                        .map(|m| ChatHistoryMsg {
+                                            role: m.role,
+                                            content: m.content,
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    Err(e) => {
+                                        warn!("DB recent history error: {}", e);
+                                        Vec::new()
+                                    }
+                                };
+                            let history_for_worker =
+                                if server_history.is_empty() && !query.history.is_empty() {
+                                    query
+                                        .history
+                                        .iter()
+                                        .rev()
+                                        .take(8)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
+                                        .rev()
+                                        .map(|h| ChatHistoryMsg {
+                                            role: h.role,
+                                            content: h.content,
+                                        })
+                                        .collect::<Vec<_>>()
+                                } else {
+                                    server_history
+                                };
+
+                            if let Err(e) =
+                                db_service.save_message(&session_id, "user", &query.question)
+                            {
                                 warn!("DB save_message(user) error: {}", e);
                             }
 
@@ -134,18 +181,13 @@ pub async fn ws_chat_handler(
                             }
 
                             // Register response channel
-                            let mut rx = kafka_service
-                                .register_session(&session_id)
-                                .await;
+                            let mut rx = kafka_service.register_session(&session_id).await;
 
                             // Publish query to Kafka
                             let kafka_event = QueryRequestEvent {
                                 session_id: session_id.clone(),
                                 question: query.question,
-                                history: query.history.into_iter().map(|h| ChatHistoryMsg {
-                                    role: h.role,
-                                    content: h.content,
-                                }).collect(),
+                                history: history_for_worker,
                                 top_k: query.top_k,
                             };
 
@@ -167,8 +209,8 @@ pub async fn ws_chat_handler(
                             // STREAMING LOOP: receive tokens until final
                             // ═══════════════════════════════════════════
                             // 300s timeout cho cold start (lần đầu load 3 model)
-                            let timeout_deadline = tokio::time::Instant::now()
-                                + Duration::from_secs(300);
+                            let timeout_deadline =
+                                tokio::time::Instant::now() + Duration::from_secs(300);
 
                             loop {
                                 let remaining = timeout_deadline
@@ -179,7 +221,8 @@ pub async fn ws_chat_handler(
                                     let timeout_msg = WsErrorMessage {
                                         msg_type: "error".to_string(),
                                         session_id: Some(session_id.clone()),
-                                        message: "Quá thời gian chờ phản hồi. Vui lòng thử lại.".to_string(),
+                                        message: "Quá thời gian chờ phản hồi. Vui lòng thử lại."
+                                            .to_string(),
                                     };
                                     if let Ok(json) = serde_json::to_string(&timeout_msg) {
                                         let _ = session.text(json).await;
@@ -196,9 +239,17 @@ pub async fn ws_chat_handler(
                                                 msg_type: "answer".to_string(),
                                                 session_id: session_id.clone(),
                                                 answer: response_event.answer,
+                                                intent: response_event.intent,
+                                                session_state: response_event.session_state,
+                                                listings: response_event.listings,
+                                                cost_estimate: response_event.cost_estimate,
+                                                comparison: response_event.comparison,
+                                                suggested_questions: response_event
+                                                    .suggested_questions,
                                                 sources: response_event.sources,
                                                 agent_trace: response_event.agent_trace,
-                                                processing_time_ms: response_event.processing_time_ms,
+                                                processing_time_ms: response_event
+                                                    .processing_time_ms,
                                                 status: "complete".to_string(),
                                             };
                                             if let Ok(json) = serde_json::to_string(&answer_msg) {
@@ -207,7 +258,9 @@ pub async fn ws_chat_handler(
 
                                             // ─── Save AI answer to DB ───
                                             if let Err(e) = db_service.save_message(
-                                                &session_id, "assistant", &answer_for_db
+                                                &session_id,
+                                                "assistant",
+                                                &answer_for_db,
                                             ) {
                                                 warn!("DB save_message(assistant) error: {}", e);
                                             }
@@ -226,7 +279,10 @@ pub async fn ws_chat_handler(
                                         }
                                     }
                                     Ok(None) => {
-                                        warn!("⚠️ Response channel closed for session {}", &session_id[..8]);
+                                        warn!(
+                                            "⚠️ Response channel closed for session {}",
+                                            &session_id[..8]
+                                        );
                                         break;
                                     }
                                     Err(_) => {
@@ -234,7 +290,9 @@ pub async fn ws_chat_handler(
                                         let timeout_msg = WsErrorMessage {
                                             msg_type: "error".to_string(),
                                             session_id: Some(session_id.clone()),
-                                            message: "Quá thời gian chờ phản hồi. Vui lòng thử lại.".to_string(),
+                                            message:
+                                                "Quá thời gian chờ phản hồi. Vui lòng thử lại."
+                                                    .to_string(),
                                         };
                                         if let Ok(json) = serde_json::to_string(&timeout_msg) {
                                             let _ = session.text(json).await;

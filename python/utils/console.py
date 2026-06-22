@@ -16,6 +16,12 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from rich.console import Console
+try:
+    from rich.console import Console
+    console = Console(force_terminal=True, safe_box=True)
+except ImportError:
+    class _PlainConsole:
+        def print(self, *args, **kwargs):
+            print(*args)
 
-console = Console(force_terminal=True, safe_box=True)
+    console = _PlainConsole()

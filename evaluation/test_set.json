@@ -281,9 +281,9 @@
     {
       "id": 39,
       "category": "khieu_nai_complaint",
-      "question": "Tôi đặt hàng Flash Sale nhưng bị hủy đơn không rõ lý do!",
-      "reference": "Chúng tôi xin lỗi vì sự cố này. Flash Sale thường có số lượng giới hạn và đôi khi xảy ra lỗi hệ thống. Vui lòng liên hệ hotline 1900 1208 để được giải thích rõ lý do hủy đơn và hỗ trợ đặt lại.",
-      "relevant_policy": "chinh_sach_khuyen_mai"
+      "question": "Tôi không quay video lúc mở hộp, bây giờ phát hiện thiếu đồ thì khiếu nại được không?",
+      "reference": "Rất tiếc, theo chính sách của MyKingdom, để giải quyết khiếu nại hàng thiếu hoặc lỗi vỡ, khách hàng bắt buộc phải có video unbox (mở kiện hàng). Nếu không có video quay quá trình mở kiện, MyKingdom sẽ từ chối giải quyết yêu cầu khiếu nại.",
+      "relevant_policy": "chinh_sach_dong_goi_kiem_hang"
     },
     {
       "id": 40,
@@ -295,9 +295,9 @@
     {
       "id": 41,
       "category": "khieu_nai_complaint",
-      "question": "Mã giảm giá không áp dụng được mặc dù chưa hết hạn!",
-      "reference": "Xin lỗi vì sự bất tiện này. Một số mã giảm giá có điều kiện áp dụng riêng (đơn hàng tối thiểu, sản phẩm áp dụng...). Vui lòng liên hệ hotline 1900 1208 để được kiểm tra và hỗ trợ trực tiếp.",
-      "relevant_policy": "chinh_sach_khuyen_mai"
+      "question": "Tôi nhận hàng thấy thùng carton bị rách bươm và mất tem niêm phong, tôi nên làm gì?",
+      "reference": "Nếu thùng hàng có dấu hiệu bị can thiệp vật lý, rách nặng hoặc mất tem niêm phong MyKingdom, bạn có quyền từ chối nhận hàng ngay lập tức với nhân viên giao vận.",
+      "relevant_policy": "chinh_sach_dong_goi_kiem_hang"
     },
     {
       "id": 42,
@@ -323,23 +323,23 @@
     {
       "id": 45,
       "category": "khuyen_mai",
-      "question": "Flash Sale của MyKingdom diễn ra vào lúc nào?",
-      "reference": "MyKingdom thường xuyên tổ chức các chương trình Flash Sale. Vui lòng theo dõi website mykingdom.com.vn và fanpage chính thức để cập nhật lịch Flash Sale mới nhất.",
-      "relevant_policy": "chinh_sach_khuyen_mai"
+      "question": "Ngày hội thành viên của MyKingdom là ngày nào và có ưu đãi gì?",
+      "reference": "Ngày hội thành viên của MyKingdom diễn ra vào ngày 22 hàng tháng. Trong ngày này, hệ thống sẽ nhân đôi (x2) số điểm tích lũy cho tất cả các giao dịch.",
+      "relevant_policy": "dieu_kien_dieu_khoan_thanh_vien"
     },
     {
       "id": 46,
       "category": "khuyen_mai",
-      "question": "Tôi có thể dùng nhiều mã giảm giá cùng lúc không?",
-      "reference": "Thông thường mỗi đơn hàng chỉ áp dụng được một mã giảm giá. Vui lòng kiểm tra điều kiện cụ thể của từng chương trình khuyến mãi trên website hoặc liên hệ hotline 1900 1208.",
-      "relevant_policy": "chinh_sach_khuyen_mai"
+      "question": "Tôi mới đăng ký thẻ thành viên thì có được tặng mã giảm giá nào không?",
+      "reference": "Có, thành viên mới đăng ký sẽ nhận ngay E-voucher giảm 10% (giảm tối đa 500.000đ). Lưu ý E-voucher này không áp dụng cho hàng đang giảm giá và các sản phẩm thương hiệu POP MART.",
+      "relevant_policy": "dieu_kien_dieu_khoan_thanh_vien"
     },
     {
       "id": 47,
       "category": "khuyen_mai",
-      "question": "MyKingdom có giảm giá dịp Tết không?",
-      "reference": "MyKingdom thường có các chương trình khuyến mãi đặc biệt dịp Tết và lễ lớn. Vui lòng theo dõi website mykingdom.com.vn và fanpage để không bỏ lỡ ưu đãi.",
-      "relevant_policy": "chinh_sach_khuyen_mai"
+      "question": "Voucher giảm giá 30% tháng sinh nhật của tôi có hạn mức giảm tối đa là bao nhiêu?",
+      "reference": "Mức giảm tối đa của E-voucher sinh nhật 30% phụ thuộc vào lịch sử chi tiêu của bạn trong 12 tháng trước: dưới 5 triệu giảm tối đa 200.000đ, từ 5 triệu giảm tối đa 500.000đ, và từ 15 triệu giảm tối đa 1.000.000đ.",
+      "relevant_policy": "dieu_kien_dieu_khoan_thanh_vien"
     },
     {
       "id": 48,

@@ -21,9 +21,10 @@ use crate::config::AppConfig;
 
 pub const TOPIC_QUERY_REQUEST: &str = "query.request";
 pub const TOPIC_QUERY_RESPONSE: &str = "query.response";
+pub const TOPIC_LISTING_CHANGED: &str = "listing.changed";
+pub const TOPIC_LISTING_INDEX_DLQ: &str = "listing.index.dlq";
 
 // ─── Message Types ───────────────────────────────────────────
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequestEvent {
@@ -43,12 +44,24 @@ pub struct ChatHistoryMsg {
 pub struct QueryResponseEvent {
     pub session_id: String,
     pub answer: String,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub session_state: serde_json::Value,
+    #[serde(default)]
+    pub listings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub cost_estimate: Option<serde_json::Value>,
+    #[serde(default)]
+    pub comparison: Option<serde_json::Value>,
+    #[serde(default)]
+    pub suggested_questions: Vec<String>,
     pub sources: Vec<serde_json::Value>,
     pub agent_trace: serde_json::Value,
     pub processing_time_ms: u64,
     pub is_final: bool,
     #[serde(default)]
-    pub chunk_type: Option<String>,  // "token" | "status" | null
+    pub chunk_type: Option<String>, // "token" | "status" | null
 }
 
 // ─── Kafka Service ───────────────────────────────────────────

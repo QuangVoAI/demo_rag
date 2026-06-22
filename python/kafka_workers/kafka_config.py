@@ -17,6 +17,7 @@ BROKERS = KAFKA_BROKERS
 # ─── Consumer Groups ────────────────────────────────────────
 GROUP_INGESTION = "python-ingestion-worker"
 GROUP_INDEXER = "python-llamaindex-indexer"
+GROUP_LISTING_INDEXER = "qdrant-listing-indexer-v1"
 GROUP_QUERY = "python-query-processor"
 
 # ─── Topics ──────────────────────────────────────────────────
@@ -25,6 +26,8 @@ TOPIC_DOCUMENT_CHUNKS = "document.chunks"
 TOPIC_DOCUMENT_INDEXED = "document.indexed"
 TOPIC_QUERY_REQUEST = "query.request"
 TOPIC_QUERY_RESPONSE = "query.response"
+TOPIC_LISTING_CHANGED = "listing.changed"
+TOPIC_LISTING_INDEX_DLQ = "listing.index.dlq"
 
 ALL_TOPICS = [
     TOPIC_PAPER_UPLOADED,
@@ -32,6 +35,8 @@ ALL_TOPICS = [
     TOPIC_DOCUMENT_INDEXED,
     TOPIC_QUERY_REQUEST,
     TOPIC_QUERY_RESPONSE,
+    TOPIC_LISTING_CHANGED,
+    TOPIC_LISTING_INDEX_DLQ,
 ]
 
 # ─── Serialization Helpers ───────────────────────────────────

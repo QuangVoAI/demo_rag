@@ -3,8 +3,8 @@
 <head>
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <meta name="description" content="EmpathAI - Chuyển hóa phàn nàn thành sự hài lòng bằng Trí thông minh cảm xúc"/>
-    <title>Empath AI - Welcome</title>
+    <meta name="description" content="Nhatrovn Assistant - Trợ lý AI read-only giúp khách hàng tìm và so sánh phòng trọ"/>
+    <title>Nhatrovn Assistant</title>
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
@@ -134,7 +134,7 @@
 
     <!-- Top Navigation (Mobile/Tablet) -->
     <nav class="md:hidden flex justify-between items-center w-full px-8 h-16 fixed top-0 z-50 bg-white/70 backdrop-blur-[20px] shadow-[0_10px_40px_rgba(0,0,0,0.04)] font-['Inter'] text-slate-800 tracking-tight">
-        <div class="text-xl font-medium text-slate-900 cursor-pointer" onclick="newResearch()">Empath AI</div>
+        <div class="text-xl font-medium text-slate-900 cursor-pointer" onclick="newResearch()">Nhatrovn</div>
         <div class="flex items-center gap-4">
             <div id="topNavStatusMobile" class="flex items-center gap-1 bg-surface-container rounded-full px-3 py-1.5" title="System Online">
                 <span class="w-2 h-2 rounded-full bg-tertiary animate-pulse"></span>
@@ -199,8 +199,8 @@
             <div id="welcomeView" class="w-full flex flex-col items-center pt-8 transition-opacity duration-500">
                 <!-- Hero Section -->
                 <div class="text-center max-w-3xl mb-xl z-10">
-                    <h1 class="font-h1 text-h1 text-on-surface mb-sm tracking-tight">Xin chào, mình là <span class="text-primary">EmpathAI</span></h1>
-                    <p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl mx-auto">Trợ lý CSKH thấu cảm — Chuyển hóa phàn nàn thành sự hài lòng bằng Trí thông minh cảm xúc.</p>
+                    <h1 class="font-h1 text-h1 text-on-surface mb-sm tracking-tight">Xin chào, mình là <span class="text-primary">Nhatrovn Assistant</span></h1>
+                    <p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl mx-auto">Trợ lý read-only giúp tìm phòng, lọc nhu cầu, tính chi phí và so sánh phòng bằng dữ liệu đã xác nhận.</p>
                 </div>
                 
                 <!-- Feature Grid (Bento Style) -->
@@ -210,8 +210,8 @@
                             <span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">psychology</span>
                         </div>
                         <div>
-                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Emotional Analysis</h3>
-                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Nhận diện cảm xúc theo thời gian thực để điều chỉnh tông giọng và xoa dịu căng thẳng tự nhiên.</p>
+                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Tìm phòng tự nhiên</h3>
+                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Nhận điều kiện tìm kiếm bằng tiếng Việt và cập nhật qua nhiều lượt trò chuyện.</p>
                         </div>
                     </div>
                     <div class="glass-card rounded-2xl p-md flex flex-col gap-sm border border-outline-variant/20 hover:border-primary/30 transition-all group">
@@ -219,8 +219,8 @@
                             <span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">bolt</span>
                         </div>
                         <div>
-                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Instant Response</h3>
-                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Phản hồi tức thì với tốc độ siêu tốc, tạo cảm giác giao tiếp trơn tru như người thật.</p>
+                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Chi phí rõ ràng</h3>
+                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Tính tiền thuê, cọc và phí bằng logic deterministic từ dữ liệu listing.</p>
                         </div>
                     </div>
                     <div class="glass-card rounded-2xl p-md flex flex-col gap-sm border border-outline-variant/20 hover:border-primary/30 transition-all group">
@@ -228,8 +228,8 @@
                             <span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">verified_user</span>
                         </div>
                         <div>
-                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Policy Integration</h3>
-                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Tuân thủ chặt chẽ chính sách công ty đồng thời đề xuất giải pháp bồi thường linh hoạt.</p>
+                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Grounding dữ liệu</h3>
+                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Phân biệt thông tin đã xác nhận, ước tính và dữ liệu chưa có trước khi trả lời.</p>
                         </div>
                     </div>
                     <div class="glass-card rounded-2xl p-md flex flex-col gap-sm border border-outline-variant/20 hover:border-primary/30 transition-all group">
@@ -237,8 +237,8 @@
                             <span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">account_tree</span>
                         </div>
                         <div>
-                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Smart Logic</h3>
-                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Luồng Agentic RAG thông minh: Router -> Retriever -> Grader -> Writer -> Reviewer.</p>
+                            <h3 class="font-h2 text-body-lg font-semibold text-on-surface mb-1">Không side effect</h3>
+                            <p class="font-body-md text-sm text-on-surface-variant/80 leading-relaxed">Chỉ đọc, tìm kiếm, so sánh và gợi ý; không đặt lịch, giữ chỗ, nhắn tin hay thanh toán thay bạn.</p>
                         </div>
                     </div>
                 </div>
@@ -255,18 +255,11 @@
     <div class="fixed bottom-lg left-0 w-full px-container-padding flex justify-center z-50 pointer-events-none md:pl-28">
         <div class="w-full max-w-3xl flex flex-col gap-3 pointer-events-auto">
             <form id="queryForm" onsubmit="handleSubmit(event)" class="w-full glass-panel rounded-full p-2 pl-6 flex items-center gap-4 border border-white/80 shadow-[0_10px_40px_rgba(132,84,0,0.08)] focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/30 transition-all">
-                <div class="relative flex items-center border-r border-outline-variant/30 pr-3">
-                    <select id="modelSelect" class="bg-transparent text-primary text-xs font-bold uppercase tracking-wider py-1 pl-1 pr-6 focus:outline-none cursor-pointer appearance-none">
-                        <option class="text-on-surface bg-surface-container-lowest" value="empath">EmpathAI (Full)</option>
-                        <option class="text-on-surface bg-surface-container-lowest" value="req1">LLM Only</option>
-                        <option class="text-on-surface bg-surface-container-lowest" value="req2">LLM Fine-tune</option>
-                        <option class="text-on-surface bg-surface-container-lowest" value="req3">LLM + RAG</option>
-                        <option class="text-on-surface bg-surface-container-lowest" value="compare">So sánh 4</option>
-                    </select>
-                    <span class="material-symbols-outlined text-primary text-[16px] absolute right-1 pointer-events-none">expand_more</span>
+                <div class="relative flex items-center border-r border-outline-variant/30 pr-3 text-primary">
+                    <span class="material-symbols-outlined text-[20px]">travel_explore</span>
                 </div>
                 
-                <input id="queryInput" class="flex-1 bg-transparent border-none focus:ring-0 font-body-md text-on-surface placeholder:text-on-surface-variant/50 outline-none h-10" placeholder="Hỏi EmpathAI điều gì đó..." type="text" autocomplete="off"/>
+                <input id="queryInput" class="flex-1 bg-transparent border-none focus:ring-0 font-body-md text-on-surface placeholder:text-on-surface-variant/50 outline-none h-10" placeholder="Tìm phòng dưới 5 triệu ở Bình Thạnh..." type="text" autocomplete="off"/>
                 
                 <button id="submitBtn" type="submit" class="bg-primary-container text-on-primary-container w-12 h-12 rounded-full flex items-center justify-center hover:bg-primary-fixed hover:scale-105 transition-all shadow-md active:scale-95">
                     <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">arrow_upward</span>
@@ -275,9 +268,9 @@
             
             <!-- Quick Suggestions -->
             <div class="flex justify-center gap-6 text-xs text-on-surface-variant/80 font-medium hidden md:flex">
-                <button type="button" onclick="fillExample('Giao hàng trễ quá, tôi muốn hủy đơn')" class="hover:text-primary transition-colors flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">local_shipping</span> Giao hàng trễ</button>
-                <button type="button" onclick="fillExample('Sản phẩm nhận được bị lỗi, xử lý sao đây?')" class="hover:text-primary transition-colors flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">swap_horiz</span> Đổi trả hàng</button>
-                <button type="button" onclick="fillExample('Thái độ nhân viên vô cùng tệ, yêu cầu hoàn tiền!')" class="hover:text-primary transition-colors flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">payments</span> Phàn nàn gay gắt</button>
+                <button type="button" onclick="fillExample('Tìm phòng dưới 5 triệu ở quận Bình Thạnh có máy lạnh')" class="hover:text-primary transition-colors flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">search</span> Tìm phòng</button>
+                <button type="button" onclick="fillExample('Tăng ngân sách lên 6 triệu và bỏ yêu cầu máy lạnh')" class="hover:text-primary transition-colors flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">tune</span> Sửa điều kiện</button>
+                <button type="button" onclick="fillExample('So sánh #A101 #B202 #C303')" class="hover:text-primary transition-colors flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">compare_arrows</span> So sánh phòng</button>
             </div>
         </div>
     </div>
@@ -288,7 +281,7 @@
             <div class="flex justify-between items-center mb-8">
                 <h2 class="text-2xl font-bold text-primary flex items-center gap-3">
                     <span class="material-symbols-outlined text-3xl" style="font-variation-settings: 'FILL' 1;">psychology</span> 
-                    EmpathAI Trace
+                    Nhatrovn Trace
                 </h2>
                 <button onclick="closeTrace()" class="p-2 bg-surface-variant text-on-surface-variant hover:bg-error-container hover:text-error transition-colors rounded-full flex items-center justify-center">
                     <span class="material-symbols-outlined">close</span>

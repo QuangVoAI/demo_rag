@@ -1,7 +1,6 @@
 """
 Sentiment Analyzer — Phân tích cảm xúc khách hàng.
 Embedding-based, KHÔNG dùng LLM (0 token, ~10ms).
-Thay thế translator.py (không cần dịch VN->EN nữa).
 """
 import numpy as np
 import time

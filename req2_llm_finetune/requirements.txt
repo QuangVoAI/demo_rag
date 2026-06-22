@@ -1,8 +1,0 @@
-aiohttp>=3.9.0
-python-dotenv>=1.0.0
-fastapi>=0.110.0
-uvicorn>=0.27.0
-
-# Vertex AI backend (chỉ cần khi EMPATHY_MODE=vertex)
-google-cloud-aiplatform>=1.50.0
-google-auth>=2.28.0

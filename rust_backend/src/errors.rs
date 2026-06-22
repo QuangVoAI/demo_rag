@@ -31,22 +31,13 @@ impl ResponseError for AppError {
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 msg.clone(),
             ),
-            Self::BadRequest(msg) => (
-                actix_web::http::StatusCode::BAD_REQUEST,
-                msg.clone(),
-            ),
-            Self::NotFound(msg) => (
-                actix_web::http::StatusCode::NOT_FOUND,
-                msg.clone(),
-            ),
+            Self::BadRequest(msg) => (actix_web::http::StatusCode::BAD_REQUEST, msg.clone()),
+            Self::NotFound(msg) => (actix_web::http::StatusCode::NOT_FOUND, msg.clone()),
             Self::Qdrant(msg) => (
                 actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
                 msg.clone(),
             ),
-            Self::Kafka(msg) => (
-                actix_web::http::StatusCode::BAD_GATEWAY,
-                msg.clone(),
-            ),
+            Self::Kafka(msg) => (actix_web::http::StatusCode::BAD_GATEWAY, msg.clone()),
         };
 
         HttpResponse::build(status).json(serde_json::json!({

@@ -179,7 +179,12 @@ class QdrantWrapper:
 
         return indices, values
 
-    def search_dense(self, query_vector: np.ndarray, top_k: int = 20) -> list[dict]:
+    def search_dense(
+        self,
+        query_vector: np.ndarray,
+        top_k: int = 20,
+        query_filter: Filter | None = None,
+    ) -> list[dict]:
         """Tìm kiếm Dense vector (semantic search)."""
         results = self.client.query_points(
             collection_name=self.collection_name,
@@ -187,6 +192,7 @@ class QdrantWrapper:
             using="dense",
             limit=top_k,
             with_payload=True,
+            query_filter=query_filter,
         )
 
         return [
@@ -200,6 +206,8 @@ class QdrantWrapper:
                 "policy_id": r.payload.get("metadata", {}).get("policy_id", ""),
                 "category": r.payload.get("metadata", {}).get("category", ""),
                 "url": r.payload.get("metadata", {}).get("url", ""),
+                "listing_id": r.payload.get("listing_id", ""),
+                "source_version": r.payload.get("source_version", 0),
                 "compensation_limit": (
                     r.payload.get("compensation_limit")
                     or r.payload.get("metadata", {}).get("compensation_limit", 0)
@@ -208,7 +216,12 @@ class QdrantWrapper:
             for r in results.points
         ]
 
-    def search_sparse(self, query_text: str, top_k: int = 20) -> list[dict]:
+    def search_sparse(
+        self,
+        query_text: str,
+        top_k: int = 20,
+        query_filter: Filter | None = None,
+    ) -> list[dict]:
         """Tìm kiếm Sparse vector (keyword/BM25-like search)."""
         indices, values = self._text_to_sparse(query_text)
 
@@ -218,6 +231,7 @@ class QdrantWrapper:
             using="sparse",
             limit=top_k,
             with_payload=True,
+            query_filter=query_filter,
         )
 
         return [
@@ -231,6 +245,8 @@ class QdrantWrapper:
                 "policy_id": r.payload.get("metadata", {}).get("policy_id", ""),
                 "category": r.payload.get("metadata", {}).get("category", ""),
                 "url": r.payload.get("metadata", {}).get("url", ""),
+                "listing_id": r.payload.get("listing_id", ""),
+                "source_version": r.payload.get("source_version", 0),
                 "compensation_limit": (
                     r.payload.get("compensation_limit")
                     or r.payload.get("metadata", {}).get("compensation_limit", 0)
@@ -238,6 +254,101 @@ class QdrantWrapper:
             }
             for r in results.points
         ]
+
+    def search_listings(
+        self,
+        query_vector: np.ndarray,
+        query_text: str,
+        candidate_ids: list[str] | None = None,
+        metadata_filter: dict | None = None,
+        top_k: int = 20,
+    ) -> list[dict]:
+        """Hybrid search for listing chunks, constrained by listing IDs/metadata."""
+        q_filter = self._listing_filter(candidate_ids or [], metadata_filter or {})
+        dense_results = self.search_dense(query_vector, top_k=top_k * 2, query_filter=q_filter)
+        sparse_results = self.search_sparse(query_text, top_k=top_k * 2, query_filter=q_filter)
+
+        from retrieval.hybrid_search import reciprocal_rank_fusion
+
+        fused = reciprocal_rank_fusion(dense_results, sparse_results)
+        return fused[:top_k]
+
+    def upsert_listing_chunk(
+        self,
+        listing_id: str,
+        chunk_type: str,
+        text: str,
+        embedding: np.ndarray,
+        payload: dict,
+    ) -> str:
+        """Idempotently upsert one deterministic listing chunk point."""
+        point_id = self.listing_point_id(listing_id, chunk_type)
+        sparse_indices, sparse_values = self._text_to_sparse(text)
+        point = PointStruct(
+            id=point_id,
+            vector={
+                "dense": embedding.tolist(),
+                "sparse": SparseVector(indices=sparse_indices, values=sparse_values),
+            },
+            payload={
+                **payload,
+                "listing_id": listing_id,
+                "chunk_type": chunk_type,
+                "text": text,
+            },
+        )
+        self.client.upsert(collection_name=self.collection_name, points=[point])
+        return point_id
+
+    def delete_listing_points(self, listing_id: str) -> None:
+        """Delete all listing points for one listing_id."""
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="listing_id",
+                            match=models.MatchValue(value=listing_id),
+                        )
+                    ]
+                )
+            ),
+        )
+
+    def get_listing_payload(self, listing_id: str, chunk_type: str = "listing_summary") -> dict | None:
+        point_id = self.listing_point_id(listing_id, chunk_type)
+        points = self.client.retrieve(
+            collection_name=self.collection_name,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            return None
+        return points[0].payload or {}
+
+    @staticmethod
+    def listing_point_id(listing_id: str, chunk_type: str = "listing_summary") -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing:{listing_id}:{chunk_type}"))
+
+    def _listing_filter(self, candidate_ids: list[str], metadata_filter: dict) -> Filter | None:
+        must = []
+        if candidate_ids:
+            must.append(models.FieldCondition(
+                key="listing_id",
+                match=models.MatchAny(any=[str(item) for item in candidate_ids]),
+            ))
+        for key, value in metadata_filter.items():
+            if value is None:
+                continue
+            if isinstance(value, list):
+                must.append(models.FieldCondition(key=key, match=models.MatchAny(any=value)))
+            else:
+                must.append(models.FieldCondition(key=key, match=models.MatchValue(value=value)))
+        if not must:
+            return None
+        return models.Filter(must=must)
 
     def get_collection_info(self) -> dict:
         """Lấy thông tin collection."""

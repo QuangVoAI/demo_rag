@@ -295,33 +295,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "arxiv-rag-backend"
-version = "0.3.0"
-dependencies = [
- "actix-cors",
- "actix-files",
- "actix-web",
- "actix-ws",
- "anyhow",
- "chrono",
- "dotenvy",
- "futures",
- "hex",
- "md-5",
- "qdrant-client",
- "rdkafka",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-actix-web",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1539,6 +1512,33 @@ name = "mutually_exclusive_features"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e94e1e6445d314f972ff7395df2de295fe51b71821694f0b0e1e79c4f12c8577"
+
+[[package]]
+name = "nhatrovn-assistant-backend"
+version = "0.3.0"
+dependencies = [
+ "actix-cors",
+ "actix-files",
+ "actix-web",
+ "actix-ws",
+ "anyhow",
+ "chrono",
+ "dotenvy",
+ "futures",
+ "hex",
+ "md-5",
+ "qdrant-client",
+ "rdkafka",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-actix-web",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "nu-ansi-term"

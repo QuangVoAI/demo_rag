@@ -1,5 +1,0 @@
-Architecture,BLEU,ROUGE-L,BERTScore,Recall@5,Avg latency (s)
-Req1 | Groq base (no RAG),19.65,21.92,67.52,,15.32
-Req2 | Vertex fine-tuned (no RAG),23.29,32.43,73.21,,11.74
-Req3 | Groq base + RAG,19.03,29.87,72.32,82.0,13.26
-Req4 | Vertex fine-tuned + RAG,22.49,30.84,72.9,82.0,13.29

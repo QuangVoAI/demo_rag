@@ -1,16 +1,4 @@
-"""
-Query Processing Worker — Kafka Consumer cho topic "query.request".
-
-Sử dụng LangGraph pipeline với Groq Streaming:
-1. Router (Embedding-based, no LLM)
-2. Translate VN → EN (Groq Fast)
-3. Hybrid Search + Rerank (BGE-M3 + BGE-Reranker)
-4. Writer (Groq Streaming — yield từng token)
-5. Reviewer (Conditional fact-check)
-
-Streaming tokens được publish vào "query.response" với is_final=False.
-Final answer được publish với is_final=True.
-"""
+"""Query worker for the Nhatrovn read-only room assistant."""
 import asyncio
 import signal
 import json
@@ -39,7 +27,6 @@ from kafka_workers.kafka_config import (
     serialize, deserialize,
 )
 from agents.graph import run_streaming
-from retrieval.cache import get_cached_answer, set_cached_answer
 
 PIPELINE_TIMEOUT_SECONDS = 120  # Max 2 phút cho một request
 
@@ -74,11 +61,11 @@ def create_producer() -> Producer:
 
 
 def run_worker():
-    """Main loop cho EmpathAI query processing worker."""
-    console.print("[bold cyan]Starting EmpathAI Query Worker (LangGraph + Sentiment + Cache)...[/]")
+    """Main loop for Nhatrovn read-only query processing."""
+    console.print("[bold cyan]Starting Nhatrovn Query Worker (read-only room assistant)...[/]")
     console.print(f"[dim]  Listening on: {TOPIC_QUERY_REQUEST}[/]")
     console.print(f"[dim]  Publishing to: {TOPIC_QUERY_RESPONSE}[/]")
-    console.print("[dim]  Pipeline: [Cache?] -> Router -> Sentiment -> Retrieve -> Grade/Rewrite -> EmpathyWriter -> Reviewer[/]")
+    console.print("[dim]  Pipeline: parse -> state -> read-only tools -> grounding -> final response[/]")
 
     # Pre-load models trước khi nhận query (tránh cold start timeout)
     from agents.model_registry import warmup
@@ -114,37 +101,6 @@ def run_worker():
             console.print(
                 f"[cyan]💬 Query: '{question[:60]}...' (session: {session_id[:8]})[/]"
             )
-
-            # ── Check Redis Cache FIRST ──
-            cached = get_cached_answer(question)
-            if cached:
-                # CACHE HIT → bypass toàn bộ LangGraph, trả kết quả ngay (<50ms)
-                cache_response = {
-                    "session_id": session_id,
-                    "answer": cached["answer"],
-                    "sources": cached.get("sources", []),
-                    "agent_trace": {
-                        **cached.get("agent_trace", {}),
-                        "from_cache": True,
-                    },
-                    "processing_time_ms": 0,
-                    "is_final": True,
-                    "chunk_type": None,
-                }
-                producer.produce(
-                    TOPIC_QUERY_RESPONSE,
-                    key=session_id.encode("utf-8"),
-                    value=serialize(cache_response),
-                )
-                producer.flush()
-                query_count += 1
-                console.print(
-                    f"[bold green]⚡ Cache HIT — response sent for session {session_id[:8]}... "
-                    f"(query #{query_count})[/]"
-                )
-                continue  # Skip LangGraph entirely
-
-            # ── CACHE MISS → Run full LangGraph pipeline ──
 
             # Create stream callback that publishes tokens to Kafka
             def make_stream_callback(sid: str, prod: Producer):
@@ -182,27 +138,19 @@ def run_worker():
                 )
             )
 
-            # Build sources from evidence (policy docs)
-            evidence = final_state.get("evidence", [])
-            sources = []
-            for doc in evidence:
-                sources.append({
-                    "text": doc.get("text", "")[:200],
-                    "doc_title": doc.get("doc_title", ""),
-                    "category": doc.get("category", ""),
-                    "policy_id": doc.get("policy_id", ""),
-                    "relevance_score": doc.get("rerank_score", doc.get("rrf_score", 0)),
-                })
-
             # Publish final response
             final_answer = final_state.get("answer", "")
             final_trace = final_state.get("agent_trace", {})
             final_response = {
                 "session_id": session_id,
                 "answer": final_answer,
-                "sources": sources,
-                "sentiment": final_state.get("sentiment", ""),
-                "sentiment_score": final_state.get("sentiment_score", 0),
+                "intent": final_state.get("intent"),
+                "session_state": final_state.get("session_state", {}),
+                "listings": final_state.get("listings", []),
+                "cost_estimate": final_state.get("cost_estimate"),
+                "comparison": final_state.get("comparison"),
+                "suggested_questions": final_state.get("suggested_questions", []),
+                "sources": final_state.get("sources", []),
                 "agent_trace": final_trace,
                 "processing_time_ms": final_state.get("processing_time_ms", 0),
                 "is_final": True,
@@ -214,14 +162,6 @@ def run_worker():
                 value=serialize(final_response),
             )
             producer.flush()
-
-            # ── Write to Redis Cache ──
-            set_cached_answer(
-                question=question,
-                answer=final_answer,
-                sources=sources,
-                agent_trace=final_trace,
-            )
 
             # ── Flush Langfuse immediately for real-time dashboard ──
             try:
@@ -244,7 +184,13 @@ def run_worker():
             try:
                 error_response = {
                     "session_id": query_event.get("session_id", ""),
-                    "answer": f"❌ Lỗi xử lý: {str(e)}",
+                    "answer": f"Lỗi xử lý: {str(e)}",
+                    "intent": "GENERAL_HELP",
+                    "session_state": {},
+                    "listings": [],
+                    "cost_estimate": None,
+                    "comparison": None,
+                    "suggested_questions": [],
                     "sources": [],
                     "agent_trace": {},
                     "processing_time_ms": 0,

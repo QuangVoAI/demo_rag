@@ -5,7 +5,9 @@ Caching câu trả lời RAG để bypass LangGraph pipeline cho các query đã
 Sử dụng Upstash (serverless) → không cần cài Redis local, chỉ gọi HTTP.
 
 Cache Strategy:
-  - Key: SHA-256 hash của câu hỏi (normalized lowercase + strip)
+  - Dynamic listing answers are disabled by default.
+  - If explicitly enabled, key must include intent, normalized question,
+    state hash, current listing id, listing source version, and index version.
   - Value: JSON {answer, sources, agent_trace, cached_at}
   - TTL: Mặc định 7 ngày (cấu hình qua REDIS_CACHE_TTL)
 """
@@ -17,7 +19,13 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, REDIS_CACHE_TTL
+from config import (
+    ENABLE_DYNAMIC_LISTING_ANSWER_CACHE,
+    EMBEDDING_VERSION,
+    UPSTASH_REDIS_REST_TOKEN,
+    UPSTASH_REDIS_REST_URL,
+    REDIS_CACHE_TTL,
+)
 from utils.console import console
 
 
@@ -56,19 +64,29 @@ def _get_redis():
 
 # ─── Key Generation ──────────────────────────────────────
 
-def _make_cache_key(question: str) -> str:
+def _make_cache_key(question: str, context: dict | None = None) -> str:
     """
-    Tạo Redis key từ câu hỏi.
-    Normalize: lowercase + strip + SHA-256 (16 chars).
+    Tạo Redis key an toàn cho listing động.
     """
     normalized = question.strip().lower()
+    if context:
+        payload = {
+            "intent": context.get("intent"),
+            "query": normalized,
+            "state_hash": context.get("state_hash"),
+            "current_listing_id": context.get("current_listing_id"),
+            "listing_source_version": context.get("listing_source_version"),
+            "index_version": context.get("index_version", EMBEDDING_VERSION),
+        }
+        hash_digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+        return f"listing:answer:{hash_digest}"
     hash_digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-    return f"rag:cache:{hash_digest}"
+    return f"faq:cache:{hash_digest}"
 
 
 # ─── Public API ──────────────────────────────────────────
 
-def get_cached_answer(question: str) -> dict | None:
+def get_cached_answer(question: str, context: dict | None = None, dynamic_listing: bool = True) -> dict | None:
     """
     Kiểm tra cache cho câu hỏi.
 
@@ -78,12 +96,15 @@ def get_cached_answer(question: str) -> dict | None:
     Returns:
         dict {answer, sources, agent_trace, cached_at} nếu HIT, None nếu MISS.
     """
+    if dynamic_listing and (not ENABLE_DYNAMIC_LISTING_ANSWER_CACHE or not context):
+        return None
+
     redis = _get_redis()
     if redis is None:
         return None
 
     try:
-        key = _make_cache_key(question)
+        key = _make_cache_key(question, context)
         data = redis.get(key)
 
         if data is None:
@@ -107,6 +128,8 @@ def set_cached_answer(
     answer: str,
     sources: list,
     agent_trace: dict,
+    context: dict | None = None,
+    dynamic_listing: bool = True,
     ttl: int = REDIS_CACHE_TTL,
 ) -> bool:
     """
@@ -122,12 +145,15 @@ def set_cached_answer(
     Returns:
         True nếu ghi thành công
     """
+    if dynamic_listing and (not ENABLE_DYNAMIC_LISTING_ANSWER_CACHE or not context):
+        return False
+
     redis = _get_redis()
     if redis is None:
         return False
 
     try:
-        key = _make_cache_key(question)
+        key = _make_cache_key(question, context)
         value = json.dumps({
             "answer": answer,
             "sources": sources,
@@ -145,3 +171,13 @@ def set_cached_answer(
     except Exception as e:
         console.print(f"[yellow]  Cache SET error: {e}[/]")
         return False
+
+
+def invalidate_listing_cache(listing_id: str) -> bool:
+    """Placeholder invalidation hook.
+
+    Versioned dynamic answer keys include listing source/index versions, so old
+    answers naturally stop matching. Upstash REST does not support cheap
+    wildcard deletion without keeping an index of keys.
+    """
+    return True
