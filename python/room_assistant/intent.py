@@ -515,6 +515,12 @@ async def parse_intent_async(
 
     regex_intent, regex_conf = _regex_classify(normalized, action, referenced_listing_ids, current_state)
 
+    # Nếu câu dài hơn 5 từ, ép giảm confidence của regex để bắt LLM phải check lại
+    # Tránh trường hợp "Hôm trước mình thuê phòng, giờ muốn lấy cọc" bị regex "thuê phòng" bắt nhầm
+    word_count = len(question.strip().split())
+    if word_count > 5 and not action:
+        regex_conf = min(regex_conf, 0.8)
+
     # Nếu regex đã chắc → không cần LLM
     if regex_conf >= 0.9 or action:
         final_intent = regex_intent
