@@ -26,7 +26,7 @@ if HF_TOKEN:
     try:
         from huggingface_hub import login
         login(token=HF_TOKEN)
-    except ImportError:
+    except Exception:
         pass
 
 # --- API Keys ---
