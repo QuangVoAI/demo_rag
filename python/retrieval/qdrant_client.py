@@ -1,5 +1,5 @@
 """
-Qdrant client wrapper cho hệ thống EmpathAI CSKH.
+Qdrant client wrapper cho hệ thống Nhatrovn.
 Quản lý collection, upsert, và search trên Qdrant vector database.
 """
 import uuid
