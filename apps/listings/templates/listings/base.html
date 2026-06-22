@@ -70,8 +70,8 @@
     </span>
     <span class="chat-fab-copy">
       <span class="chat-fab-eyebrow">CSKH</span>
-      <strong>Chăm sóc khách hàng</strong>
-      <small>Hỗ trợ tìm phòng nhanh</small>
+      <strong>CSKH nhatrovn</strong>
+      <small>Tư vấn tìm phòng nhanh</small>
     </span>
   </button>
 
@@ -82,14 +82,21 @@
   <div id="chatDrawer" class="chat-drawer">
     <div class="chat-drawer-header">
       <div class="chat-header-info">
-        <span class="chat-header-icon">AI</span>
+        <span class="chat-header-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 12a8 8 0 0 1 16 0"></path>
+            <path d="M4 13v3a2 2 0 0 0 2 2h2v-7H6a2 2 0 0 0-2 2Z"></path>
+            <path d="M20 13v3a2 2 0 0 1-2 2h-2v-7h2a2 2 0 0 1 2 2Z"></path>
+            <path d="M12 19a3 3 0 0 1-3 3h3"></path>
+          </svg>
+        </span>
         <div>
-          <h3>Trợ lý tìm phòng</h3>
-          <small>Tìm theo giá, khu vực, tiện ích</small>
+          <h3>CSKH nhatrovn</h3>
+          <small>Hỗ trợ tìm phòng theo khu vực, giá và tiện ích</small>
         </div>
       </div>
       <div class="chat-header-actions">
-        <button class="chat-reset-btn" type="button" onclick="resetChatDrawer()">Làm mới đoạn chat</button>
+        <button class="chat-reset-btn" type="button" onclick="resetChatDrawer()">Làm mới</button>
         <button class="chat-close-btn" type="button" onclick="closeChatDrawer()" aria-label="Đóng chat">&times;</button>
       </div>
     </div>
@@ -97,7 +104,7 @@
     <div class="chat-messages-wrap" id="chatMessagesWrap">
       <div class="chat-content-column">
         <div class="chat-bubble bot chat-bubble--welcome">
-          Chào bạn, mình là CSKH của nhatrovn. Bạn cứ nhắn nhu cầu tìm phòng, mình sẽ hỗ trợ bạn ngay.
+          Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
         </div>
       </div>
     </div>

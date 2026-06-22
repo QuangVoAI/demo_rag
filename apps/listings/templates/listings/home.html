@@ -74,29 +74,6 @@
     </div>
   </section>
 
-  <section class="section">
-    <div class="shell trend-grid">
-      <article class="trend-card">
-        <span class="eyebrow">Tìm trọ theo danh mục</span>
-        <h2>Xu hướng tìm kiếm phòng</h2>
-        <div class="trend-tags">
-          {% for category in categories %}
-          <a href="{% url 'listings:listing_list' %}?category={{ category|slugify }}">{{ category }}</a>
-          {% endfor %}
-        </div>
-      </article>
-      <article class="trend-card">
-        <span class="eyebrow">Trải nghiệm tương tác</span>
-        <h2>Thử thách chatbot RAG</h2>
-        <ul class="scenario-list">
-          <li>"Tìm phòng trọ 2 người ở gần UEH, có wifi và kệ bếp giá dưới 5 triệu"</li>
-          <li>"Gợi ý căn hộ studio đầy đủ tiện nghi tại Thủ Đức"</li>
-          <li>"Cần phòng trọ giờ giấc tự do, có chỗ để xe máy điện dưới 4 triệu"</li>
-        </ul>
-      </article>
-    </div>
-  </section>
-
   <section id="featured" class="section">
     <div class="shell section-head">
       <div>
