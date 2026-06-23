@@ -217,6 +217,8 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
             semantic_index=semantic,
         ))
         self.assertEqual(qa["rooms"][0]["room_id"], "A101")
+        self.assertIn("Máy lạnh", qa["answer"])
+        self.assertIn("Cửa sổ", qa["answer"])
 
         cost = asyncio.run(run_room_assistant(
             "Tính tổng chi phí #A101",

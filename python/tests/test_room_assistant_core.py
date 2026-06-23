@@ -401,8 +401,10 @@ class RoomAssistantCoreTests(unittest.TestCase):
         )
         self.assertEqual(result["recurring_fees_for_period"], 1_500_000)
         self.assertEqual(result["total_period_cost"], 30_900_000)
-        self.assertIn("fees.electricity", result["unknown"])
-        self.assertIn("fees.water", result["unknown"])
+        self.assertEqual(result["unknown"], ["deposit"])
+        not_calculated = {item["name"]: item["value"] for item in result["not_calculated"]}
+        self.assertEqual(not_calculated["fees.electricity"], "4k/kWh")
+        self.assertEqual(not_calculated["fees.water"], "30k/m3")
 
     def test_dynamic_room_answer_cache_disabled_without_safe_context(self):
         self.assertIsNone(get_cached_answer("Phòng này có nuôi mèo không?", context=None, dynamic_room=True))

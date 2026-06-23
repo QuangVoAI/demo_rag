@@ -428,6 +428,9 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
             amenities = _verified_amenity_labels(room, constraints)
             if amenities:
                 details.append(f"Tiện ích xác minh: {', '.join(amenities)}")
+            feature_facts = _room_feature_facts(room)
+            if feature_facts:
+                details.append(f"Thông tin phòng: {', '.join(feature_facts[:8])}")
             if room.get("available") is not None:
                 details.append("Trạng thái: còn phòng" if room.get("available") else "Trạng thái: hết phòng")
             parts.append(
@@ -446,6 +449,12 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
             parts.append(f"  Tổng {estimate['rental_months']} tháng: {format_vnd(estimate.get('total_period_cost'))}")
         if estimate.get("unknown"):
             parts.append(f"  Chưa có dữ liệu: {', '.join(estimate['unknown'])}")
+        if estimate.get("not_calculated"):
+            not_calculated = [
+                f"{item.get('name')}: {item.get('value')}"
+                for item in estimate["not_calculated"]
+            ]
+            parts.append(f"  Có dữ liệu nhưng chưa tính vào tổng: {', '.join(not_calculated)}")
 
     comparison = tool_results.get("comparison")
     if comparison and comparison.get("rows"):
@@ -512,6 +521,9 @@ def _compose_answer_template(
             f"**{room.get('title')}** (#{room.get('room_id')}) — giá {format_vnd(room.get('rent_price'))}/tháng.",
             f"Khu vực: {room.get('address') or room.get('district') or 'chưa rõ'}.",
         ]
+        feature_facts = _room_feature_facts(room)
+        if feature_facts:
+            parts.append(f"Tiện ích và thông tin phòng đã xác minh: {', '.join(feature_facts)}.")
         if unknown:
             parts.append(f"_Dữ liệu chưa xác nhận: {', '.join(unknown)}._")
         return "\n".join(parts)
@@ -535,6 +547,12 @@ def _compose_answer_template(
             lines.append(f"\n**Tổng tạm tính ban đầu:** {format_vnd(estimate.get('total_initial_cost'))}")
         if estimate.get("unknown"):
             lines.append(f"_Chưa có dữ liệu: {', '.join(estimate['unknown'])}._")
+        if estimate.get("not_calculated"):
+            details = [
+                f"{_cost_item_label('fee_' + str(item.get('name', '')).removeprefix('fees.'))}: {item.get('value')}"
+                for item in estimate["not_calculated"]
+            ]
+            lines.append(f"_Có dữ liệu nhưng chưa tính vào tổng: {', '.join(details)}._")
         return "\n".join(lines)
     if intent == "COMPARE_ROOMS":
         comparison = tool_results.get("comparison") or {}
@@ -572,6 +590,8 @@ async def _compose_answer_async(
 ) -> str:
     intent = parsed["intent"]
     if intent in {"REQUEST_ACTION", "CALCULATE_COST", "COMPARE_ROOMS", "GENERAL_HELP"} or tool_results.get("error"):
+        return _compose_answer_template(parsed, grounding, tool_results)
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
         return _compose_answer_template(parsed, grounding, tool_results)
     rooms = grounding.get("rooms", [])
     faq = tool_results.get("faq_results")
@@ -636,6 +656,26 @@ AMENITY_LABELS: dict[str, str] = {
     "pets_allowed": "Cho nuôi thú cưng",
 }
 
+FEATURE_FACT_LABELS: tuple[str, ...] = (
+    "Máy lạnh",
+    "Ban công",
+    "Cửa sổ",
+    "Wifi",
+    "Gác",
+    "Toilet",
+    "Giờ giấc",
+    "Máy giặt",
+    "Thú cưng",
+    "Để xe",
+    "Thang máy",
+    "Kệ bếp",
+    "Nước nóng",
+    "Tủ lạnh",
+    "Giường",
+    "Nệm",
+    "Tủ quần áo",
+)
+
 
 def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) -> list[str]:
     room_amenities = {str(item).strip().lower() for item in (room.get("amenities") or [])}
@@ -659,6 +699,30 @@ def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) 
     return labels[:4]
 
 
+def _room_feature_facts(room: dict[str, Any]) -> list[str]:
+    facts: list[str] = []
+    text = str(room.get("embedding_text") or "")
+    for label in FEATURE_FACT_LABELS:
+        value = _extract_feature_status(text, label)
+        if value:
+            facts.append(f"{label}: {value}")
+    if facts:
+        return facts
+    return [
+        AMENITY_LABELS.get(str(item), str(item))
+        for item in (room.get("amenities") or [])
+        if item
+    ]
+
+
+def _extract_feature_status(text: str, label: str) -> str | None:
+    if not text:
+        return None
+    import re
+    match = re.search(rf"(?im)^\s*-\s*{re.escape(label)}\s*:\s*([^\n\r]+)", text)
+    return match.group(1).strip() if match else None
+
+
 def _room_text_has_amenity(room: dict[str, Any], amenity: str) -> bool:
     label = AMENITY_LABELS.get(amenity)
     if not label:
@@ -668,6 +732,20 @@ def _room_text_has_amenity(room: dict[str, Any], amenity: str) -> bool:
         return False
     import re
     return bool(re.search(rf"{re.escape(label)}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)", text, re.IGNORECASE))
+
+
+def _asks_about_amenities(question: str) -> bool:
+    import unicodedata
+    text = unicodedata.normalize("NFD", question.lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return any(
+        phrase in text
+        for phrase in (
+            "tien ich", "co gi", "may lanh", "ban cong", "cua so",
+            "wifi", "gac", "toilet", "gio giac", "thu cung", "de xe",
+            "may giat", "nuoc nong", "tu lanh",
+        )
+    )
 
 
 def _preferred_source_score(item: dict[str, Any]) -> float:
@@ -833,6 +911,8 @@ def _cost_item_label(name: str) -> str:
     labels = {
         "rent_first_month": "Tiền thuê tháng đầu",
         "deposit": "Tiền cọc",
+        "fee_electricity": "Tiền điện",
+        "fee_water": "Tiền nước",
         "fee_management": "Phí quản lý",
         "fee_parking": "Phí gửi xe",
         "fee_wifi": "Wifi",

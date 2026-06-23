@@ -148,6 +148,7 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
     items: list[dict[str, Any]] = []
     period_items: list[dict[str, Any]] = []
     unknown: list[str] = []
+    not_calculated: list[dict[str, Any]] = []
     total = 0
     period_total = 0
     recurring_fees_total = 0
@@ -182,7 +183,7 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
             continue
         fee_amount = _money_amount_or_none(amount, name, args)
         if fee_amount is None:
-            unknown.append(f"fees.{name}")
+            not_calculated.append({"name": f"fees.{name}", "value": amount})
             continue
         items.append({"name": f"fee_{name}", "amount": fee_amount, "confirmed": True})
         total += fee_amount
@@ -200,6 +201,7 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
         "items": items,
         "total_initial_cost": total if items else None,
         "unknown": unknown,
+        "not_calculated": not_calculated,
         "note": "Ước tính deterministic từ giá, cọc và phí đã xác nhận trong dữ liệu phòng.",
     }
     if rental_months:
@@ -285,7 +287,7 @@ def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[st
     if normalized in {"free", "miễn phí", "mien phi", "0", "0đ", "0d", "free"}:
         return 0
     if "không có" in normalized or "không" == normalized:
-        return None
+        return 0
     if any(unit in normalized for unit in ("/kwh", "/kw", "/m3", "/m³", "/kg")):
         return None
 

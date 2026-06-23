@@ -297,8 +297,9 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     if location.get("districts"):
         district_clauses = []
         for d in location["districts"]:
-            district_clauses.append({"metadata.district_name": {"$regex": d, "$options": "i"}})
-            district_clauses.append({"embedding_text": {"$regex": d, "$options": "i"}})
+            for variant in _location_query_variants(d):
+                district_clauses.append({"metadata.district_name": {"$regex": variant, "$options": "i"}})
+                district_clauses.append({"embedding_text": {"$regex": variant, "$options": "i"}})
         query["$and"].append({"$or": district_clauses})
     if location.get("wards"):
         ward_clauses = []
@@ -310,15 +311,15 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     # Amenities/features — search within embedding_text
     required = constraints.get("amenities_required") or []
     for amenity in required:
-        readable = _amenity_to_vietnamese(amenity)
-        if readable:
-            query["$and"].append({"embedding_text": {"$regex": readable, "$options": "i"}})
+        positive_pattern = _amenity_positive_pattern(amenity)
+        if positive_pattern:
+            query["$and"].append({"embedding_text": {"$regex": positive_pattern, "$options": "i"}})
 
     excluded = constraints.get("excluded_features") or []
     for feature in excluded:
-        readable = _amenity_to_vietnamese(feature)
-        if readable:
-            query["$and"].append({"embedding_text": {"$not": {"$regex": f"{readable}.*Có", "$options": "i"}}})
+        positive_pattern = _amenity_positive_pattern(feature)
+        if positive_pattern:
+            query["$and"].append({"embedding_text": {"$not": {"$regex": positive_pattern, "$options": "i"}}})
 
     return query
 
@@ -350,35 +351,16 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
     ]
     import re
     for amenity in required:
-        readable = _amenity_to_vietnamese(amenity)
-        if readable:
-            matched = False
-            for ra in room_amenities:
-                if re.search(readable, ra, re.IGNORECASE):
-                    matched = True
-                    break
-            if not matched:
-                emb = room.get("embedding_text", "")
-                if not re.search(rf"{readable}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)", emb, re.IGNORECASE):
-                    return False
+        if not _room_has_positive_amenity(room, amenity):
+            return False
 
     # Check excluded features
     excluded = constraints.get("excluded_features") or []
     for feature in excluded:
         if _room_has_canonical_amenity(room_amenities, feature):
             return False
-        readable = _amenity_to_vietnamese(feature)
-        if readable:
-            matched = False
-            for ra in room_amenities:
-                if re.search(readable, ra, re.IGNORECASE):
-                    matched = True
-                    break
-            if matched:
-                return False
-            emb = room.get("embedding_text", "")
-            if re.search(rf"{readable}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)", emb, re.IGNORECASE):
-                return False
+        if _room_has_positive_amenity(room, feature):
+            return False
 
     return True
 
@@ -407,9 +389,49 @@ def _amenity_to_vietnamese(amenity: str) -> str | None:
     return AMENITY_VIETNAMESE_MAP.get(amenity)
 
 
+def _amenity_positive_pattern(amenity: str) -> str | None:
+    label = _amenity_to_vietnamese(amenity)
+    if not label:
+        return None
+    if amenity == "private_bathroom":
+        return r"Toilet\s*:\s*Riêng"
+    if amenity == "free_hours":
+        return r"Giờ giấc\s*:\s*Tự do"
+    return rf"{label}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)"
+
+
+def _room_has_positive_amenity(room: dict[str, Any], amenity: str) -> bool:
+    import re
+
+    pattern = _amenity_positive_pattern(amenity)
+    if not pattern:
+        return False
+    readable = _amenity_to_vietnamese(amenity) or ""
+    room_amenities = room.get("amenities") or []
+    for item in room_amenities:
+        if re.search(readable, str(item), re.IGNORECASE):
+            return True
+    return bool(re.search(pattern, str(room.get("embedding_text") or ""), re.IGNORECASE))
+
+
 def _room_has_canonical_amenity(room_amenities: list[Any], amenity: str) -> bool:
     canonical = str(amenity).strip().lower()
     return any(str(item).strip().lower() == canonical for item in room_amenities)
+
+
+def _location_query_variants(value: Any) -> list[str]:
+    import re
+
+    text = str(value or "").strip()
+    variants = [text]
+    match = re.fullmatch(r"(?:quan|q\.?)\s*(\d{1,2})", text, flags=re.IGNORECASE)
+    if match:
+        number = match.group(1)
+        variants.extend([f"Quận {number}", f"Q{number}", f"quan {number}"])
+    match = re.fullmatch(r"(?:huyen)\s+(.+)", text, flags=re.IGNORECASE)
+    if match:
+        variants.append(f"Huyện {match.group(1)}")
+    return list(dict.fromkeys(item for item in variants if item))
 
 
 def _normalize_location_value(value: Any) -> str:
