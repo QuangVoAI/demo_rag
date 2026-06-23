@@ -1,10 +1,15 @@
+import asyncio
 import time
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
+
+import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from agents import sentiment_analyzer
 from retrieval.cache import get_cached_answer
 from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.repository import (
@@ -16,6 +21,7 @@ from room_assistant.repository import (
 from room_assistant.schemas import default_session_state, normalize_room
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
+from room_assistant.workflow import _build_llm_context, run_room_assistant
 
 
 class FakeMongoCursor:
@@ -99,6 +105,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
         for question in (
             "Phòng này diện tích bao nhiêu?",
             "Phòng này có ban công không?",
+            "Phòng này có tiện ích gì?",
             "Còn phòng trống không?",
             "Mã phòng là gì?",
         ):
@@ -106,6 +113,65 @@ class RoomAssistantCoreTests(unittest.TestCase):
             self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
         parsed = parse_intent_and_constraint_patch("Giá điện nước phòng này thế nào?", state)
         self.assertEqual(parsed["intent"], "CALCULATE_COST")
+
+    def test_search_context_includes_verified_required_amenities(self):
+        context = _build_llm_context(
+            {
+                "constraints": {"amenities_required": ["air_conditioner"]},
+                "rooms": [{
+                    "room_id": "A101",
+                    "title": "Studio Bình Thạnh",
+                    "available": True,
+                    "district": "Bình Thạnh",
+                    "rent_price": 4_500_000,
+                    "amenities": ["air_conditioner", "window"],
+                    "area_m2": 24,
+                }],
+                "unknown": [],
+            },
+            {},
+        )
+        self.assertIn("Tiện ích xác minh: Máy lạnh", context)
+        self.assertIn("Trạng thái: còn phòng", context)
+
+    def test_neutral_search_text_stays_normal_mood_without_pressure_cue(self):
+        class FakeModel:
+            def encode(self, text, normalize_embeddings=True, batch_size=None):
+                if isinstance(text, list):
+                    return np.array([[1.0, 0.0] for _ in text])
+                return np.array([1.0, 0.0])
+
+        old_centroids = sentiment_analyzer._centroids
+        try:
+            sentiment_analyzer._centroids = {
+                "frustrated": np.array([1.0, 0.0]),
+                "urgent": np.array([0.5, 0.5]),
+                "normal": np.array([0.0, 1.0]),
+            }
+            with patch.object(sentiment_analyzer, "get_embed_model", return_value=FakeModel()):
+                mood, _ = sentiment_analyzer.analyze_mood("Tìm phòng dưới 5 triệu ở quận Bình Thạnh")
+            self.assertEqual(mood, "normal")
+        finally:
+            sentiment_analyzer._centroids = old_centroids
+
+    def test_runtime_config_validation_reports_invalid_values(self):
+        import config
+
+        with patch.object(config, "TOP_K_RETRIEVAL", 0):
+            result = config.validate_runtime_config(strict=False)
+        self.assertIn("TOP_K_RETRIEVAL must be >= 1", result["errors"])
+
+    def test_input_limit_returns_without_tools_or_retrieval(self):
+        with patch("config.MAX_USER_QUESTION_CHARS", 40):
+            result = asyncio.run(run_room_assistant(
+                "x" * 180,
+                session_id="too-long",
+                repository=InMemoryRoomRepository([]),
+                session_store=InMemorySessionStore(),
+                semantic_index=None,
+            ))
+        self.assertEqual(result["agent_trace"]["error_category"], "input_too_long")
+        self.assertEqual(result["agent_trace"]["read_tool_calls"], 0)
 
     def test_site_search_and_booking_constraints_are_extracted(self):
         state = default_session_state("s-search")

@@ -34,7 +34,7 @@ def _select_device(min_free_gb: float = 1.3) -> str:
 
 
 def get_embed_model():
-    """Singleton embedding model — shared giữa router, query_engine, indexer."""
+    """Singleton embedding model — shared giữa router, retrieval, indexer."""
     global _embed_model
     if _embed_model is None:
         import sys

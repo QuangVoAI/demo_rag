@@ -15,6 +15,10 @@ chỉnh sửa tin đăng hoặc bất kỳ thao tác ghi nào.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import logging
+import os
 import threading
 import time
 import uuid
@@ -34,12 +38,29 @@ from .session_store import (
 )
 from .tools import ReadOnlyToolRegistry, ToolBudgetExceeded, ToolExecutionContext
 
+try:
+    import config as _runtime_config  # noqa: F401  # load .env before Langfuse decorators initialize
+except Exception:
+    _runtime_config = None
+
+try:
+    from langfuse import observe as _observe
+
+    def observe(**kwargs):
+        return _observe(**kwargs)
+except Exception:
+    def observe(**kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 _session_store: SessionStore | None = None
 _room_repository: RoomRepository | None = None
 _semantic_index: RoomSemanticIndex | None = None
 _init_lock = threading.Lock()
 _tool_registry = ReadOnlyToolRegistry()
+_logger = logging.getLogger(__name__)
 
 
 async def startup(
@@ -49,6 +70,13 @@ async def startup(
 ) -> None:
     """Initialize shared dependencies once during service startup."""
     global _session_store, _room_repository, _semantic_index
+    try:
+        from config import validate_runtime_config
+        validation = validate_runtime_config()
+        for item in validation.get("warnings", []):
+            _logger.warning("room_assistant_config_warning %s", item)
+    except Exception as exc:
+        _logger.warning("room_assistant_config_validation_failed %s", exc)
     with _init_lock:
         _session_store = session_store or _session_store or create_session_store()
         _room_repository = repository or _room_repository or create_room_repository()
@@ -95,6 +123,7 @@ def _get_semantic_index() -> RoomSemanticIndex | None:
     return _semantic_index
 
 
+@observe(name="room_assistant_turn", capture_input=False, capture_output=False)
 async def run_room_assistant(
     question: str,
     history: list[dict[str, Any]] | None = None,
@@ -106,14 +135,45 @@ async def run_room_assistant(
 ) -> dict[str, Any]:
     """Chạy một lượt hội thoại của người dùng."""
     started = time.time()
+    question = str(question or "").strip()
     history = (history or [])[-8:]
     session_id = session_id or str(uuid.uuid4())
+    question_hash = _question_hash(question)
+    _update_langfuse_turn_span(
+        span_input={
+            "question_hash": question_hash,
+            "question_chars": len(question),
+            "history_messages": len(history),
+        },
+        metadata={
+            "session_hash": _question_hash(session_id),
+            "capture_policy": "sanitized_root_summary",
+        },
+    )
     store = session_store or _get_session_store()
     repo = repository or _get_room_repository()
-    semantic_index = semantic_index if semantic_index is not None else _get_semantic_index()
     ttl_seconds = _session_ttl_seconds()
 
     state_before = load_session_state(session_id, store)
+    max_question_chars = _max_question_chars()
+    if len(question) > max_question_chars:
+        processing_time_ms = int((time.time() - started) * 1000)
+        result = _input_too_long_result(
+            session_id=session_id,
+            state_before=state_before,
+            max_question_chars=max_question_chars,
+            processing_time_ms=processing_time_ms,
+        )
+        _update_langfuse_turn_span(
+            span_output=_langfuse_safe_turn_output(result),
+            metadata=_langfuse_safe_turn_metadata(result, question_hash),
+            level="WARNING",
+            status_message="input_too_long",
+        )
+        _log_turn_summary(result, question_hash=question_hash)
+        return result
+
+    semantic_index = semantic_index if semantic_index is not None else _get_semantic_index()
     parsed = await parse_intent_async(question, state_before)
     merged_state, applied_operations = apply_operations(state_before, parsed["operations"])
 
@@ -155,7 +215,7 @@ async def run_room_assistant(
     suggested_questions = _suggest_questions(parsed["intent"], rooms, current_room_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
-    return {
+    result = {
         "session_id": session_id,
         "answer": answer,
         "intent": parsed["intent"],
@@ -193,6 +253,14 @@ async def run_room_assistant(
         "is_final": True,
         "chunk_type": None,
     }
+    _update_langfuse_turn_span(
+        span_output=_langfuse_safe_turn_output(result),
+        metadata=_langfuse_safe_turn_metadata(result, question_hash),
+        level="WARNING" if error_category else None,
+        status_message=error_category,
+    )
+    _log_turn_summary(result, question_hash=question_hash)
+    return result
 
 
 def _execute_workflow(
@@ -243,6 +311,8 @@ def _execute_workflow(
     if intent == "COMPARE_ROOMS":
         ids = parsed.get("referenced_room_ids") or state.get("selected_room_ids") or state.get("last_result_ids", [])
         comparison = _tool_registry.execute("compare_rooms", {"room_ids": ids[:3]}, context)
+        if len(ids) > 3:
+            comparison["not_compared_room_ids"] = ids[3:]
         return {"comparison": comparison, "rooms": comparison.get("rows", [])}
 
     if intent == "FIND_SIMILAR":
@@ -259,6 +329,53 @@ def _execute_workflow(
         return {"faq_results": faq_results}
 
     return {}
+
+
+def _input_too_long_result(
+    session_id: str,
+    state_before: dict[str, Any],
+    max_question_chars: int,
+    processing_time_ms: int,
+) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "answer": (
+            f"Câu hỏi hơi dài nên mình chưa xử lý để tránh sai lệch dữ liệu. "
+            f"Bạn rút gọn dưới {max_question_chars} ký tự và gửi lại giúp mình nhé."
+        ),
+        "intent": "GENERAL_HELP",
+        "session_state": public_session_state(state_before),
+        "rooms": [],
+        "cost_estimate": None,
+        "comparison": None,
+        "suggested_questions": [
+            "Tìm phòng dưới 5 triệu ở Bình Thạnh",
+            "So sánh #A101 #B202",
+            "Phòng này có máy lạnh không?",
+        ],
+        "sources": [],
+        "retrieval_confidence": None,
+        "retrieval_low_confidence": None,
+        "retrieval_feedback_retry_count": 0,
+        "retrieval_attempts": [],
+        "agent_trace": {
+            "workflow": ["normalize_input", "input_limit"],
+            "intent": "GENERAL_HELP",
+            "applied_operations": [],
+            "state_version_before": state_before.get("state_version"),
+            "state_version_after": state_before.get("state_version"),
+            "read_tool_calls": 0,
+            "write_tool_calls": 0,
+            "max_read_tool_calls_per_turn": MAX_READ_TOOL_CALLS_PER_TURN,
+            "client_history_messages_seen": 0,
+            "error_category": "input_too_long",
+            "grounding_result": "skipped",
+            "retrieval": {},
+        },
+        "processing_time_ms": processing_time_ms,
+        "is_final": True,
+        "chunk_type": None,
+    }
 
 
 def _build_grounding_context(
@@ -297,14 +414,24 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
     """Xây dựng phần [DỮ LIỆU ĐÃ XÁC MINH] để đưa vào prompt LLM."""
     parts: list[str] = []
     rooms = grounding.get("rooms", [])
+    constraints = grounding.get("constraints", {})
     if rooms:
         parts.append("Danh sách phòng phù hợp:")
         for room in rooms[:5]:
             rent = format_vnd(room.get("rent_price"))
+            details = [
+                f"[{room.get('room_id')}] {room.get('title')}",
+                f"{rent}/tháng",
+                room.get("district") or "chưa rõ khu vực",
+                f"Diện tích: {room.get('area_m2') or '?'} m²",
+            ]
+            amenities = _verified_amenity_labels(room, constraints)
+            if amenities:
+                details.append(f"Tiện ích xác minh: {', '.join(amenities)}")
+            if room.get("available") is not None:
+                details.append("Trạng thái: còn phòng" if room.get("available") else "Trạng thái: hết phòng")
             parts.append(
-                f"- [{room.get('room_id')}] {room.get('title')} | "
-                f"{rent}/tháng | {room.get('district') or 'chưa rõ khu vực'} | "
-                f"Diện tích: {room.get('area_m2') or '?'} m²"
+                "- " + " | ".join(str(item) for item in details if item)
             )
 
     estimate = tool_results.get("cost_estimate")
@@ -328,6 +455,10 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
                 f"  - #{row.get('room_id')}: {format_vnd(row.get('rent_price'))}/tháng, "
                 f"{row.get('area_m2') or '?'} m², {row.get('district') or 'chưa rõ'}"
             )
+        if comparison.get("missing_room_ids"):
+            parts.append(f"  Chưa có dữ liệu: {', '.join('#' + item for item in comparison['missing_room_ids'])}")
+        if comparison.get("not_compared_room_ids"):
+            parts.append(f"  Chưa so sánh do giới hạn tối đa 3 phòng: {', '.join('#' + item for item in comparison['not_compared_room_ids'])}")
 
     faq = tool_results.get("faq_results")
     if faq:
@@ -416,6 +547,12 @@ def _compose_answer_template(
                 f"- **#{row.get('room_id')}**: {format_vnd(row.get('rent_price'))}/tháng, "
                 f"{row.get('area_m2') or 'chưa rõ'} m², {row.get('district') or 'chưa rõ khu vực'}."
             )
+        missing = comparison.get("missing_room_ids") or []
+        if missing:
+            lines.append(f"_Chưa có dữ liệu cho: {', '.join('#' + item for item in missing)}._")
+        not_compared = comparison.get("not_compared_room_ids") or []
+        if not_compared:
+            lines.append(f"_Mình chỉ so sánh tối đa 3 phòng/lượt nên chưa so sánh: {', '.join('#' + item for item in not_compared)}._")
         return "\n".join(lines)
     if intent == "REQUEST_FAQ":
         faq = tool_results.get("faq_results") or []
@@ -434,7 +571,7 @@ async def _compose_answer_async(
     tool_results: dict[str, Any], history: list[dict[str, Any]], user_mood: str = "normal",
 ) -> str:
     intent = parsed["intent"]
-    if intent in {"REQUEST_ACTION", "CALCULATE_COST"} or tool_results.get("error"):
+    if intent in {"REQUEST_ACTION", "CALCULATE_COST", "COMPARE_ROOMS", "GENERAL_HELP"} or tool_results.get("error"):
         return _compose_answer_template(parsed, grounding, tool_results)
     rooms = grounding.get("rooms", [])
     faq = tool_results.get("faq_results")
@@ -477,6 +614,60 @@ def _current_room_from_results(intent: str, rooms: list[dict[str, Any]]) -> str 
 
 def _unknown_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
+
+
+AMENITY_LABELS: dict[str, str] = {
+    "air_conditioner": "Máy lạnh",
+    "balcony": "Ban công",
+    "window": "Cửa sổ",
+    "washing_machine": "Máy giặt",
+    "private_bathroom": "WC riêng",
+    "mezzanine": "Gác",
+    "kitchen": "Bếp",
+    "refrigerator": "Tủ lạnh",
+    "hot_water": "Nước nóng",
+    "bed": "Giường",
+    "mattress": "Nệm",
+    "wardrobe": "Tủ quần áo",
+    "elevator": "Thang máy",
+    "wifi": "Wifi",
+    "ev_charging": "Sạc xe điện",
+    "free_hours": "Giờ tự do",
+    "pets_allowed": "Cho nuôi thú cưng",
+}
+
+
+def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) -> list[str]:
+    room_amenities = {str(item).strip().lower() for item in (room.get("amenities") or [])}
+    required = [str(item).strip().lower() for item in (constraints.get("amenities_required") or [])]
+    preferred = [str(item).strip().lower() for item in (constraints.get("amenities_preferred") or [])]
+
+    labels: list[str] = []
+    for amenity in required + preferred:
+        if amenity in room_amenities or _room_text_has_amenity(room, amenity):
+            label = AMENITY_LABELS.get(amenity, amenity)
+            if label not in labels:
+                labels.append(label)
+
+    if not labels:
+        for amenity in sorted(room_amenities):
+            label = AMENITY_LABELS.get(amenity)
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= 4:
+                break
+    return labels[:4]
+
+
+def _room_text_has_amenity(room: dict[str, Any], amenity: str) -> bool:
+    label = AMENITY_LABELS.get(amenity)
+    if not label:
+        return False
+    text = str(room.get("embedding_text") or room.get("description") or "")
+    if not text:
+        return False
+    import re
+    return bool(re.search(rf"{re.escape(label)}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)", text, re.IGNORECASE))
 
 
 def _preferred_source_score(item: dict[str, Any]) -> float:
@@ -534,6 +725,99 @@ def _session_ttl_seconds() -> int:
         return int(REDIS_SESSION_TTL_SECONDS)
     except Exception:
         return 24 * 3600
+
+
+def _max_question_chars() -> int:
+    try:
+        from config import MAX_USER_QUESTION_CHARS
+        return max(100, int(MAX_USER_QUESTION_CHARS))
+    except Exception:
+        return 1200
+
+
+def _question_hash(question: str) -> str:
+    return hashlib.sha256(question.encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
+def _update_langfuse_turn_span(
+    *,
+    span_input: dict[str, Any] | None = None,
+    span_output: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+) -> None:
+    """Attach a bounded, non-sensitive summary to the active Langfuse span."""
+    if not os.getenv("LANGFUSE_PUBLIC_KEY"):
+        return
+    kwargs: dict[str, Any] = {}
+    if span_input is not None:
+        kwargs["input"] = span_input
+    if span_output is not None:
+        kwargs["output"] = span_output
+    if metadata is not None:
+        kwargs["metadata"] = metadata
+    if level is not None:
+        kwargs["level"] = level
+    if status_message is not None:
+        kwargs["status_message"] = status_message
+    if not kwargs:
+        return
+    try:
+        from langfuse import get_client
+        get_client().update_current_span(**kwargs)
+    except Exception as exc:
+        _logger.debug("langfuse_turn_span_update_failed %s", exc)
+
+
+def _langfuse_safe_turn_output(result: dict[str, Any]) -> dict[str, Any]:
+    trace = result.get("agent_trace") or {}
+    room_ids = [
+        str(room.get("room_id"))
+        for room in (result.get("rooms") or [])[:5]
+        if isinstance(room, dict) and room.get("room_id")
+    ]
+    return {
+        "intent": result.get("intent"),
+        "room_ids": room_ids,
+        "read_tool_calls": trace.get("read_tool_calls", 0),
+        "write_tool_calls": trace.get("write_tool_calls", 0),
+        "retrieval_low_confidence": bool(result.get("retrieval_low_confidence")),
+        "retrieval_feedback_retry_count": result.get("retrieval_feedback_retry_count", 0),
+        "processing_time_ms": result.get("processing_time_ms"),
+        "error_category": trace.get("error_category"),
+    }
+
+
+def _langfuse_safe_turn_metadata(result: dict[str, Any], question_hash: str) -> dict[str, Any]:
+    return {
+        "session_hash": _question_hash(str(result.get("session_id") or "")),
+        "question_hash": question_hash,
+        "source_count": len(result.get("sources") or []),
+        "suggested_question_count": len(result.get("suggested_questions") or []),
+        "capture_policy": "sanitized_root_summary",
+    }
+
+
+def _log_turn_summary(result: dict[str, Any], question_hash: str) -> None:
+    trace = result.get("agent_trace") or {}
+    record = {
+        "event": "room_assistant_turn",
+        "session_id": result.get("session_id"),
+        "question_hash": question_hash,
+        "intent": result.get("intent"),
+        "room_count": len(result.get("rooms") or []),
+        "read_tool_calls": trace.get("read_tool_calls", 0),
+        "write_tool_calls": trace.get("write_tool_calls", 0),
+        "retrieval_confidence": result.get("retrieval_confidence"),
+        "retrieval_low_confidence": result.get("retrieval_low_confidence"),
+        "error_category": trace.get("error_category"),
+        "processing_time_ms": result.get("processing_time_ms"),
+    }
+    try:
+        _logger.info("room_assistant_turn %s", json.dumps(record, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        _logger.info("room_assistant_turn intent=%s error=%s", record["intent"], record["error_category"])
 
 
 def format_vnd(value: Any) -> str:

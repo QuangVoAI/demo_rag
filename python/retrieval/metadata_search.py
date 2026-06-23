@@ -18,8 +18,6 @@ from typing import Any, Iterable
 # --- Patterns ---
 # Room id dạng #A101, #B_202, #room-12 (bắt cả tiếng Việt có dấu) — case-insensitive.
 _ROOM_ID_RE = re.compile(r"#\s*([A-Za-z0-9_\-]{1,32})")
-# arXiv-style: YYMM.NNNNN(vN). Cho phép cả "2604.08423" và "2604.08423v1".
-_ARXIV_RE = re.compile(r"\b(\d{4}\.\d{4,5})(v\d+)?\b")
 # Mã phòng không có dấu "#": A101, B202 ở đầu câu hoặc sau khoảng trắng.
 _BARE_ID_RE = re.compile(r"\b([A-Z]{1,3}\d{2,5})\b")
 
@@ -61,7 +59,6 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
     Returns:
         {
           "room_id": [...],   # mã phòng (#A101 hoặc bare A101)
-          "arxiv_like": [...],   # chuỗi YYMM.NNNNN hoặc YYMM.NNNNNvN
           "district":   [...],   # snippet có từ khoá khu vực
         }
     """
@@ -78,8 +75,6 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
         if upper not in room_ids:
             room_ids.append(upper)
 
-    arxiv_ids = [(a + b) for a, b in _ARXIV_RE.findall(q)]
-
     districts: list[str] = []
     for needle in _SOFT_LOCATIONS:
         if needle in q_norm and needle not in districts:
@@ -91,7 +86,6 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
 
     return {
         "room_id": room_ids,
-        "arxiv_like": arxiv_ids,
         "district": districts,
         "query": [q] if q else [],
     }
@@ -101,7 +95,6 @@ def metadata_signal_present(signals: dict[str, list[str]]) -> bool:
     """Return true when the query has explicit metadata-like hints."""
     return bool(
         signals.get("room_id")
-        or signals.get("arxiv_like")
         or signals.get("district")
     )
 
@@ -135,7 +128,6 @@ def score_metadata_hit(
 
     Trọng số mặc định:
       room_id     = 1.0  (match chính xác)
-      arxiv_like  = 1.0  (match chính xác)
       district    = 0.5  (substring match, accent-insensitive)
       title       = 0.3
       amenities   = 0.2
@@ -159,11 +151,6 @@ def score_metadata_hit(
     for rid in signals.get("room_id", []) or []:
         if rid and rid.upper() == payload_room_id:
             score = max(score, 1.0)
-    for aid in signals.get("arxiv_like", []) or []:
-        if aid and aid == str(payload.get("arxiv_id") or ""):
-            score = max(score, 1.0)
-        elif aid and aid in _norm(str(payload.get("title") or "")):
-            score = max(score, 0.6)
     for snippet in signals.get("district", []) or []:
         if not snippet:
             continue

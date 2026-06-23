@@ -10,6 +10,7 @@ Nhận diện 3 trạng thái:
 import numpy as np
 import time
 import sys
+import unicodedata
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -41,6 +42,21 @@ MOOD_CLUSTERS: dict[str, list[str]] = {
         "xem giá", "so sánh", "cần biết thêm", "hướng dẫn",
         "phòng có gì không", "chỉ xem thôi", "đang cân nhắc",
     ],
+}
+
+MOOD_CUES: dict[str, tuple[str, ...]] = {
+    "frustrated": (
+        "khong tim duoc", "tim mai khong ra", "tim hoai khong thay",
+        "het phong", "gia cao", "dat qua", "qua tam tien",
+        "khong phu hop", "chan qua", "that vong", "khong on",
+        "khong dung khu vuc", "qua xa",
+    ),
+    "urgent": (
+        "gap", "can ngay", "het han hop dong", "bi duoi",
+        "chuyen nha som", "thang nay phai don", "tuan sau don",
+        "khong con cho o", "phai chuyen", "don gap", "deadline",
+        "cuoi thang don",
+    ),
 }
 
 
@@ -87,7 +103,21 @@ def analyze_mood(text: str) -> tuple[str, float]:
     else:
         confidence = 0.5
 
+    if best_label != "normal" and not _has_explicit_mood_cue(text, best_label):
+        return "normal", round(1.0 - min(confidence, 0.7), 3)
+
     return best_label, round(confidence, 3)
+
+
+def _has_explicit_mood_cue(text: str, label: str) -> bool:
+    normalized = _norm(text)
+    return any(cue in normalized for cue in MOOD_CUES.get(label, ()))
+
+
+def _norm(text: str) -> str:
+    text = unicodedata.normalize("NFD", text.lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return " ".join(text.split())
 
 
 def sentiment_analyzer_node(state: NhatrovnAgentState) -> dict:

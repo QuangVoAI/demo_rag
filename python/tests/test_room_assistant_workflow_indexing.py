@@ -12,7 +12,9 @@ from room_assistant.indexing import (
 )
 from room_assistant.repository import InMemoryRoomRepository
 from room_assistant.retrieval import search_rooms_with_hard_filters
-from room_assistant.session_store import InMemorySessionStore
+from room_assistant.schemas import default_session_state
+from room_assistant.session_store import InMemorySessionStore, apply_operations
+from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.workflow import run_room_assistant
 
 
@@ -48,6 +50,17 @@ FIXTURES = [
         "status": "active",
         "district": "Bình Thạnh",
         "rent_price": 4_000_000,
+        "source_version": 1,
+    },
+    {
+        "room_id": "E505",
+        "title": "Phòng nhỏ Gò Vấp",
+        "available": True,
+        "status": "active",
+        "district": "Gò Vấp",
+        "rent_price": 3_800_000,
+        "amenities": ["window"],
+        "area_m2": 18,
         "source_version": 1,
     },
 ]
@@ -93,6 +106,19 @@ class CountingEmbeddingProvider:
 
 
 class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
+    def test_sparse_search_preserves_house_id(self):
+        qdrant_client_source = (
+            Path(__file__).resolve().parents[1]
+            / "retrieval"
+            / "qdrant_client.py"
+        ).read_text(encoding="utf-8")
+        search_sparse_source = qdrant_client_source.split("def search_sparse", 1)[1].split(
+            "def ",
+            1,
+        )[0]
+
+        self.assertIn('"house_id": r.payload.get("house_id", "")', search_sparse_source)
+
     def test_search_hard_filters_before_semantic_and_refetches_authoritative(self):
         repo = InMemoryRoomRepository(FIXTURES)
         semantic = RecordingSemanticIndex()
@@ -111,6 +137,31 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         self.assertEqual(semantic.candidate_ids, [["A101"]])
         self.assertEqual(result["agent_trace"]["write_tool_calls"], 0)
         self.assertLessEqual(result["agent_trace"]["read_tool_calls"], 3)
+
+    def test_varied_query_formats_preserve_retrieval_correctness(self):
+        repo = InMemoryRoomRepository(FIXTURES)
+        semantic = RecordingSemanticIndex()
+        cases = [
+            ("Tìm phòng dưới 5 triệu ở quận Bình Thạnh có máy lạnh", ["A101"]),
+            ("quan 7 ban cong", ["B202"]),
+            ("tim phong binh thanh may lanh duoi 5tr", ["A101"]),
+            ("Tìm phòng dưới 7 triệu quận 7 có ban công", ["B202"]),
+            ("tim phong duoi 5tr khong may lanh", ["E505"]),
+        ]
+
+        for question, expected_ids in cases:
+            state = default_session_state("case")
+            parsed = parse_intent_and_constraint_patch(question, state)
+            state, _ = apply_operations(state, parsed["operations"])
+            results = search_rooms_with_hard_filters(
+                query_text=question,
+                constraints=state["constraints"],
+                repository=repo,
+                semantic_index=semantic,
+                top_k=5,
+                trace={},
+            )
+            self.assertEqual([room["room_id"] for room in results], expected_ids, question)
 
     def test_metadata_hit_boosts_room_and_records_trace(self):
         repo = InMemoryRoomRepository(FIXTURES)
@@ -194,6 +245,38 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
             semantic_index=semantic,
         ))
         self.assertEqual(compare["comparison"]["room_ids"], ["A101", "B202", "C303"])
+        self.assertIn("D404", compare["comparison"]["not_compared_room_ids"])
+        self.assertIn("#D404", compare["answer"])
+
+        compare_missing = asyncio.run(run_room_assistant(
+            "So sánh #A101 #Z999",
+            session_id="s5b",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=semantic,
+        ))
+        self.assertIn("Z999", compare_missing["comparison"]["missing_room_ids"])
+        self.assertIn("#Z999", compare_missing["answer"])
+
+        missing_data_cost = asyncio.run(run_room_assistant(
+            "Tính tổng chi phí #B202 nếu thuê 6 tháng",
+            session_id="s4c",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=semantic,
+        ))
+        self.assertIn("deposit", missing_data_cost["cost_estimate"]["unknown"])
+
+        outside = asyncio.run(run_room_assistant(
+            "Thời tiết hôm nay ở Sài Gòn sao?",
+            session_id="s-outside",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=semantic,
+        ))
+        self.assertEqual(outside["intent"], "GENERAL_HELP")
+        self.assertEqual(outside["agent_trace"]["read_tool_calls"], 0)
+        self.assertIn("Mình có thể giúp tìm phòng", outside["answer"])
 
     def test_indexing_idempotency_old_event_delete_and_dlq(self):
         repo = InMemoryRoomRepository(FIXTURES)

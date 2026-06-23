@@ -17,7 +17,13 @@ from typing import AsyncGenerator
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from config import GROQ_API_KEY, GROQ_API_KEYS
+from config import (
+    GROQ_API_KEY,
+    GROQ_API_KEYS,
+    GROQ_MAX_RETRIES,
+    GROQ_REQUEST_TIMEOUT_SECONDS,
+    GROQ_RETRY_BASE_DELAY_SECONDS,
+)
 
 # Tích hợp Langfuse observability (bỏ qua nếu chưa cài)
 try:
@@ -104,9 +110,9 @@ def _truncate_messages(
 def _get_groq_key() -> str:
     global _groq_key_index
     all_keys = GROQ_API_KEYS if GROQ_API_KEYS else [GROQ_API_KEY]
-    valid_keys = [k for k in all_keys if k not in _BAD_GROQ_KEYS]
+    valid_keys = [k for k in all_keys if k and k not in _BAD_GROQ_KEYS]
     if not valid_keys:
-        raise RuntimeError("Tất cả Groq API key đã hết hạn hoặc bị giới hạn.")
+        raise RuntimeError("Groq API key chưa được cấu hình hoặc đã bị giới hạn.")
     key = valid_keys[_groq_key_index % len(valid_keys)]
     _groq_key_index += 1
     return key
@@ -173,17 +179,18 @@ async def groq_chat_complete(
         "Content-Type": "application/json",
     }
 
-    for attempt in range(5):
+    max_attempts = max(1, int(GROQ_MAX_RETRIES))
+    for attempt in range(max_attempts):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     GROQ_API_URL,
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=900),
+                    timeout=aiohttp.ClientTimeout(total=max(5.0, GROQ_REQUEST_TIMEOUT_SECONDS)),
                 ) as resp:
                     if resp.status == 429:
-                        await asyncio.sleep(25 * (attempt + 1))
+                        await asyncio.sleep(_retry_delay(attempt, multiplier=3))
                         api_key = _get_groq_key()
                         headers["Authorization"] = f"Bearer {api_key}"
                         continue
@@ -192,7 +199,7 @@ async def groq_chat_complete(
                         new_limit = int(GROQ_FREE_TIER_MAX_INPUT_TOKENS * (0.7 ** (attempt + 1)))
                         messages = _truncate_messages(messages, max_total_tokens=max(800, new_limit))
                         payload["messages"] = messages
-                        await asyncio.sleep(25)
+                        await asyncio.sleep(_retry_delay(attempt))
                         continue
 
                     if resp.status in {400, 401, 403}:
@@ -211,12 +218,17 @@ async def groq_chat_complete(
                     choices = result.get("choices", [])
                     return choices[0].get("message", {}).get("content", "") if choices else ""
 
-        except aiohttp.ClientError as e:
-            if attempt == 4:
-                raise RuntimeError(f"Groq connection lỗi sau 5 lần thử: {e}")
-            await asyncio.sleep(5)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            if attempt >= max_attempts - 1:
+                raise RuntimeError(f"Groq connection lỗi sau {max_attempts} lần thử: {e}")
+            await asyncio.sleep(_retry_delay(attempt))
 
     return ""
+
+
+def _retry_delay(attempt: int, multiplier: float = 1.0) -> float:
+    base = max(0.0, float(GROQ_RETRY_BASE_DELAY_SECONDS))
+    return min(30.0, base * (attempt + 1) * multiplier)
 
 
 # ---------------------------------------------------------------------------

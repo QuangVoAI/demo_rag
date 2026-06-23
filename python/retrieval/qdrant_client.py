@@ -10,11 +10,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     VectorParams, Distance, PointStruct,
     SparseVectorParams, SparseIndexParams,
-    NamedVector, NamedSparseVector, SparseVector,
-    SearchRequest, Filter, FieldCondition, MatchValue,
+    SparseVector, Filter,
     models,
 )
-from rich.console import Console
 
 import sys
 from pathlib import Path
@@ -103,61 +101,6 @@ class QdrantWrapper:
             f"(dense: {EMBEDDING_DIM}D + sparse BM25)[/]"
         )
 
-    def upsert_nodes(
-        self,
-        nodes: list[dict],
-        embeddings: np.ndarray,
-        batch_size: int = 100,
-    ):
-        """Thêm RAPTOR nodes vào Qdrant."""
-        total = len(nodes)
-        console.print(f"[cyan]📤 Upserting {total} nodes to Qdrant...[/]")
-
-        for i in range(0, total, batch_size):
-            batch_nodes = nodes[i:i + batch_size]
-            batch_embeddings = embeddings[i:i + batch_size]
-
-            points = []
-            for j, (node, emb) in enumerate(zip(batch_nodes, batch_embeddings)):
-                text = node.get("text", "")
-                sparse_indices, sparse_values = self._text_to_sparse(text)
-
-                # Deterministic ID: same arxiv_id + chunk → same point (upsert = overwrite)
-                arxiv_id = node.get("metadata", {}).get("arxiv_id", "")
-                node_id = node.get("node_id", i + j)
-                point_id_str = f"{arxiv_id}:chunk:{node_id}"
-                point_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, point_id_str))
-
-                point = PointStruct(
-                    id=point_uuid,
-                    vector={
-                        "dense": emb.tolist(),
-                        "sparse": SparseVector(
-                            indices=sparse_indices,
-                            values=sparse_values,
-                        ),
-                    },
-                    payload={
-                        "text": text,
-                        "node_id": node.get("node_id", i + j),
-                        "level": node.get("level", 0),
-                        "doc_title": node.get("doc_title", ""),
-                        "doc_id": node.get("doc_id", 0),
-                        "authors": node.get("metadata", {}).get("authors", ""),
-                        "year": node.get("metadata", {}).get("year", 0),
-                        "arxiv_id": arxiv_id,
-                        "metadata": node.get("metadata", {}),
-                    },
-                )
-                points.append(point)
-
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points,
-            )
-
-        console.print(f"[green]✅ Upserted {total} nodes successfully[/]")
-
     def _text_to_sparse(self, text: str) -> tuple[list[int], list[float]]:
         """
         Tạo sparse vector từ text (BM25-like).
@@ -203,16 +146,11 @@ class QdrantWrapper:
                 "level": r.payload.get("level", 0),
                 "doc_title": r.payload.get("doc_title", ""),
                 "node_id": r.payload.get("node_id", 0),
-                "policy_id": r.payload.get("metadata", {}).get("policy_id", ""),
                 "category": r.payload.get("metadata", {}).get("category", ""),
                 "url": r.payload.get("metadata", {}).get("url", ""),
                 "room_id": r.payload.get("room_id", ""),
                 "house_id": r.payload.get("house_id", ""),
                 "source_version": r.payload.get("source_version", 0),
-                "compensation_limit": (
-                    r.payload.get("compensation_limit")
-                    or r.payload.get("metadata", {}).get("compensation_limit", 0)
-                ),
             }
             for r in results.points
         ]
@@ -243,15 +181,11 @@ class QdrantWrapper:
                 "level": r.payload.get("level", 0),
                 "doc_title": r.payload.get("doc_title", ""),
                 "node_id": r.payload.get("node_id", 0),
-                "policy_id": r.payload.get("metadata", {}).get("policy_id", ""),
                 "category": r.payload.get("metadata", {}).get("category", ""),
                 "url": r.payload.get("metadata", {}).get("url", ""),
                 "room_id": r.payload.get("room_id", ""),
+                "house_id": r.payload.get("house_id", ""),
                 "source_version": r.payload.get("source_version", 0),
-                "compensation_limit": (
-                    r.payload.get("compensation_limit")
-                    or r.payload.get("metadata", {}).get("compensation_limit", 0)
-                ),
             }
             for r in results.points
         ]

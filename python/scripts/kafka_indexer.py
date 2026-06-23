@@ -5,7 +5,6 @@ Lắng nghe sự kiện thay đổi dữ liệu từ topic `room.changed`
 """
 import sys
 import json
-import uuid
 import signal
 from pathlib import Path
 
@@ -15,8 +14,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from pymongo import MongoClient
 from bson import ObjectId
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import PointStruct
 
 from config import (
     KAFKA_BROKERS,
@@ -24,9 +21,9 @@ from config import (
     MONGODB_URI,
     MONGODB_DATABASE,
     MONGODB_ROOMS_COLLECTION,
-    QDRANT_URL,
     QDRANT_ROOMS_COLLECTION
 )
+from retrieval.qdrant_client import QdrantWrapper
 from scripts.index_mongo_to_qdrant import extract_text_for_embedding, build_payload
 from utils.console import console
 
@@ -39,6 +36,13 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
+
+def _room_lookup_query(room_id: str) -> dict:
+    try:
+        return {"$or": [{"room_id": room_id}, {"_id": ObjectId(room_id)}]}
+    except Exception:
+        return {"room_id": room_id}
+
 def main():
     if not MONGODB_URI or "cluster0.xxx" in MONGODB_URI:
         console.print("[bold red]LỖI: Chưa cấu hình MONGODB_URI trong .env![/]")
@@ -50,7 +54,8 @@ def main():
     collection = db[MONGODB_ROOMS_COLLECTION]
     
     # 2. Khởi tạo Qdrant & Embedding Model
-    qclient = QdrantClient(url=QDRANT_URL)
+    qdrant = QdrantWrapper(collection_name=QDRANT_ROOMS_COLLECTION)
+    qdrant.create_collection(recreate=False)
     console.print("[bold green]Đang nạp mô hình AI Embedding (BAAI/bge-m3)...[/]")
     from agents.model_registry import get_embed_model
     embed_model = get_embed_model()
@@ -87,22 +92,20 @@ def main():
             # Decode message
             try:
                 data = json.loads(msg.value().decode('utf-8'))
-                action = data.get("action", "upsert")
+                action = data.get("operation") or data.get("action") or "upsert"
                 room_id_str = data.get("room_id")
                 
                 if not room_id_str:
                     console.print("[yellow]Bỏ qua tin nhắn không có room_id[/]")
                     continue
 
-                point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, room_id_str))
-
-                if action == "delete":
-                    qclient.delete(collection_name=QDRANT_ROOMS_COLLECTION, points_selector=[point_id])
+                if action in {"delete", "unpublish"}:
+                    qdrant.delete_room_points(room_id_str)
                     console.print(f"🗑️ Đã xóa room [red]{room_id_str}[/] khỏi Qdrant.")
                 
-                elif action == "upsert":
+                elif action in {"upsert", "publish"}:
                     # Lấy data mới nhất từ Mongo
-                    doc = collection.find_one({"_id": ObjectId(room_id_str)})
+                    doc = collection.find_one(_room_lookup_query(room_id_str))
                     if not doc:
                         console.print(f"[yellow]Không tìm thấy room {room_id_str} trong MongoDB.[/]")
                         continue
@@ -113,12 +116,15 @@ def main():
                         continue
                     
                     # Tính vector & Push lên Qdrant
-                    vector = embed_model.encode(text, normalize_embeddings=True).tolist()
+                    embedding = embed_model.encode(text, normalize_embeddings=True)
                     payload = build_payload(doc)
 
-                    qclient.upsert(
-                        collection_name=QDRANT_ROOMS_COLLECTION,
-                        points=[PointStruct(id=point_id, vector=vector, payload=payload)]
+                    qdrant.upsert_room_chunk(
+                        room_id=str(payload.get("room_id") or room_id_str),
+                        chunk_type="room_summary",
+                        text=text,
+                        embedding=embedding,
+                        payload=payload,
                     )
                     console.print(f"✅ Đã upsert room [cyan]{room_id_str}[/] vào Qdrant thành công!")
 

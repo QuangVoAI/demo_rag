@@ -2,7 +2,7 @@
 
 Read-only AI assistant for customers looking for rooms on Nhatrovn.
 
-The assistant can search, analyze, compare, estimate costs, summarize listings, explain fit, and suggest next questions. It must not perform business actions such as booking, messaging landlords, saving favorites, holding rooms, payments, negotiation, profile updates, or listing mutations.
+The assistant can search rooms, analyze fit, compare rooms, estimate costs, summarize room details, and suggest next questions. It must not perform business actions such as booking, messaging landlords, saving favorites, holding rooms, payments, negotiation, profile updates, or room mutations.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ Frontend
 -> Redpanda/Kafka query.request
 -> Python Query Worker
 -> Read-only Room Assistant Workflow
--> MongoDB ListingRepository + Qdrant listing vectors
+-> MongoDB RoomRepository + Qdrant room vectors
 -> Redpanda/Kafka query.response
 -> Rust Gateway
 -> Frontend final response
@@ -22,12 +22,12 @@ Continuous indexing is separate from query serving:
 
 ```text
 crawler/backfill
--> listing.changed
--> python/kafka_workers/listing_index_worker.py
--> MongoDB fetch latest listing
+-> room.changed
+-> python/kafka_workers/room_index_worker.py
+-> MongoDB fetch latest room
 -> canonical embedding text + content hash
--> Qdrant upsert/delete
--> listing.index.dlq on permanent/retry-exhausted failures
+-> Qdrant named dense+sparse upsert/delete
+-> room.index.dlq on permanent/retry-exhausted failures
 ```
 
 ## Production Flow
@@ -35,31 +35,30 @@ crawler/backfill
 ```text
 START
 -> normalize_input
--> parse_intent_and_constraint_patch
+-> parse_intent_async
+-> analyze_mood
 -> load_session_state
 -> merge_and_validate_state
 -> route_workflow
 -> execute_read_only_tools
 -> grounding_check
--> compose_response
+-> compose_answer_with_review
 -> persist_state_and_trace
 -> END
 ```
-
-The legacy support graph is no longer imported by the production entry point `python/agents/graph.py`.
 
 ## Read-Only Tool Registry
 
 Only these tools are registered:
 
 ```text
-search_listings
-get_listing_detail
-retrieve_listing_context
+search_rooms
+get_room_detail
+retrieve_room_context
 retrieve_faq
 calculate_cost_estimate
-compare_listings
-find_similar_listings
+compare_rooms
+find_similar_rooms
 ```
 
 Invariants:
@@ -69,7 +68,31 @@ write_tool_calls_per_turn = 0
 max_read_tool_calls_per_turn <= 3
 ```
 
-Requests for booking, messaging, saving, holding, payment, negotiation, or listing edits are classified as `REQUEST_ACTION` and return UI guidance only.
+Requests for booking, messaging, saving, holding, payment, negotiation, or room edits are classified as `REQUEST_ACTION` and return UI guidance only.
+
+## Client Contract
+
+The assistant response exposes room identity only:
+
+```json
+{
+  "rooms": [
+    {
+      "room_id": "A101",
+      "house_id": "H001"
+    }
+  ],
+  "sources": [
+    {
+      "type": "room",
+      "room_id": "A101",
+      "house_id": "H001"
+    }
+  ]
+}
+```
+
+Full room documents stay inside the Python workflow for grounding and cost calculation. They are not sent to the frontend.
 
 ## Session State
 
@@ -105,8 +128,8 @@ Minimum state:
     "excluded_features": [],
     "move_in_date": null
   },
-  "current_listing_id": null,
-  "selected_listing_ids": [],
+  "current_room_id": null,
+  "selected_room_ids": [],
   "last_result_ids": [],
   "last_intent": null,
   "conversation_summary": "",
@@ -119,14 +142,14 @@ The Rust gateway reads recent messages from server-side SQLite and sends only a 
 
 ## Event Schema
 
-Topic: `listing.changed`
+Topic: `room.changed`
 
-Kafka key: `listing_id`
+Kafka key: `room_id`
 
 ```json
 {
   "event_id": "uuid",
-  "listing_id": "string",
+  "room_id": "string",
   "operation": "upsert",
   "source_version": 12,
   "occurred_at": "ISO-8601",
@@ -143,7 +166,7 @@ publish
 unpublish
 ```
 
-DLQ topic: `listing.index.dlq`
+DLQ topic: `room.index.dlq`
 
 ```json
 {
@@ -155,20 +178,30 @@ DLQ topic: `listing.index.dlq`
 }
 ```
 
-## Qdrant Listing Schema
+## Qdrant Room Schema
+
+Collection default: `rooms_v1`
+
+Named vectors:
+
+```text
+dense
+sparse
+```
 
 Point IDs are deterministic:
 
 ```text
-listing:{listing_id}:{chunk_type}
+room:{room_id}:{chunk_type}
 ```
 
 Payload:
 
 ```json
 {
-  "listing_id": "...",
-  "chunk_type": "listing_summary",
+  "room_id": "...",
+  "house_id": "...",
+  "chunk_type": "room_summary",
   "source_version": 12,
   "content_hash": "...",
   "embedding_model": "BAAI/bge-m3",
@@ -179,7 +212,7 @@ Payload:
 }
 ```
 
-Qdrant is used for semantic retrieval and reranking only. Final answers always fetch current authoritative listing data from `ListingRepository`.
+Qdrant is used for semantic retrieval and reranking only. Final answers fetch current authoritative room data from `RoomRepository`.
 
 ## Local Setup
 
@@ -216,11 +249,18 @@ cd python
 python kafka_workers/query_worker.py
 ```
 
-Run listing index worker:
+Run room index worker:
 
 ```bash
 cd python
-python kafka_workers/listing_index_worker.py
+python kafka_workers/room_index_worker.py
+```
+
+Optional one-shot Mongo to Qdrant backfill:
+
+```bash
+cd python
+python scripts/index_mongo_to_qdrant.py
 ```
 
 Run Rust gateway:
@@ -236,31 +276,9 @@ Frontend:
 http://localhost:8083
 ```
 
-## Backfill
-
-Dry run:
-
-```bash
-python scripts/backfill_listings.py --dry-run --batch-size 100
-```
-
-Publish `listing.changed` events:
-
-```bash
-python scripts/backfill_listings.py --mode events --resume --batch-size 100
-```
-
-Directly call the same indexing service used by the worker:
-
-```bash
-python scripts/backfill_listings.py --mode direct --resume --batch-size 100
-```
-
-Backfill uses checkpoint `data/state/listing_backfill_checkpoint.json` by default and does not recreate Qdrant collections.
-
 ## Crawler Integration
 
-For each changed listing, the crawler should publish one compact `listing.changed` event with Kafka key equal to `listing_id`. Do not put the full listing document in the event. The index worker fetches the latest document from MongoDB by `listing_id`, compares `source_version`, skips unchanged semantic content by `content_hash`, and upserts/deletes Qdrant points idempotently.
+For each changed room, the crawler should publish one compact `room.changed` event with Kafka key equal to `room_id`. Do not put the full room document in the event. The index worker fetches the latest document from MongoDB by `room_id`, compares `source_version`, skips unchanged semantic content by `content_hash`, and upserts/deletes Qdrant points idempotently.
 
 ## Tests
 

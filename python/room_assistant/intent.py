@@ -244,7 +244,7 @@ DETAIL_FIELD_KEYWORDS: tuple[str, ...] = (
     "dien tich", "gia phong", "gia bao nhieu", "con phong", "phong trong",
     "ma phong", "vi tri", "dia chi", "gan dau", "gan truong", "gan cho",
     "gan sieu thi", "toilet", "wc", "nha ve sinh", "gio giac", "cua so",
-    "ban cong", "thu cung", "nuoi meo", "nuoi cho", "de xe", "cho de xe",
+    "ban cong", "tien ich", "co gi", "thu cung", "nuoi meo", "nuoi cho", "de xe", "cho de xe",
     "gui xe", "xe dien", "may giat", "wifi", "tu lanh", "nuoc nong",
     "gac", "nem", "giuong", "tu quan ao", "ke bep", "thang may",
     "may lanh", "dien", "nuoc", "quan ly", "xac thuc", "anhome ho tro",
@@ -378,6 +378,9 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
         value = match.group(1).strip()
         # Cắt tại từ ngăn cách để tránh lấy thừa
         value = re.split(r"\b(?:gan|duoi|tren|co|va|gia|,|\.)\b", value)[0].strip()
+        numeric_district = re.match(r"(\d{1,2})\b", value)
+        if numeric_district:
+            value = numeric_district.group(1)
         if value and value not in districts:
             districts.append(f"quan {value}")
     for district in districts:
@@ -483,9 +486,16 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
     """Trích xuất tiện ích bắt buộc và tùy chọn từ câu hỏi."""
     # Xác định người dùng đang bỏ / xóa tiện ích hay thêm vào
     remove_mode = bool(re.search(r"\b(bo|bỏ|khong can|không cần|loai|loại|xoa|xóa)\b", normalized))
+    negated_features: set[str] = set()
+    if re.search(r"khong\s*may\s*lanh", normalized) or "không máy lạnh" in text.lower():
+        negated_features.add("air_conditioner")
+    if re.search(r"khong\s*gac", normalized) or "không gác" in text.lower():
+        negated_features.add("mezzanine")
 
     for alias, canonical in AMENITY_ALIASES.items():
         if _contains_phrase(normalized, alias):
+            if canonical in negated_features:
+                continue
             _append_unique(
                 ops,
                 "remove" if remove_mode else "append",
@@ -493,10 +503,8 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
                 canonical,
             )
 
-    if re.search(r"khong\s*may\s*lanh", normalized) or "không máy lạnh" in text.lower():
-        _append_unique(ops, "append", "excluded_features", "air_conditioner")
-    if re.search(r"khong\s*gac", normalized) or "không gác" in text.lower():
-        _append_unique(ops, "append", "excluded_features", "mezzanine")
+    for feature in sorted(negated_features):
+        _append_unique(ops, "append", "excluded_features", feature)
 
     for alias, canonical in SOFT_PREFERENCE_ALIASES.items():
         if _contains_phrase(normalized, alias):
@@ -596,11 +604,11 @@ Nhiệm vụ: Phân loại đúng intent từ câu hỏi tiếng Việt của ng
 Danh sách intent hợp lệ:
 - SEARCH_ROOM: Tìm / lọc phòng theo tiêu chí
 - REFINE_SEARCH: Điều chỉnh tiêu chí tìm kiếm đang có
-- ASK_ABOUT_ROOM: Hỏi chi tiết về một phòng cụ thể
+- ASK_ABOUT_ROOM: Hỏi chi tiết về một phòng cụ thể (giá, diện tích, tiện ích, còn phòng, địa chỉ)
 - CALCULATE_COST: Tính chi phí thuê (tiền cọc, phí phát sinh)
 - COMPARE_ROOMS: So sánh nhiều phòng với nhau
 - FIND_SIMILAR: Tìm phòng tương tự phòng đang xem
-- SUMMARIZE_ROOM: Tóm tắt ưu / nhược điểm phòng
+- SUMMARIZE_ROOM: Tóm tắt ưu / nhược điểm hoặc đánh giá tổng quan phòng
 - REQUEST_FAQ: Hỏi về quy trình thuê, hợp đồng, thủ tục
 - REQUEST_ACTION: Yêu cầu hành động nghiệp vụ (đặt lịch, nhắn chủ, thanh toán...)
 - GENERAL_HELP: Câu hỏi chung hoặc không xác định được
@@ -734,6 +742,9 @@ async def parse_intent_async(
         llm_intent, llm_conf = await _llm_classify_intent(question, current_state)
         # Chọn kết quả có độ tin cậy cao hơn
         final_intent = llm_intent if llm_conf >= regex_conf else regex_intent
+
+    if final_intent == "SUMMARIZE_ROOM" and _is_room_detail_question(normalized, referenced_room_ids, current_state):
+        final_intent = "ASK_ABOUT_ROOM"
 
     if final_intent not in INTENTS:
         final_intent = "GENERAL_HELP"

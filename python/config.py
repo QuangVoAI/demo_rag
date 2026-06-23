@@ -80,6 +80,8 @@ TOP_K_RERANK = int(os.getenv("TOP_K_RERANK", "3"))
 EVIDENCE_MAX_CHARS = int(os.getenv("EVIDENCE_MAX_CHARS", "3500"))
 # Max tokens cho mỗi lượt sinh câu trả lời.
 ANSWER_MAX_TOKENS = int(os.getenv("ANSWER_MAX_TOKENS", "1024"))
+# Cắt sớm input quá dài để tránh prompt injection/log bloat và giữ latency ổn định.
+MAX_USER_QUESTION_CHARS = int(os.getenv("MAX_USER_QUESTION_CHARS", "1200"))
 # Nếu False, bỏ qua reviewer LLM (tiết kiệm token, latency).
 ENABLE_REVIEWER = _env_bool("ENABLE_REVIEWER", False)
 # 0 = tắt rewrite loop; legacy graph luôn dùng config này.
@@ -109,6 +111,12 @@ FEEDBACK_LOG_PATH = Path(
     os.getenv("FEEDBACK_LOG_PATH", str(FEEDBACK_LOG_DIR / "retrieval_feedback.jsonl"))
 )
 
+# --- LLM network safety ---
+GROQ_REQUEST_TIMEOUT_SECONDS = float(os.getenv("GROQ_REQUEST_TIMEOUT_SECONDS", "60"))
+GROQ_MAX_RETRIES = int(os.getenv("GROQ_MAX_RETRIES", "3"))
+GROQ_RETRY_BASE_DELAY_SECONDS = float(os.getenv("GROQ_RETRY_BASE_DELAY_SECONDS", "2"))
+STRICT_CONFIG_VALIDATION = _env_bool("STRICT_CONFIG_VALIDATION", False)
+
 # --- Upstash Redis Cache ---
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
@@ -130,3 +138,37 @@ GRADE_SCORE_THRESHOLD = LOW_CONFIDENCE_MIN_SCORE
 ROOM_CHANGED_TOPIC = os.getenv("ROOM_CHANGED_TOPIC", "room.changed")
 ROOM_INDEX_DLQ_TOPIC = os.getenv("ROOM_INDEX_DLQ_TOPIC", "room.index.dlq")
 ROOM_INDEX_MAX_ATTEMPTS = int(os.getenv("ROOM_INDEX_MAX_ATTEMPTS", "3"))
+
+
+def validate_runtime_config(strict: bool | None = None) -> dict[str, list[str]]:
+    """Validate runtime knobs without exposing configured secrets."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if TOP_K_RETRIEVAL < 1:
+        errors.append("TOP_K_RETRIEVAL must be >= 1")
+    if TOP_K_RERANK < 1:
+        errors.append("TOP_K_RERANK must be >= 1")
+    if EVIDENCE_MAX_CHARS < 500:
+        errors.append("EVIDENCE_MAX_CHARS must be >= 500")
+    if ANSWER_MAX_TOKENS < 64:
+        errors.append("ANSWER_MAX_TOKENS must be >= 64")
+    if MAX_USER_QUESTION_CHARS < 100:
+        errors.append("MAX_USER_QUESTION_CHARS must be >= 100")
+    if FEEDBACK_MAX_RETRIEVAL_RETRIES < 0:
+        errors.append("FEEDBACK_MAX_RETRIEVAL_RETRIES must be >= 0")
+    if GROQ_REQUEST_TIMEOUT_SECONDS < 5:
+        errors.append("GROQ_REQUEST_TIMEOUT_SECONDS must be >= 5")
+    if GROQ_MAX_RETRIES < 1:
+        errors.append("GROQ_MAX_RETRIES must be >= 1")
+    if GROQ_RETRY_BASE_DELAY_SECONDS < 0:
+        errors.append("GROQ_RETRY_BASE_DELAY_SECONDS must be >= 0")
+    if not GROQ_API_KEYS:
+        warnings.append("GROQ_API_KEYS is empty; generation will fall back to deterministic templates")
+    if not MONGODB_URI:
+        warnings.append("MONGODB_URI is empty; production repository will return no rooms")
+
+    should_raise = STRICT_CONFIG_VALIDATION if strict is None else strict
+    if should_raise and errors:
+        raise RuntimeError("Invalid runtime config: " + "; ".join(errors))
+    return {"errors": errors, "warnings": warnings}
