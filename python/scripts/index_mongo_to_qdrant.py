@@ -1,6 +1,6 @@
 """
 Đồng bộ dữ liệu từ MongoDB Atlas sang Qdrant Vector Database.
-Đọc danh sách 'listings' từ Mongo, tính toán embedding vector bằng bge-m3, 
+Đọc danh sách 'rooms' từ Mongo, tính toán embedding vector bằng bge-m3, 
 và đẩy (upsert) toàn bộ vào Qdrant.
 """
 import sys
@@ -12,41 +12,42 @@ from typing import Any
 sys.path.append(str(Path(__file__).parent.parent))
 
 from pymongo import MongoClient
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, PointStruct
+from qdrant_client.http.models import PointStruct
 
 from config import (
     MONGODB_URI,
     MONGODB_DATABASE,
-    MONGODB_LISTINGS_COLLECTION,
+    MONGODB_ROOMS_COLLECTION,
     QDRANT_URL,
-    QDRANT_COLLECTION,
-    EMBEDDING_DIM
+    QDRANT_ROOMS_COLLECTION,
 )
 from agents.model_registry import get_embed_model
 from utils.console import console
+from room_assistant.schemas import normalize_room
+
 
 def extract_text_for_embedding(doc: dict[str, Any]) -> str:
     """Trích xuất text để tạo vector từ document Mongo."""
-    # Ưu tiên trường embedding_text có sẵn
     if doc.get("embedding_text"):
         return str(doc["embedding_text"])
     
     parts = []
-    if "category" in doc:
-        parts.append(f"Loại: {doc['category']}")
-    if "description" in doc:
-        parts.append(str(doc["description"]))
-    if "summary" in doc:
-        parts.append(str(doc["summary"]))
+    metadata = doc.get("metadata") or {}
+    if "house_name" in metadata:
+        parts.append(f"Nhà: {metadata['house_name']}")
+    if "district_name" in metadata:
+        parts.append(f"Quận/Huyện: {metadata['district_name']}")
+    if doc.get("house_remark"):
+        parts.append(str(doc["house_remark"]))
+    if doc.get("tien_ich_xq"):
+        parts.append(str(doc["tien_ich_xq"]))
     
     return " ".join(parts)
 
-from room_assistant.schemas import normalize_listing
 
 def build_payload(doc: dict[str, Any]) -> dict[str, Any]:
     """Chuyển đổi dữ liệu Mongo thành Payload hợp lệ cho Qdrant."""
-    normalized = normalize_listing(doc)
+    normalized = normalize_room(doc)
     if not normalized:
         normalized = dict(doc)
         
@@ -54,17 +55,35 @@ def build_payload(doc: dict[str, Any]) -> dict[str, Any]:
     
     # Đảm bảo không có _id để tránh lỗi Qdrant
     if "_id" in payload:
-        payload["listing_id"] = str(payload["_id"])
+        payload["room_id"] = str(payload["_id"])
         del payload["_id"]
         
-    # Ép kiểu ObjectId trong dict
+    # Ép kiểu ObjectId và Datetime trong dict
+    import datetime
     for key, value in payload.items():
         if hasattr(value, "__class__") and value.__class__.__name__ == "ObjectId":
             payload[key] = str(value)
+        elif isinstance(value, datetime.datetime):
+            payload[key] = value.isoformat()
             
     # Giữ lại các trường meta quan trọng cho vector DB
-    payload["chunk_type"] = "listing_summary"
+    payload["chunk_type"] = "room_summary"
     return payload
+
+
+def _format_datetime(val: Any) -> str | None:
+    if val is None:
+        return None
+    import datetime
+    if isinstance(val, datetime.datetime):
+        return val.isoformat()
+    if isinstance(val, dict) and "$date" in val:
+        d = val["$date"]
+        if isinstance(d, (int, float)):
+            return datetime.datetime.fromtimestamp(d / 1000.0, tz=datetime.timezone.utc).isoformat()
+        return str(d)
+    return str(val)
+
 
 def main():
     if not MONGODB_URI or "cluster0.xxx" in MONGODB_URI:
@@ -75,10 +94,10 @@ def main():
     console.print(f"[bold green]1. Kết nối MongoDB: {MONGODB_URI.split('@')[-1]}...[/]")
     mongo_client = MongoClient(MONGODB_URI)
     db = mongo_client[MONGODB_DATABASE]
-    collection = db[MONGODB_LISTINGS_COLLECTION]
+    collection = db[MONGODB_ROOMS_COLLECTION]
     
     total_docs = collection.count_documents({})
-    console.print(f"   Đã tìm thấy [bold blue]{total_docs}[/] documents phòng trọ.")
+    console.print(f"   Đã tìm thấy [bold blue]{total_docs}[/] documents phòng trọ trong collection '{MONGODB_ROOMS_COLLECTION}'.")
     
     if total_docs == 0:
         console.print("   Không có data để index. Dừng chương trình.")
@@ -93,68 +112,128 @@ def main():
     from retrieval.qdrant_client import QdrantWrapper
     from qdrant_client.http.models import SparseVector
     
-    wrapper = QdrantWrapper(url=QDRANT_URL, collection_name=QDRANT_COLLECTION)
-    wrapper.create_collection(recreate=True)
+    wrapper = QdrantWrapper(url=QDRANT_URL, collection_name=QDRANT_ROOMS_COLLECTION)
+    wrapper.create_collection(recreate=False)
     qclient = wrapper.client
 
+    # Lấy metadata hiện tại trong Qdrant để hỗ trợ checkpoint/resume
+    existing_meta = {}
+    try:
+        console.print("[dim]  Đang đồng bộ danh sách phòng đã có trong Qdrant để làm checkpoint...[/]")
+        next_page_offset = None
+        while True:
+            records, next_page_offset = qclient.scroll(
+                collection_name=QDRANT_ROOMS_COLLECTION,
+                limit=1000,
+                offset=next_page_offset,
+                with_payload=["updated_at", "room_id"],
+                with_vectors=False
+            )
+            for r in records:
+                if r.payload:
+                    existing_meta[str(r.id)] = r.payload.get("updated_at")
+            if next_page_offset is None:
+                break
+        console.print(f"   Tìm thấy [bold blue]{len(existing_meta)}[/] phòng đã được index trước đó.")
+    except Exception as e:
+        console.print(f"[yellow]  Không thể đọc checkpoint từ Qdrant: {e}. Tiến hành chạy mới hoàn toàn.[/]")
+
     # 3. Chạy từng batch
-    BATCH_SIZE = 50
+    BATCH_SIZE = 128
     cursor = collection.find({})
     
-    batch_points = []
+    current_batch_docs = []
     processed_count = 0
+    skipped_count = 0
+    new_or_updated_count = 0
     
     console.print("[bold green]4. Bắt đầu tính toán Vector & đẩy vào Qdrant...[/]")
     
-    for doc in cursor:
-        text = extract_text_for_embedding(doc)
-        if not text.strip():
-            continue
+    def process_and_upsert_batch(batch_docs):
+        if not batch_docs:
+            return
+        
+        # Trích xuất text cho từng doc
+        batch_data = []
+        for doc in batch_docs:
+            text = extract_text_for_embedding(doc)
+            if text.strip():
+                batch_data.append((doc, text))
+                
+        if not batch_data:
+            return
             
-        # Tạo vector dense
-        vector_dense = embed_model.encode(text, normalize_embeddings=True).tolist()
-        # Tạo vector sparse
-        sparse_indices, sparse_values = wrapper._text_to_sparse(text)
+        # Batch encode dense vectors
+        texts = [item[1] for item in batch_data]
+        dense_vectors = embed_model.encode(
+            texts, 
+            batch_size=len(texts), 
+            show_progress_bar=False, 
+            normalize_embeddings=True
+        ).tolist()
         
-        payload = build_payload(doc)
-        
-        # UUID5 hash từ Mongo ObjectId để Qdrant Point ID luôn cố định
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(doc["_id"])))
-        
-        batch_points.append(
-            PointStruct(
-                id=point_id,
-                vector={
-                    "dense": vector_dense,
-                    "sparse": SparseVector(
-                        indices=sparse_indices,
-                        values=sparse_values,
-                    )
-                },
-                payload=payload
-            )
-        )
-        
-        # Khi batch đủ lớn thì upsert
-        if len(batch_points) >= BATCH_SIZE:
-            qclient.upsert(
-                collection_name=QDRANT_COLLECTION,
-                points=batch_points
-            )
-            processed_count += len(batch_points)
-            console.print(f"   → Đã index [cyan]{processed_count}/{total_docs}[/] listings...")
-            batch_points = []
+        batch_points = []
+        for idx, (doc, text) in enumerate(batch_data):
+            vector_dense = dense_vectors[idx]
             
-    # Xử lý nốt batch cuối
-    if batch_points:
+            # Tạo vector sparse
+            sparse_indices, sparse_values = wrapper._text_to_sparse(text)
+            payload = build_payload(doc)
+            
+            # UUID5 hash từ Mongo ObjectId
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(doc["_id"])))
+            
+            batch_points.append(
+                PointStruct(
+                    id=point_id,
+                    vector={
+                        "dense": vector_dense,
+                        "sparse": SparseVector(
+                            indices=sparse_indices,
+                            values=sparse_values,
+                        )
+                    },
+                    payload=payload
+                )
+            )
+            
+        # Đẩy lên Qdrant
         qclient.upsert(
-            collection_name=QDRANT_COLLECTION,
+            collection_name=QDRANT_ROOMS_COLLECTION,
             points=batch_points
         )
-        processed_count += len(batch_points)
-        console.print(f"   → Đã index [cyan]{processed_count}/{total_docs}[/] listings...")
+
+    for doc in cursor:
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(doc["_id"])))
+        
+        # Kiểm tra updated_at để quyết định có skip hay không
+        mongo_updated_at_str = _format_datetime(doc.get("updated_at"))
+        qdrant_updated_at_str = _format_datetime(existing_meta.get(point_id)) if point_id in existing_meta else None
+        
+        if qdrant_updated_at_str and mongo_updated_at_str == qdrant_updated_at_str:
+            skipped_count += 1
+            processed_count += 1
+            if processed_count % 500 == 0 or processed_count == total_docs:
+                console.print(f"   → Đã quét [cyan]{processed_count}/{total_docs}[] phòng (Bỏ qua [green]{skipped_count}[/], Cập nhật/Mới [blue]{new_or_updated_count}[/])...")
+            continue
+            
+        current_batch_docs.append(doc)
+        new_or_updated_count += 1
+        
+        if len(current_batch_docs) >= BATCH_SIZE:
+            process_and_upsert_batch(current_batch_docs)
+            processed_count += len(current_batch_docs)
+            console.print(f"   → Đã index [cyan]{processed_count}/{total_docs}[] phòng (Bỏ qua [green]{skipped_count}[/], Cập nhật/Mới [blue]{new_or_updated_count}[/])...")
+            current_batch_docs = []
+            
+    # Xử lý nốt batch cuối
+    if current_batch_docs:
+        process_and_upsert_batch(current_batch_docs)
+        processed_count += len(current_batch_docs)
+        console.print(f"   → Đã index [cyan]{processed_count}/{total_docs}[] phòng (Bỏ qua [green]{skipped_count}[/], Cập nhật/Mới [blue]{new_or_updated_count}[/])...")
 
     console.print("\n[bold green]🎉 HOÀN TẤT ĐỒNG BỘ DỮ LIỆU TỪ MONGO SANG QDRANT![/]")
+
 
 if __name__ == "__main__":
     main()

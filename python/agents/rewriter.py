@@ -1,7 +1,7 @@
 """
 Rewriter Agent — Viết lại / nới lỏng điều kiện tìm phòng khi tìm kiếm thất bại.
 
-Được gọi sau khi Grader phán quyết kết quả là POOR.
+ Được gọi sau khi Grader phán quyết kết quả là POOR.
 Chiến lược rewrite:
   1. Nới ngân sách thêm 20–30%
   2. Mở rộng khu vực sang quận lân cận
@@ -41,12 +41,12 @@ async def rewrite_query_node(state: NhatrovnAgentState) -> dict:
     t0 = time.time()
     original_query = state.get("rewritten_query") or state["question"]
     rewrite_count = state.get("rewrite_count", 0)
-    listings = state.get("listings", [])
+    rooms = state.get("rooms", [])
 
     # Bổ sung context về những gì đã tìm (nếu có)
     context_hint = ""
-    if listings:
-        titles = [item.get("title", "")[:60] for item in listings[:2]]
+    if rooms:
+        titles = [item.get("title", "")[:60] for item in rooms[:2]]
         context_hint = (
             "\nKết quả hiện tại (chưa đạt chất lượng):\n"
             + "\n".join(f"- {t}" for t in titles if t)

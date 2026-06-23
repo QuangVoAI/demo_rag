@@ -57,17 +57,17 @@ ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Nhatrovn Assistant")
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "localhost:9092")
 
 # --- Qdrant ---
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "listings_v1")
-QDRANT_LISTINGS_COLLECTION = os.getenv("QDRANT_LISTINGS_COLLECTION", "listings_v1")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "rooms_v1")
+QDRANT_ROOMS_COLLECTION = os.getenv("QDRANT_ROOMS_COLLECTION", "rooms_v1")
 # Optional gRPC endpoint (qdrant-client + rdkafka).
 # Nếu để trống, client tự suy ra từ QDRANT_URL (REST port + 1).
 QDRANT_GRPC_URL = os.getenv("QDRANT_GRPC_URL", "").strip()
 QDRANT_SKIP_COMPAT_CHECK = _env_bool("QDRANT_SKIP_COMPAT_CHECK", True)
 
-# --- MongoDB (Listing Repository) ---
+# --- MongoDB (Room Repository) ---
 MONGODB_URI = os.getenv("MONGODB_URI", "")
-MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "nhatrovn")
-MONGODB_LISTINGS_COLLECTION = os.getenv("MONGODB_LISTINGS_COLLECTION", "listings")
+MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "demo_rag")
+MONGODB_ROOMS_COLLECTION = os.getenv("MONGODB_ROOMS_COLLECTION", "rooms")
 
 # --- Retrieval (low-VRAM defaults) ---
 # Bật chế độ tiết kiệm VRAM (mặc định: True cho card 4GB).
@@ -97,7 +97,7 @@ RRF_K = int(os.getenv("RRF_K", "60"))
 # --- Metadata Search (boost theo tín hiệu rõ từ query) ---
 METADATA_BOOST = float(os.getenv("METADATA_BOOST", "0.5"))
 METADATA_FIELDS = tuple(
-    f.strip() for f in os.getenv("METADATA_FIELDS", "listing_id,district,title,amenities,address").split(",") if f.strip()
+    f.strip() for f in os.getenv("METADATA_FIELDS", "room_id,district,title,amenities,address").split(",") if f.strip()
 )
 
 # --- Feedback retry loop (bounded, có log JSONL) ---
@@ -114,7 +114,6 @@ UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
 REDIS_CACHE_TTL = int(os.getenv("REDIS_CACHE_TTL", str(7 * 24 * 3600)))
 REDIS_SESSION_TTL_SECONDS = int(os.getenv("REDIS_SESSION_TTL_SECONDS", str(24 * 3600)))
-ENABLE_DYNAMIC_LISTING_ANSWER_CACHE = os.getenv("ENABLE_DYNAMIC_LISTING_ANSWER_CACHE", "false").lower() == "true"
 
 # --- Langfuse Observability ---
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
@@ -122,12 +121,12 @@ LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
 # --- Tham số tìm kiếm và rewrite ---
-# Số listing tối thiểu để coi là kết quả "đủ tốt" (giữ alias, dùng cho grader/feedback).
-MIN_GOOD_LISTINGS = 1
-# Ngưỡng điểm để coi một listing là phù hợp (ánh xạ sang LOW_CONFIDENCE_MIN_SCORE).
+# Số phòng tối thiểu để coi là kết quả "đủ tốt".
+MIN_GOOD_ROOMS = 1
+# Ngưỡng điểm để coi một phòng là phù hợp (ánh xạ sang LOW_CONFIDENCE_MIN_SCORE).
 GRADE_SCORE_THRESHOLD = LOW_CONFIDENCE_MIN_SCORE
 
-# --- Listing Indexing Events ---
-LISTING_CHANGED_TOPIC = os.getenv("LISTING_CHANGED_TOPIC", "listing.changed")
-LISTING_INDEX_DLQ_TOPIC = os.getenv("LISTING_INDEX_DLQ_TOPIC", "listing.index.dlq")
-LISTING_INDEX_MAX_ATTEMPTS = int(os.getenv("LISTING_INDEX_MAX_ATTEMPTS", "3"))
+# --- Room Indexing Events ---
+ROOM_CHANGED_TOPIC = os.getenv("ROOM_CHANGED_TOPIC", "room.changed")
+ROOM_INDEX_DLQ_TOPIC = os.getenv("ROOM_INDEX_DLQ_TOPIC", "room.index.dlq")
+ROOM_INDEX_MAX_ATTEMPTS = int(os.getenv("ROOM_INDEX_MAX_ATTEMPTS", "3"))

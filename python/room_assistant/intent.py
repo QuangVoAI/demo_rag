@@ -45,7 +45,7 @@ ACTION_KEYWORDS = {
         "thanh toán", "thanh toan", "đặt cọc", "dat coc",
         "chuyển khoản", "chuyen khoan", "trả tiền thuê",
     ),
-    "edit_listing": (
+    "edit_room": (
         "sửa thông tin phòng", "sua thong tin phong",
         "đổi giá phòng", "doi gia phong", "cập nhật tin đăng",
     ),
@@ -308,18 +308,18 @@ def _append_unique(ops: list[dict[str, Any]], op: str, path: str, value: Any = N
         ops.append(item)
 
 
-def _extract_listing_ids(text: str) -> list[str]:
+def _extract_room_ids(text: str) -> list[str]:
     """Trích xuất mã phòng từ nội dung câu hỏi (VD: #A101, phòng B202)."""
     ids: list[str] = []
     patterns = [
         r"#([A-Za-z0-9][A-Za-z0-9_-]{1,40})",
-        r"\b(?:listing|phòng|phong|mã|ma)\s+([A-Za-z0-9][A-Za-z0-9_-]{1,40})\b",
+        r"\b(?:phòng|phong|mã|ma)\s+([A-Za-z0-9][A-Za-z0-9_-]{1,40})\b",
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            listing_id = match.group(1).strip()
-            if listing_id not in ids:
-                ids.append(listing_id)
+            room_id = match.group(1).strip()
+            if room_id not in ids:
+                ids.append(room_id)
     return ids
 
 
@@ -519,10 +519,10 @@ def _requested_action(normalized: str) -> str | None:
     return None
 
 
-def _has_current_listing(current_state: dict[str, Any] | None) -> bool:
+def _has_current_room(current_state: dict[str, Any] | None) -> bool:
     if not current_state:
         return False
-    return bool(current_state.get("current_listing_id") or current_state.get("selected_listing_ids") or current_state.get("last_result_ids"))
+    return bool(current_state.get("current_room_id") or current_state.get("selected_room_ids") or current_state.get("last_result_ids"))
 
 
 def _has_keyword(normalized: str, keywords: tuple[str, ...]) -> bool:
@@ -536,7 +536,7 @@ def _is_room_detail_question(normalized: str, ids: list[str], current_state: dic
         return False
     if ids or _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
         return True
-    return _has_current_listing(current_state) and bool(re.search(r"\b(co|có|khong|không|bao nhieu|bao nhiêu|the nao|thế nào|la gi|là gì)\b", normalized))
+    return _has_current_room(current_state) and bool(re.search(r"\b(co|có|khong|không|bao nhieu|bao nhiêu|the nao|thế nào|la gi|là gì)\b", normalized))
 
 
 # ---------------------------------------------------------------------------
@@ -658,24 +658,24 @@ def parse_intent_and_constraint_patch(
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
 
-    referenced_listing_ids = _extract_listing_ids(text)
+    referenced_room_ids = _extract_room_ids(text)
     action = _requested_action(normalized)
-    intent, _ = _regex_classify(normalized, action, referenced_listing_ids, current_state)
+    intent, _ = _regex_classify(normalized, action, referenced_room_ids, current_state)
     if operations and intent == "GENERAL_HELP":
         intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
-    if operations and intent == "ASK_ABOUT_ROOM" and not referenced_listing_ids and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+    if operations and intent == "ASK_ABOUT_ROOM" and not referenced_room_ids and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
         intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
 
     if intent not in INTENTS:
         intent = "GENERAL_HELP"
 
-    current_listing_id = referenced_listing_ids[0] if referenced_listing_ids else None
+    current_room_id = referenced_room_ids[0] if referenced_room_ids else None
 
     return {
         "intent": intent,
         "operations": operations,
-        "current_listing_id": current_listing_id,
-        "referenced_listing_ids": referenced_listing_ids,
+        "current_room_id": current_room_id,
+        "referenced_room_ids": referenced_room_ids,
         "requested_action": action,
     }
 
@@ -703,14 +703,14 @@ async def parse_intent_async(
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
 
-    referenced_listing_ids = _extract_listing_ids(text)
+    referenced_room_ids = _extract_room_ids(text)
     action = _requested_action(normalized)
 
-    regex_intent, regex_conf = _regex_classify(normalized, action, referenced_listing_ids, current_state)
+    regex_intent, regex_conf = _regex_classify(normalized, action, referenced_room_ids, current_state)
     if operations and regex_intent == "GENERAL_HELP":
         regex_intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
         regex_conf = max(regex_conf, 0.85)
-    if operations and regex_intent == "ASK_ABOUT_ROOM" and not referenced_listing_ids and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+    if operations and regex_intent == "ASK_ABOUT_ROOM" and not referenced_room_ids and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
         regex_intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
         regex_conf = max(regex_conf, 0.85)
 
@@ -732,12 +732,12 @@ async def parse_intent_async(
     if final_intent not in INTENTS:
         final_intent = "GENERAL_HELP"
 
-    current_listing_id = referenced_listing_ids[0] if referenced_listing_ids else None
+    current_room_id = referenced_room_ids[0] if referenced_room_ids else None
 
     return {
         "intent": final_intent,
         "operations": operations,
-        "current_listing_id": current_listing_id,
-        "referenced_listing_ids": referenced_listing_ids,
+        "current_room_id": current_room_id,
+        "referenced_room_ids": referenced_room_ids,
         "requested_action": action,
     }

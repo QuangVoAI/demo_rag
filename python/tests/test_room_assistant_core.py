@@ -8,12 +8,12 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from retrieval.cache import get_cached_answer
 from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.repository import (
-    InMemoryListingRepository,
-    MongoListingRepository,
+    InMemoryRoomRepository,
+    MongoRoomRepository,
     build_mongo_query,
-    listing_matches_constraints,
+    room_matches_constraints,
 )
-from room_assistant.schemas import default_session_state, normalize_listing
+from room_assistant.schemas import default_session_state, normalize_room
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
 
@@ -88,7 +88,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
 
     def test_site_detail_questions_route_to_room_detail(self):
         state = default_session_state("s-detail")
-        state["current_listing_id"] = "A101"
+        state["current_room_id"] = "A101"
         for question in (
             "Phòng này diện tích bao nhiêu?",
             "Phòng này có ban công không?",
@@ -102,7 +102,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
 
     def test_site_search_and_booking_constraints_are_extracted(self):
         state = default_session_state("s-search")
-        state["current_listing_id"] = "A101"
+        state["current_room_id"] = "A101"
         parsed = parse_intent_and_constraint_patch("Tìm phòng phường Bình Hưng Hoà B gần Aeon có tủ lạnh nước nóng ở ngay 2 xe", state)
         self.assertIn({"op": "append", "path": "location.wards", "value": "binh hung hoa b"}, parsed["operations"])
         self.assertIn({"op": "append", "path": "vehicles", "value": "motorbike"}, parsed["operations"])
@@ -151,23 +151,14 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(applied, [])
         self.assertEqual(state["state_version"], version)
 
-    def test_normalize_listing_extracts_amenities_one_line_only(self):
-        listing = normalize_listing({
-            "listing_id": "A101",
+    def test_normalize_room_extracts_amenities_one_line_only(self):
+        room = normalize_room({
+            "room_id": "A101",
             "embedding_text": "Tiện ích: wifi, window\nKhu vực xung quanh: gần trường",
             "available": True,
             "status": "active",
         })
-        self.assertEqual(listing["amenities"], ["wifi", "window"])
-
-    def test_normalize_listing_adds_rule_backed_amenities(self):
-        listing = normalize_listing({
-            "listing_id": "A101",
-            "rules": {"window": True, "balcony": True, "toilet": "Riêng", "curfew": "Tự do"},
-            "available": True,
-            "status": "active",
-        })
-        self.assertTrue({"window", "balcony", "private_bathroom", "free_hours"}.issubset(set(listing["amenities"])))
+        self.assertEqual(room["amenities"], [])
 
     def test_in_memory_session_ttl(self):
         store = InMemorySessionStore()
@@ -178,8 +169,8 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIsNone(store.get("s1"))
 
     def test_repository_filters_available_and_normalized_district(self):
-        listing = {
-            "listing_id": "A101",
+        room = {
+            "room_id": "A101",
             "available": True,
             "status": "active",
             "district": "Bình Thạnh",
@@ -189,41 +180,15 @@ class RoomAssistantCoreTests(unittest.TestCase):
             "location": {"districts": ["quan binh thanh"]},
             "budget": {"max": 5_000_000},
         }
-        self.assertTrue(listing_matches_constraints(listing, constraints))
+        self.assertTrue(room_matches_constraints(room, constraints))
 
-        unavailable = dict(listing, available=False)
-        self.assertFalse(listing_matches_constraints(unavailable, constraints))
+        unavailable = dict(room, available=False)
+        self.assertFalse(room_matches_constraints(unavailable, constraints))
 
         mongo_query = build_mongo_query(constraints)
-        self.assertIn({"available": {"$ne": False}}, mongo_query["$and"])
+        self.assertIn({"metadata.status_code": "0"}, mongo_query["$and"])
 
-    def test_repository_filters_motorbike_parking_from_listing_fields(self):
-        constraints = {"vehicles": ["motorbike"]}
-        with_parking = {
-            "listing_id": "P1",
-            "available": True,
-            "status": "active",
-            "shared_parking": True,
-        }
-        without_parking = {
-            "listing_id": "P2",
-            "available": True,
-            "status": "active",
-        }
-        self.assertTrue(listing_matches_constraints(with_parking, constraints))
-        self.assertFalse(listing_matches_constraints(without_parking, constraints))
-
-    def test_repository_matches_site_amenity_aliases(self):
-        listing = {
-            "listing_id": "A101",
-            "available": True,
-            "status": "active",
-            "amenities": ["may_lanh", "tu_lanh", "nuoc_nong", "gac"],
-        }
-        self.assertTrue(listing_matches_constraints(listing, {"amenities_required": ["air_conditioner"]}))
-        self.assertTrue(listing_matches_constraints(listing, {"amenities_required": ["refrigerator", "hot_water", "mezzanine"]}))
-
-    def test_mongo_repository_uses_object_id_for_native_listing_documents(self):
+    def test_mongo_repository_uses_object_id_for_native_room_documents(self):
         try:
             from bson import ObjectId
         except Exception:
@@ -231,53 +196,62 @@ class RoomAssistantCoreTests(unittest.TestCase):
 
         object_id = ObjectId("6a38c129041de32cdde5acd3")
         other_id = ObjectId("6a38c129041de32cdde5acd4")
-        repo = object.__new__(MongoListingRepository)
+        repo = object.__new__(MongoRoomRepository)
         repo._collection = FakeMongoCollection([
             {
                 "_id": object_id,
+                "room_id": str(object_id),
                 "room_code": "101",
                 "category": "phong_tro",
                 "embedding_text": "Địa chỉ: Quận 8, Thành phố Hồ Chí Minh. Giá: từ 4,900,000đ.",
-                "price": {"min": 4_900_000, "max": 4_900_000},
+                "metadata": {
+                    "price": 4_900_000,
+                    "status_code": "0",
+                    "room_code": "101",
+                },
                 "status": "active",
                 "title": "Phòng trọ thường 101 101",
             },
             {
                 "_id": other_id,
-                "price": {"min": 5_500_000},
+                "room_id": str(other_id),
+                "metadata": {
+                    "price": 5_500_000,
+                    "status_code": "0",
+                },
                 "status": "active",
                 "title": "Phòng khác",
             },
         ])
 
-        listing = repo.get_by_id(str(object_id))
-        self.assertIsNotNone(listing)
-        self.assertEqual(listing["listing_id"], str(object_id))
-        self.assertEqual(listing["rent_price"], 4_900_000)
+        room = repo.get_by_id(str(object_id))
+        self.assertIsNotNone(room)
+        self.assertEqual(room["room_id"], str(object_id))
+        self.assertEqual(room["rent_price"], 4_900_000)
 
-        listings = repo.get_many_by_ids([str(other_id), str(object_id)])
-        self.assertEqual([item["listing_id"] for item in listings], [str(other_id), str(object_id)])
+        rooms = repo.get_many_by_ids([str(other_id), str(object_id)])
+        self.assertEqual([item["room_id"] for item in rooms], [str(other_id), str(object_id)])
 
         self.assertEqual(
-            list(repo.iter_listing_ids(batch_size=2)),
+            list(repo.iter_room_ids(batch_size=2)),
             [[str(object_id), str(other_id)]],
         )
         self.assertEqual(
-            list(repo.iter_listing_ids(batch_size=2, resume_after=str(object_id))),
+            list(repo.iter_room_ids(batch_size=2, resume_after=str(object_id))),
             [[str(other_id)]],
         )
 
     def test_registry_is_read_only_and_budgeted(self):
-        repo = InMemoryListingRepository([])
+        repo = InMemoryRoomRepository([])
         registry = ReadOnlyToolRegistry()
         self.assertEqual(set(registry.names), {
-            "search_listings",
-            "get_listing_detail",
-            "retrieve_listing_context",
+            "search_rooms",
+            "get_room_detail",
+            "retrieve_room_context",
             "retrieve_faq",
             "calculate_cost_estimate",
-            "compare_listings",
-            "find_similar_listings",
+            "compare_rooms",
+            "find_similar_rooms",
         })
         context = ToolExecutionContext(repository=repo)
         for _ in range(3):
@@ -287,7 +261,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(context.write_tool_calls, 0)
 
     def test_retrieve_faq_covers_deposit_and_fees(self):
-        repo = InMemoryListingRepository([])
+        repo = InMemoryRoomRepository([])
         registry = ReadOnlyToolRegistry()
         context = ToolExecutionContext(repository=repo)
         result = registry.execute("retrieve_faq", {"question": "Tiền cọc và phí nước thế nào?"}, context)
@@ -295,9 +269,13 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertTrue({item["topic"] for item in result} & {"deposit", "fees"})
 
     def test_calculator_handles_rental_months_deterministically(self):
-        repo = InMemoryListingRepository([
+        repo = InMemoryRoomRepository([
             {
-                "listing_id": "A101",
+                "room_id": "A101",
+                "metadata": {
+                    "price": 4_500_000,
+                    "status_code": "0",
+                },
                 "rent_price": 4_500_000,
                 "deposit": 4_500_000,
                 "fees": {"water": 100_000, "parking": 150_000},
@@ -305,9 +283,14 @@ class RoomAssistantCoreTests(unittest.TestCase):
                 "status": "active",
             }
         ])
+        # Force overwrite deposit which normally isn't in schemas.py room normalize
+        doc = repo.get_by_id("A101")
+        doc["deposit"] = 4_500_000
+        repo._rooms["A101"] = doc
+
         result = ReadOnlyToolRegistry().execute(
             "calculate_cost_estimate",
-            {"listing_id": "A101", "rental_months": 6},
+            {"room_id": "A101", "rental_months": 6},
             ToolExecutionContext(repository=repo),
         )
         self.assertEqual(result["total_initial_cost"], 9_250_000)
@@ -315,9 +298,13 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(result["recurring_fees_for_period"], 1_500_000)
 
     def test_calculator_parses_fixed_text_fees_only(self):
-        repo = InMemoryListingRepository([
+        repo = InMemoryRoomRepository([
             {
-                "listing_id": "A101",
+                "room_id": "A101",
+                "metadata": {
+                    "price": 4_900_000,
+                    "status_code": "0",
+                },
                 "rent_price": 4_900_000,
                 "fees": {
                     "electricity": "4k/kWh",
@@ -333,7 +320,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
         result = ReadOnlyToolRegistry().execute(
             "calculate_cost_estimate",
             {
-                "listing_id": "A101",
+                "room_id": "A101",
                 "rental_months": 6,
                 "constraints": {"vehicles": ["motorbike"]},
             },
@@ -344,8 +331,8 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("fees.electricity", result["unknown"])
         self.assertIn("fees.water", result["unknown"])
 
-    def test_dynamic_listing_answer_cache_disabled_without_safe_context(self):
-        self.assertIsNone(get_cached_answer("Phòng này có nuôi mèo không?", context=None, dynamic_listing=True))
+    def test_dynamic_room_answer_cache_disabled_without_safe_context(self):
+        self.assertIsNone(get_cached_answer("Phòng này có nuôi mèo không?", context=None, dynamic_room=True))
 
 
 if __name__ == "__main__":

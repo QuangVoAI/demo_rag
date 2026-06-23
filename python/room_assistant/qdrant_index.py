@@ -1,4 +1,4 @@
-"""Qdrant listing semantic index adapters."""
+"""Qdrant room semantic index adapters."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ import numpy as np
 from retrieval.qdrant_client import QdrantWrapper
 
 
-class QdrantListingSemanticIndex:
+class QdrantRoomSemanticIndex:
     def __init__(self, qdrant: QdrantWrapper | None = None) -> None:
         if qdrant is None:
-            from config import QDRANT_LISTINGS_COLLECTION
-            qdrant = QdrantWrapper(collection_name=QDRANT_LISTINGS_COLLECTION)
+            from config import QDRANT_ROOMS_COLLECTION
+            qdrant = QdrantWrapper(collection_name=QDRANT_ROOMS_COLLECTION)
         self.qdrant = qdrant
 
-    def search_listings(
+    def search_rooms(
         self,
         query_text: str,
         candidate_ids: list[str],
@@ -25,7 +25,7 @@ class QdrantListingSemanticIndex:
 
         model = get_embed_model()
         query_vector = np.array(model.encode(query_text, normalize_embeddings=True))
-        results = self.qdrant.search_listings(
+        results = self.qdrant.search_rooms(
             query_vector=query_vector,
             query_text=query_text,
             candidate_ids=candidate_ids,
@@ -34,43 +34,43 @@ class QdrantListingSemanticIndex:
         )
         return [
             {
-                "listing_id": item.get("listing_id"),
+                "room_id": item.get("room_id"),
+                "house_id": item.get("house_id"),
                 "score": item.get("rerank_score", item.get("combined_score", item.get("rrf_score", item.get("score", 0)))),
                 "rerank_score": item.get("rerank_score"),
                 "combined_score": item.get("combined_score"),
                 "rrf_score": item.get("rrf_score", item.get("score", 0)),
-                "source_version": item.get("source_version", 0),
             }
             for item in results
-            if item.get("listing_id")
+            if item.get("room_id")
         ]
 
 
-class QdrantListingVectorIndex:
+class QdrantRoomVectorIndex:
     def __init__(self, qdrant: QdrantWrapper | None = None) -> None:
         if qdrant is None:
-            from config import QDRANT_LISTINGS_COLLECTION
-            qdrant = QdrantWrapper(collection_name=QDRANT_LISTINGS_COLLECTION)
+            from config import QDRANT_ROOMS_COLLECTION
+            qdrant = QdrantWrapper(collection_name=QDRANT_ROOMS_COLLECTION)
         self.qdrant = qdrant
 
-    def get_payload(self, listing_id: str, chunk_type: str = "listing_summary") -> dict | None:
-        return self.qdrant.get_listing_payload(listing_id, chunk_type=chunk_type)
+    def get_payload(self, room_id: str, chunk_type: str = "room_summary") -> dict | None:
+        return self.qdrant.get_room_payload(room_id, chunk_type=chunk_type)
 
-    def upsert_listing_chunk(
+    def upsert_room_chunk(
         self,
-        listing_id: str,
+        room_id: str,
         chunk_type: str,
         text: str,
         embedding: np.ndarray,
         payload: dict,
     ) -> str:
-        return self.qdrant.upsert_listing_chunk(
-            listing_id=listing_id,
+        return self.qdrant.upsert_room_chunk(
+            room_id=room_id,
             chunk_type=chunk_type,
             text=text,
             embedding=embedding,
             payload=payload,
         )
 
-    def delete_listing(self, listing_id: str) -> None:
-        self.qdrant.delete_listing_points(listing_id)
+    def delete_room(self, room_id: str) -> None:
+        self.qdrant.delete_room_points(room_id)

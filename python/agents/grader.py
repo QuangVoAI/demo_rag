@@ -11,37 +11,37 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import GRADE_SCORE_THRESHOLD, MIN_GOOD_LISTINGS
+from config import GRADE_SCORE_THRESHOLD, MIN_GOOD_ROOMS
 from agents.state import NhatrovnAgentState
 from utils.console import console
 
 
-def grade_listings_node(state: NhatrovnAgentState) -> dict:
+def grade_rooms_node(state: NhatrovnAgentState) -> dict:
     """
     LangGraph Node: Đánh giá chất lượng danh sách phòng vừa tìm được.
 
     Kiểm tra:
-      1. Có đủ listing trả về không?
-      2. Listing có score đủ cao không (nếu có semantic score)?
+      1. Có đủ room trả về không?
+      2. Room có score đủ cao không (nếu có semantic score)?
     """
     t0 = time.time()
-    listings = state.get("listings", [])
+    rooms = state.get("rooms", [])
     rewrite_count = state.get("rewrite_count", 0)
 
-    # Đếm listing có chất lượng đủ tốt
-    good_listings = []
-    for listing in listings:
+    # Đếm room có chất lượng đủ tốt
+    good_rooms = []
+    for room in rooms:
         # Ưu tiên semantic_score; fallback về rrf_score; mặc định 1.0 nếu không có
-        score = listing.get("semantic_score", listing.get("rrf_score", 1.0))
+        score = room.get("semantic_score", room.get("rrf_score", 1.0))
         if score >= GRADE_SCORE_THRESHOLD:
-            good_listings.append(listing)
+            good_rooms.append(room)
 
-    is_sufficient = len(good_listings) >= MIN_GOOD_LISTINGS
+    is_sufficient = len(good_rooms) >= MIN_GOOD_ROOMS
     decision = "GOOD" if is_sufficient else "POOR"
     elapsed = int((time.time() - t0) * 1000)
 
     console.print(
-        f"[dim]  Grader: {len(good_listings)}/{len(listings)} phòng đạt ngưỡng "
+        f"[dim]  Grader: {len(good_rooms)}/{len(rooms)} phòng đạt ngưỡng "
         f"score={GRADE_SCORE_THRESHOLD} → {decision} "
         f"(rewrite #{rewrite_count}, {elapsed}ms)[/]"
     )
@@ -50,8 +50,8 @@ def grade_listings_node(state: NhatrovnAgentState) -> dict:
         "grade_result": decision,
         "agent_trace": {
             **(state.get("agent_trace") or {}),
-            "grade_good": len(good_listings),
-            "grade_total": len(listings),
+            "grade_good": len(good_rooms),
+            "grade_total": len(rooms),
             "grade_threshold": GRADE_SCORE_THRESHOLD,
             "grade_decision": decision,
             "grade_rewrite_count": rewrite_count,

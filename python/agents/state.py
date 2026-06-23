@@ -20,8 +20,8 @@ class NhatrovnAgentState(TypedDict, total=False):
     user_mood_score: float  # Độ tin cậy 0.0 – 1.0
 
     # --- Kết quả tìm kiếm phòng ---
-    listings: list[dict]    # Danh sách phòng tìm được
-    listing_context: str    # Context đầy đủ của phòng đang xem
+    rooms: list[dict]       # Danh sách phòng tìm được
+    room_context: str       # Context đầy đủ của phòng đang xem
 
     # --- Viết lại query ---
     rewritten_query: str    # Query sau khi được rewrite để tìm lại

@@ -6,19 +6,19 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from room_assistant.indexing import (
-    ListingIndexingService,
+    RoomIndexingService,
     RetryableIndexingError,
     make_dlq_record,
 )
-from room_assistant.repository import InMemoryListingRepository
-from room_assistant.retrieval import search_listings_with_hard_filters
+from room_assistant.repository import InMemoryRoomRepository
+from room_assistant.retrieval import search_rooms_with_hard_filters
 from room_assistant.session_store import InMemorySessionStore
 from room_assistant.workflow import run_room_assistant
 
 
 FIXTURES = [
     {
-        "listing_id": "A101",
+        "room_id": "A101",
         "title": "Studio Bình Thạnh",
         "description": "Phòng sáng, yên tĩnh",
         "available": True,
@@ -32,7 +32,7 @@ FIXTURES = [
         "source_version": 1,
     },
     {
-        "listing_id": "B202",
+        "room_id": "B202",
         "title": "Phòng Quận 7",
         "available": True,
         "status": "active",
@@ -42,7 +42,7 @@ FIXTURES = [
         "source_version": 1,
     },
     {
-        "listing_id": "C303",
+        "room_id": "C303",
         "title": "Phòng hết chỗ",
         "available": False,
         "status": "active",
@@ -57,9 +57,9 @@ class RecordingSemanticIndex:
     def __init__(self):
         self.candidate_ids = []
 
-    def search_listings(self, query_text, candidate_ids, top_k, metadata_filter=None):
+    def search_rooms(self, query_text, candidate_ids, top_k, metadata_filter=None):
         self.candidate_ids.append(list(candidate_ids))
-        return [{"listing_id": item, "score": 1.0} for item in reversed(candidate_ids[:top_k])]
+        return [{"room_id": item, "score": 1.0} for item in reversed(candidate_ids[:top_k])]
 
 
 class FakeVectorIndex:
@@ -68,18 +68,18 @@ class FakeVectorIndex:
         self.upserts = []
         self.deleted = []
 
-    def get_payload(self, listing_id, chunk_type="listing_summary"):
-        return self.payloads.get((listing_id, chunk_type))
+    def get_payload(self, room_id, chunk_type="room_summary"):
+        return self.payloads.get((room_id, chunk_type))
 
-    def upsert_listing_chunk(self, listing_id, chunk_type, text, embedding, payload):
-        self.payloads[(listing_id, chunk_type)] = dict(payload)
-        self.upserts.append((listing_id, chunk_type, text, payload))
-        return f"listing:{listing_id}:{chunk_type}"
+    def upsert_room_chunk(self, room_id, chunk_type, text, embedding, payload):
+        self.payloads[(room_id, chunk_type)] = dict(payload)
+        self.upserts.append((room_id, chunk_type, text, payload))
+        return f"room:{room_id}:{chunk_type}"
 
-    def delete_listing(self, listing_id):
-        self.deleted.append(listing_id)
+    def delete_room(self, room_id):
+        self.deleted.append(room_id)
         for key in list(self.payloads):
-            if key[0] == listing_id:
+            if key[0] == room_id:
                 self.payloads.pop(key)
 
 
@@ -94,7 +94,7 @@ class CountingEmbeddingProvider:
 
 class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
     def test_search_hard_filters_before_semantic_and_refetches_authoritative(self):
-        repo = InMemoryListingRepository(FIXTURES)
+        repo = InMemoryRoomRepository(FIXTURES)
         semantic = RecordingSemanticIndex()
         store = InMemorySessionStore()
 
@@ -107,17 +107,17 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         ))
 
         self.assertEqual(result["intent"], "SEARCH_ROOM")
-        self.assertEqual([item["listing_id"] for item in result["listings"]], ["A101"])
+        self.assertEqual([item["room_id"] for item in result["rooms"]], ["A101"])
         self.assertEqual(semantic.candidate_ids, [["A101"]])
         self.assertEqual(result["agent_trace"]["write_tool_calls"], 0)
         self.assertLessEqual(result["agent_trace"]["read_tool_calls"], 3)
 
-    def test_metadata_hit_boosts_listing_and_records_trace(self):
-        repo = InMemoryListingRepository(FIXTURES)
+    def test_metadata_hit_boosts_room_and_records_trace(self):
+        repo = InMemoryRoomRepository(FIXTURES)
         semantic = RecordingSemanticIndex()
         trace = {}
 
-        results = search_listings_with_hard_filters(
+        results = search_rooms_with_hard_filters(
             query_text="Cho mình xem #B202",
             constraints={},
             repository=repo,
@@ -126,18 +126,18 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
             trace=trace,
         )
 
-        self.assertEqual(results[0]["listing_id"], "B202")
+        self.assertEqual(results[0]["room_id"], "B202")
         self.assertGreater(results[0]["metadata_score"], 0)
         self.assertGreater(results[0]["combined_score"], results[0]["rrf_score"])
         self.assertFalse(trace["retrieval_low_confidence"])
         self.assertEqual(trace["retrieval_feedback_retry_count"], 0)
-        self.assertEqual(trace["retrieval_attempts"][0]["top_listing_ids"][0], "B202")
+        self.assertEqual(trace["retrieval_attempts"][0]["top_room_ids"][0], "B202")
 
     def test_request_action_does_not_call_tools(self):
         result = asyncio.run(run_room_assistant(
             "Đặt lịch xem phòng giúp tôi",
             session_id="s2",
-            repository=InMemoryListingRepository(FIXTURES),
+            repository=InMemoryRoomRepository(FIXTURES),
             session_store=InMemorySessionStore(),
             semantic_index=RecordingSemanticIndex(),
         ))
@@ -146,8 +146,8 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         self.assertEqual(result["agent_trace"]["write_tool_calls"], 0)
         self.assertIn("không thể tự thực hiện", result["answer"])
 
-    def test_cost_compare_and_current_listing_context(self):
-        repo = InMemoryListingRepository(FIXTURES)
+    def test_cost_compare_and_current_room_context(self):
+        repo = InMemoryRoomRepository(FIXTURES)
         store = InMemorySessionStore()
         semantic = RecordingSemanticIndex()
 
@@ -165,7 +165,7 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
             session_store=store,
             semantic_index=semantic,
         ))
-        self.assertEqual(qa["listings"][0]["listing_id"], "A101")
+        self.assertEqual(qa["rooms"][0]["room_id"], "A101")
 
         cost = asyncio.run(run_room_assistant(
             "Tính tổng chi phí #A101",
@@ -193,16 +193,16 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
             session_store=InMemorySessionStore(),
             semantic_index=semantic,
         ))
-        self.assertEqual(compare["comparison"]["listing_ids"], ["A101", "B202", "C303"])
+        self.assertEqual(compare["comparison"]["room_ids"], ["A101", "B202", "C303"])
 
     def test_indexing_idempotency_old_event_delete_and_dlq(self):
-        repo = InMemoryListingRepository(FIXTURES)
+        repo = InMemoryRoomRepository(FIXTURES)
         vector = FakeVectorIndex()
         embedder = CountingEmbeddingProvider()
-        service = ListingIndexingService(repo, vector, embedder, embedding_model="test", embedding_version=1)
+        service = RoomIndexingService(repo, vector, embedder, embedding_model="test", embedding_version=1)
         event = {
             "event_id": "e1",
-            "listing_id": "A101",
+            "room_id": "A101",
             "operation": "upsert",
             "source_version": 1,
             "occurred_at": "2026-06-22T00:00:00Z",
@@ -224,7 +224,7 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         self.assertEqual(deleted["result"], "deleted")
         self.assertEqual(vector.deleted, ["A101"])
 
-        missing_event = dict(event, event_id="e5", listing_id="missing")
+        missing_event = dict(event, event_id="e5", room_id="missing")
         with self.assertRaises(RetryableIndexingError) as ctx:
             service.process_with_retry(missing_event, attempts=1)
         dlq = make_dlq_record(missing_event, ctx.exception, attempts=1)

@@ -42,13 +42,13 @@ INTENTS: tuple[str, ...] = (
 # Danh sách tool được phép đăng ký trong ReadOnlyToolRegistry.
 # Không được thêm tool có side-effect ghi dữ liệu vào đây.
 READ_ONLY_TOOLS: tuple[str, ...] = (
-    "search_listings",          # Tìm phòng theo constraint
-    "get_listing_detail",       # Lấy chi tiết một phòng
-    "retrieve_listing_context", # Lấy context đầy đủ của phòng
+    "search_rooms",             # Tìm phòng theo constraint
+    "get_room_detail",          # Lấy chi tiết một phòng
+    "retrieve_room_context",    # Lấy context đầy đủ của phòng
     "retrieve_faq",             # Trả lời câu hỏi thường gặp (hợp đồng, thủ tục)
     "calculate_cost_estimate",  # Tính chi phí ban đầu deterministic
-    "compare_listings",         # So sánh tối đa 3 phòng
-    "find_similar_listings",    # Tìm phòng tương tự
+    "compare_rooms",            # So sánh tối đa 3 phòng
+    "find_similar_rooms",       # Tìm phòng tương tự
 )
 
 MAX_READ_TOOL_CALLS_PER_TURN = 3
@@ -94,8 +94,8 @@ class Operation(TypedDict, total=False):
 class ParsedRequest(TypedDict):
     intent: str
     operations: list[Operation]
-    current_listing_id: str | None
-    referenced_listing_ids: list[str]
+    current_room_id: str | None
+    referenced_room_ids: list[str]
     requested_action: str | None
 
 
@@ -131,8 +131,8 @@ def default_session_state(session_id: str) -> dict[str, Any]:
     return {
         "session_id": session_id,
         "constraints": default_constraints(),
-        "current_listing_id": None,
-        "selected_listing_ids": [],
+        "current_room_id": None,
+        "selected_room_ids": [],
         "last_result_ids": [],
         "last_intent": None,
         "conversation_summary": "",
@@ -145,105 +145,118 @@ def clone_session_state(state: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(state)
 
 
-def normalize_listing(raw: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Normalize listing documents from Mongo/fakes into one read model."""
+def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize room documents from MongoDB rooms collection into one read model.
+
+    Rooms collection document structure:
+        room_id, house_id, tien_ich_xq, house_remark, embedding_text,
+        metadata: { house_name, room_code, province_code, province_name,
+                     district_name, ward_name, price, status_code, status_desc,
+                     allow_sale, has_image }
+    """
     if not raw:
         return None
 
     import re
 
-    # Extract ID
-    listing_id = (
-        raw.get("listing_id")
-        or raw.get("id")
-        or raw.get("_id")
-        or raw.get("slug")
-        or raw.get("property_id", {}).get("$oid")
-        or raw.get("property_id")
-    )
-    if listing_id is None:
+    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+
+    # Extract IDs
+    room_id = raw.get("room_id") or raw.get("_id")
+    house_id = raw.get("house_id")
+    if room_id is None:
         return None
 
-    price = raw.get("price") if isinstance(raw.get("price"), dict) else {}
-    fees = raw.get("fees") if isinstance(raw.get("fees"), dict) else {}
-    location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
-    property_info = raw.get("property_info") if isinstance(raw.get("property_info"), dict) else {}
-    rules = raw.get("rules") if isinstance(raw.get("rules"), dict) else {}
-    address = raw.get("address")
-    if isinstance(address, dict):
-        address = address.get("full") or address.get("street")
+    # Price from metadata
+    price = metadata.get("price") if "price" in metadata else raw.get("price", raw.get("rent_price"))
 
-    rent = (
-        raw.get("rent_price")
-        or raw.get("monthly_rent")
-        or price.get("min")
-        or price.get("max")
-        or price.get("rent")
-        or price.get("monthly")
-    )
+    # Status: "0" = phòng trống (available)
+    status_code = metadata.get("status_code")
+    if status_code is not None:
+        is_available = str(status_code) == "0"
+    else:
+        is_available = raw.get("available") if "available" in raw else (raw.get("status") == "active")
 
-    # Thử parse district/province từ summary hoặc embedding_text nếu không có sẵn
-    raw_province = raw.get("province") or location.get("province")
-    raw_district = raw.get("district") or location.get("district")
-    
+    status_desc = metadata.get("status_desc", "Còn phòng" if is_available else "Hết phòng")
+
+    # Location from metadata
+    province = metadata.get("province_name") if "province_name" in metadata else raw.get("province")
+    district = metadata.get("district_name") if "district_name" in metadata else raw.get("district")
+    ward = metadata.get("ward_name") if "ward_name" in metadata else raw.get("ward")
+
+    # Title: house_name + room_code
+    house_name = metadata.get("house_name", "")
+    room_code = metadata.get("room_code", "")
+    title = f"{house_name} - {room_code}" if house_name and room_code else house_name or room_code or raw.get("title") or f"Phòng {room_id}"
+
+    # Extract address from embedding_text
     embedding_text = str(raw.get("embedding_text", ""))
-    summary = str(raw.get("summary", ""))
-    
-    if not raw_district:
-        # Regex tìm "Quận X" hoặc "Huyện X"
-        match = re.search(r"(Quận\s+\d+|Quận\s+[A-Z][a-z]+|Huyện\s+[A-Z][a-z]+)", embedding_text + " " + summary)
-        if match:
-            raw_district = match.group(1)
+    address = ""
+    addr_match = re.search(r"Địa chỉ:\s*(.+?)(?:\n|$)", embedding_text)
+    if addr_match:
+        address = addr_match.group(1).strip()
 
-    if not raw_province:
-        if "Hồ Chí Minh" in embedding_text or "Hồ Chí Minh" in summary:
-            raw_province = "Hồ Chí Minh"
-        elif "Hà Nội" in embedding_text or "Hà Nội" in summary:
-            raw_province = "Hà Nội"
+    # Extract amenities from embedding_text "## Tiện ích" section
+    amenities_list: list[str] = []
+    amenities_section = re.search(r"## Tiện ích\n(.*?)(?:\n##|\Z)", embedding_text, re.DOTALL)
+    if amenities_section:
+        for line in amenities_section.group(1).strip().split("\n"):
+            line = line.strip("- ").strip()
+            if ": Có" in line:
+                amenity_name = line.split(":")[0].strip()
+                amenities_list.append(amenity_name)
+
+    # Extract area from embedding_text
+    area_m2 = None
+    area_match = re.search(r"Diện tích:\s*(\d+)\s*(?:m2|m²|mét vuông|met vuong)?", embedding_text, re.IGNORECASE)
+    if area_match:
+        area_m2 = int(area_match.group(1))
+
+    # Extract fees from embedding_text "## Giá & phí" section
+    fees: dict[str, Any] = {}
+    fees_section = re.search(r"## Giá & phí\n(.*?)(?:\n##|\Z)", embedding_text, re.DOTALL)
+    if fees_section:
+        for line in fees_section.group(1).strip().split("\n"):
+            line = line.strip("- ").strip()
+            if ":" not in line:
+                continue
+            key, val = line.split(":", 1)
+            key = key.strip().lower()
+            val = val.strip()
+            if key == "điện":
+                fees["electricity"] = val
+            elif key == "nước":
+                fees["water"] = val
+            elif key == "quản lý":
+                fees["management"] = val
+            elif key == "wifi":
+                fees["wifi"] = val
+            elif key == "xe":
+                fees["parking"] = val
+            elif key == "máy giặt":
+                fees["washing_machine"] = val
 
     normalized = dict(raw)
-    normalized["listing_id"] = str(listing_id)
-    normalized["title"] = raw.get("title") or raw.get("name") or f"Phòng {listing_id}"
-    normalized["description"] = raw.get("description") or raw.get("summary") or ""
-    normalized["status"] = raw.get("status") or ("active" if raw.get("available", True) else "unavailable")
-    normalized["available"] = bool(raw.get("available", normalized["status"] in {"active", "published"}))
-    normalized["rent_price"] = int(rent) if isinstance(rent, (int, float)) else rent
-    normalized["deposit"] = raw.get("deposit") or price.get("deposit")
-    normalized["fees"] = fees
-    normalized["address"] = address or location.get("address") or ""
-    normalized["province"] = raw_province
-    normalized["district"] = raw_district
-    normalized["ward"] = raw.get("ward") or location.get("ward")
-    normalized["lat"] = raw.get("lat") or location.get("lat")
-    normalized["lng"] = raw.get("lng") or location.get("lng")
-    normalized["area_m2"] = raw.get("area_m2") or property_info.get("area_m2") or raw.get("area")
-    
-    # Extract amenities từ embedding_text nếu không có field amenities
-    raw_amenities = raw.get("amenities") or []
-    if not raw_amenities and "Tiện ích:" in embedding_text:
-        try:
-            amenities_str = embedding_text.split("Tiện ích:")[1].split("\n")[0]
-            raw_amenities = [x.strip() for x in amenities_str.split(",")]
-        except Exception:
-            pass
-            
-    normalized_amenities = list(raw_amenities)
-    if rules.get("window") is True and "window" not in normalized_amenities:
-        normalized_amenities.append("window")
-    if rules.get("balcony") is True and "balcony" not in normalized_amenities:
-        normalized_amenities.append("balcony")
-    if str(rules.get("toilet") or "").lower() in {"riêng", "rieng", "private"} and "private_bathroom" not in normalized_amenities:
-        normalized_amenities.append("private_bathroom")
-    if str(rules.get("curfew") or "").lower() in {"tự do", "tu do", "free"} and "free_hours" not in normalized_amenities:
-        normalized_amenities.append("free_hours")
-    normalized["amenities"] = normalized_amenities
-    normalized["max_occupants"] = raw.get("max_occupants")
-    normalized["pets_allowed"] = raw.get("pets_allowed")
-    normalized["vehicles_allowed"] = list(raw.get("vehicles_allowed") or raw.get("vehicles") or [])
-    normalized["electric_bike_allowed"] = raw.get("electric_bike_allowed", rules.get("electric_vehicle_allowed"))
-    normalized["shared_parking"] = raw.get("shared_parking", rules.get("shared_parking"))
-    normalized["available_from"] = raw.get("available_from")
-    normalized["source_version"] = int(raw.get("source_version") or raw.get("version") or 0)
+    normalized["room_id"] = str(room_id)
+    normalized["house_id"] = str(house_id) if house_id else None
+    normalized["title"] = title
+    normalized["description"] = raw.get("house_remark") or raw.get("description") or ""
+    normalized["status"] = "active" if is_available else "unavailable"
+    normalized["status_desc"] = status_desc
+    normalized["available"] = is_available
+    normalized["allow_sale"] = metadata.get("allow_sale") == "Y"
+    normalized["rent_price"] = int(price) if isinstance(price, (int, float)) and price else price
+    normalized["deposit"] = raw.get("deposit")
+    normalized["fees"] = fees if fees else raw.get("fees", {})
+    normalized["address"] = address
+    normalized["province"] = province
+    normalized["district"] = district
+    normalized["ward"] = ward
+    normalized["area_m2"] = area_m2 if area_m2 is not None else raw.get("area_m2")
+    normalized["amenities"] = amenities_list if amenities_list else raw.get("amenities", [])
+    normalized["embedding_text"] = embedding_text
+    normalized["tien_ich_xq"] = raw.get("tien_ich_xq", "")
+    normalized["has_image"] = metadata.get("has_image", False)
     normalized["updated_at"] = raw.get("updated_at")
     return normalized
 
@@ -253,8 +266,8 @@ def public_session_state(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "session_id": state.get("session_id"),
         "constraints": state.get("constraints", {}),
-        "current_listing_id": state.get("current_listing_id"),
-        "selected_listing_ids": state.get("selected_listing_ids", []),
+        "current_room_id": state.get("current_room_id"),
+        "selected_room_ids": state.get("selected_room_ids", []),
         "last_result_ids": state.get("last_result_ids", []),
         "last_intent": state.get("last_intent"),
         "conversation_summary": state.get("conversation_summary", ""),
@@ -263,6 +276,6 @@ def public_session_state(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def unknown_listing_fields(listing: dict[str, Any]) -> list[str]:
-    fields = ("rent_price", "deposit", "area_m2", "available_from", "pets_allowed")
-    return [field for field in fields if listing.get(field) is None]
+def unknown_room_fields(room: dict[str, Any]) -> list[str]:
+    fields = ("rent_price", "deposit", "area_m2", "available_from")
+    return [field for field in fields if room.get(field) is None]

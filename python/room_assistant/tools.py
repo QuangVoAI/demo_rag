@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Callable
 
-from .repository import ListingRepository
-from .retrieval import ListingSemanticIndex, search_listings_with_hard_filters
-from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, READ_ONLY_TOOLS, unknown_listing_fields
+from .repository import RoomRepository
+from .retrieval import RoomSemanticIndex, search_rooms_with_hard_filters
+from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, READ_ONLY_TOOLS, unknown_room_fields
 
 
 class ToolBudgetExceeded(RuntimeError):
@@ -17,8 +17,8 @@ class ToolBudgetExceeded(RuntimeError):
 
 @dataclass
 class ToolExecutionContext:
-    repository: ListingRepository
-    semantic_index: ListingSemanticIndex | None = None
+    repository: RoomRepository
+    semantic_index: RoomSemanticIndex | None = None
     read_tool_calls: int = 0
     write_tool_calls: int = 0
     tool_latency_ms: dict[str, int] = field(default_factory=dict)
@@ -28,13 +28,13 @@ class ToolExecutionContext:
 class ReadOnlyToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Callable[[dict[str, Any], ToolExecutionContext], Any]] = {
-            "search_listings": search_listings,
-            "get_listing_detail": get_listing_detail,
-            "retrieve_listing_context": retrieve_listing_context,
+            "search_rooms": search_rooms,
+            "get_room_detail": get_room_detail,
+            "retrieve_room_context": retrieve_room_context,
             "retrieve_faq": retrieve_faq,
             "calculate_cost_estimate": calculate_cost_estimate,
-            "compare_listings": compare_listings,
-            "find_similar_listings": find_similar_listings,
+            "compare_rooms": compare_rooms,
+            "find_similar_rooms": find_similar_rooms,
         }
         extra = set(self._tools) - set(READ_ONLY_TOOLS)
         missing = set(READ_ONLY_TOOLS) - set(self._tools)
@@ -54,8 +54,8 @@ class ReadOnlyToolRegistry:
         return self._tools[name](args, context)
 
 
-def search_listings(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
-    return search_listings_with_hard_filters(
+def search_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
+    return search_rooms_with_hard_filters(
         query_text=args.get("query_text", ""),
         constraints=args.get("constraints", {}),
         repository=context.repository,
@@ -65,27 +65,28 @@ def search_listings(args: dict[str, Any], context: ToolExecutionContext) -> list
     )
 
 
-def get_listing_detail(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any] | None:
-    listing_id = args.get("listing_id")
-    if not listing_id:
+def get_room_detail(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any] | None:
+    room_id = args.get("room_id")
+    if not room_id:
         return None
-    return context.repository.get_by_id(str(listing_id))
+    return context.repository.get_by_id(str(room_id))
 
 
-def retrieve_listing_context(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
-    listing = get_listing_detail(args, context)
-    if not listing:
-        return {"listing": None, "context": "", "unknown": ["listing_not_found"]}
+def retrieve_room_context(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+    room = get_room_detail(args, context)
+    if not room:
+        return {"room": None, "context": "", "unknown": ["room_not_found"]}
     context_parts = [
-        listing.get("title", ""),
-        listing.get("description", ""),
-        ", ".join(listing.get("amenities") or []),
-        listing.get("address", ""),
+        room.get("title", ""),
+        room.get("description", ""),
+        room.get("embedding_text", ""),
+        room.get("tien_ich_xq", ""),
+        room.get("address", ""),
     ]
     return {
-        "listing": listing,
+        "room": room,
         "context": "\n".join(part for part in context_parts if part),
-        "unknown": _unknown_listing_fields(listing),
+        "unknown": _unknown_room_fields(room),
     }
 
 
@@ -100,7 +101,7 @@ def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[di
         {
             "topic": "deposit",
             "keywords": ("tiền cọc", "tien coc", "đặt cọc", "dat coc", "cọc"),
-            "answer": "Tiền cọc phụ thuộc từng listing. Nếu dữ liệu phòng có trường cọc, mình sẽ dùng đúng số đó; nếu thiếu thì mình sẽ báo chưa có dữ liệu.",
+            "answer": "Tiền cọc phụ thuộc từng phòng. Nếu dữ liệu phòng có trường cọc, mình sẽ dùng đúng số đó; nếu thiếu thì mình sẽ báo chưa có dữ liệu.",
         },
         {
             "topic": "contract",
@@ -110,12 +111,12 @@ def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[di
         {
             "topic": "fees",
             "keywords": ("phí", "phi", "điện", "dien", "nước", "nuoc", "wifi", "giữ xe", "giu xe"),
-            "answer": "Các khoản phí như điện, nước, wifi, giữ xe chỉ được xem là xác nhận khi có trong dữ liệu listing hoặc phần ước tính chi phí.",
+            "answer": "Các khoản phí như điện, nước, wifi, giữ xe chỉ được xem là xác nhận khi có trong dữ liệu phòng hoặc phần ước tính chi phí.",
         },
         {
             "topic": "pets",
             "keywords": ("nuôi mèo", "nuoi meo", "nuôi chó", "nuoi cho", "thú cưng", "thu cung"),
-            "answer": "Việc nuôi thú cưng phụ thuộc trường pets_allowed hoặc quy định của từng phòng. Nếu dữ liệu thiếu, mình sẽ nói rõ là chưa có dữ liệu.",
+            "answer": "Việc nuôi thú cưng phụ thuộc quy định của từng phòng. Nếu dữ liệu thiếu, mình sẽ nói rõ là chưa có dữ liệu.",
         },
         {
             "topic": "payment",
@@ -134,16 +135,16 @@ def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[di
 
 
 def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
-    listing = args.get("listing")
-    if not listing and args.get("listing_id"):
-        listing = context.repository.get_by_id(str(args["listing_id"]))
-    if not listing:
-        return {"available": False, "unknown": ["listing_not_found"], "items": [], "total_initial_cost": None}
+    room = args.get("room")
+    if not room and args.get("room_id"):
+        room = context.repository.get_by_id(str(args["room_id"]))
+    if not room:
+        return {"available": False, "unknown": ["room_not_found"], "items": [], "total_initial_cost": None}
 
     rental_months = _positive_int(args.get("rental_months"))
-    rent = listing.get("rent_price")
-    deposit = listing.get("deposit")
-    fees = listing.get("fees") or {}
+    rent = room.get("rent_price")
+    deposit = room.get("deposit")
+    fees = room.get("fees") or {}
     items: list[dict[str, Any]] = []
     period_items: list[dict[str, Any]] = []
     unknown: list[str] = []
@@ -193,12 +194,13 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
 
     result = {
         "available": True,
-        "listing_id": listing.get("listing_id"),
+        "room_id": room.get("room_id"),
+        "house_id": room.get("house_id"),
         "currency": "VND",
         "items": items,
         "total_initial_cost": total if items else None,
         "unknown": unknown,
-        "note": "Ước tính deterministic từ giá, cọc và phí đã xác nhận trong listing.",
+        "note": "Ước tính deterministic từ giá, cọc và phí đã xác nhận trong dữ liệu phòng.",
     }
     if rental_months:
         result.update({
@@ -210,31 +212,32 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
     return result
 
 
-def compare_listings(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
-    listing_ids = [str(item) for item in (args.get("listing_ids") or [])][:3]
-    listings = context.repository.get_many_by_ids(listing_ids)
+def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+    room_ids = [str(item) for item in (args.get("room_ids") or [])][:3]
+    rooms = context.repository.get_many_by_ids(room_ids)
     rows = []
-    for listing in listings:
+    for room in rooms:
         rows.append({
-            "listing_id": listing.get("listing_id"),
-            "title": listing.get("title"),
-            "rent_price": listing.get("rent_price"),
-            "area_m2": listing.get("area_m2"),
-            "district": listing.get("district"),
-            "available": listing.get("available"),
-            "unknown": _unknown_listing_fields(listing),
+            "room_id": room.get("room_id"),
+            "house_id": room.get("house_id"),
+            "title": room.get("title"),
+            "rent_price": room.get("rent_price"),
+            "area_m2": room.get("area_m2"),
+            "district": room.get("district"),
+            "available": room.get("available"),
+            "unknown": _unknown_room_fields(room),
         })
     return {
-        "listing_ids": listing_ids,
+        "room_ids": room_ids,
         "rows": rows,
         "max_compared": 3,
-        "missing_listing_ids": [item for item in listing_ids if item not in {row["listing_id"] for row in rows}],
+        "missing_room_ids": [item for item in room_ids if item not in {row["room_id"] for row in rows}],
     }
 
 
-def find_similar_listings(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
-    listing_id = args.get("listing_id")
-    source = context.repository.get_by_id(str(listing_id)) if listing_id else None
+def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
+    room_id = args.get("room_id")
+    source = context.repository.get_by_id(str(room_id)) if room_id else None
     if not source:
         return []
     constraints = {
@@ -245,21 +248,21 @@ def find_similar_listings(args: dict[str, Any], context: ToolExecutionContext) -
             "type": "rent_only",
         },
         "amenities_required": [],
-        "amenities_preferred": source.get("amenities", [])[:3],
+        "amenities_preferred": [],
     }
-    results = search_listings_with_hard_filters(
-        query_text=source.get("description") or source.get("title") or "",
+    results = search_rooms_with_hard_filters(
+        query_text=source.get("embedding_text") or source.get("title") or "",
         constraints=constraints,
         repository=context.repository,
         semantic_index=context.semantic_index,
         top_k=int(args.get("top_k", 5)) + 1,
         trace=context.retrieval_trace,
     )
-    return [item for item in results if item.get("listing_id") != listing_id][:int(args.get("top_k", 5))]
+    return [item for item in results if item.get("room_id") != room_id][:int(args.get("top_k", 5))]
 
 
-def _unknown_listing_fields(listing: dict[str, Any]) -> list[str]:
-    return unknown_listing_fields(listing)
+def _unknown_room_fields(room: dict[str, Any]) -> list[str]:
+    return unknown_room_fields(room)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -279,11 +282,11 @@ def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[st
         return None
 
     normalized = value.strip().lower()
-    if normalized in {"free", "miễn phí", "mien phi", "0", "0đ", "0d"}:
+    if normalized in {"free", "miễn phí", "mien phi", "0", "0đ", "0d", "free"}:
         return 0
-    if any(unit in normalized for unit in ("/kwh", "/kw", "/m3", "/m³", "/kg")):
+    if "không có" in normalized or "không" == normalized:
         return None
-    if "/xe" in normalized and not _has_vehicle(args, "motorbike"):
+    if any(unit in normalized for unit in ("/kwh", "/kw", "/m3", "/m³", "/kg")):
         return None
 
     match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(k|nghìn|nghin|tr|triệu|trieu)?", normalized)
@@ -298,9 +301,3 @@ def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[st
     if number < 1000 and fee_name:
         return int(number * 1_000)
     return int(number)
-
-
-def _has_vehicle(args: dict[str, Any] | None, vehicle: str) -> bool:
-    constraints = (args or {}).get("constraints") or {}
-    return vehicle in set(constraints.get("vehicles") or [])
-    return None

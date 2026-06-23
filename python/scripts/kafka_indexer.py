@@ -1,6 +1,6 @@
 """
 Kafka (Redpanda) Consumer cho Nhatrovn.
-Lắng nghe sự kiện thay đổi dữ liệu từ topic `listing.changed` 
+Lắng nghe sự kiện thay đổi dữ liệu từ topic `room.changed` 
 để cập nhật Qdrant Vector Database theo thời gian thực (Real-time).
 """
 import sys
@@ -20,14 +20,13 @@ from qdrant_client.http.models import PointStruct
 
 from config import (
     KAFKA_BROKERS,
-    LISTING_CHANGED_TOPIC,
+    ROOM_CHANGED_TOPIC,
     MONGODB_URI,
     MONGODB_DATABASE,
-    MONGODB_LISTINGS_COLLECTION,
+    MONGODB_ROOMS_COLLECTION,
     QDRANT_URL,
-    QDRANT_COLLECTION
+    QDRANT_ROOMS_COLLECTION
 )
-from agents.model_registry import get_embed_model
 from scripts.index_mongo_to_qdrant import extract_text_for_embedding, build_payload
 from utils.console import console
 
@@ -48,11 +47,12 @@ def main():
     # 1. Kết nối MongoDB
     mongo_client = MongoClient(MONGODB_URI)
     db = mongo_client[MONGODB_DATABASE]
-    collection = db[MONGODB_LISTINGS_COLLECTION]
+    collection = db[MONGODB_ROOMS_COLLECTION]
     
     # 2. Khởi tạo Qdrant & Embedding Model
     qclient = QdrantClient(url=QDRANT_URL)
     console.print("[bold green]Đang nạp mô hình AI Embedding (BAAI/bge-m3)...[/]")
+    from agents.model_registry import get_embed_model
     embed_model = get_embed_model()
 
     # 3. Khởi tạo Kafka Consumer
@@ -62,9 +62,9 @@ def main():
         'auto.offset.reset': 'earliest' # Đọc từ đầu nếu là lần đầu tiên connect
     }
     consumer = Consumer(conf)
-    consumer.subscribe([LISTING_CHANGED_TOPIC])
+    consumer.subscribe([ROOM_CHANGED_TOPIC])
 
-    console.print(f"[bold green]🚀 Kafka Indexer đang lắng nghe topic: {LISTING_CHANGED_TOPIC}[/]")
+    console.print(f"[bold green]🚀 Kafka Indexer đang lắng nghe topic: {ROOM_CHANGED_TOPIC}[/]")
     console.print(f"Broker: {KAFKA_BROKERS}")
     console.print("Nhấn Ctrl+C để thoát.\n")
 
@@ -79,7 +79,7 @@ def main():
                 if err_code == KafkaError._PARTITION_EOF:
                     continue
                 elif err_code == KafkaError.UNKNOWN_TOPIC_OR_PART:
-                    console.print(f"[yellow]Chờ topic {LISTING_CHANGED_TOPIC} được tạo...[/]", end="\r")
+                    console.print(f"[yellow]Chờ topic {ROOM_CHANGED_TOPIC} được tạo...[/]", end="\r")
                     continue
                 else:
                     raise KafkaException(msg.error())
@@ -88,28 +88,28 @@ def main():
             try:
                 data = json.loads(msg.value().decode('utf-8'))
                 action = data.get("action", "upsert")
-                listing_id_str = data.get("listing_id")
+                room_id_str = data.get("room_id")
                 
-                if not listing_id_str:
-                    console.print("[yellow]Bỏ qua tin nhắn không có listing_id[/]")
+                if not room_id_str:
+                    console.print("[yellow]Bỏ qua tin nhắn không có room_id[/]")
                     continue
 
-                point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, listing_id_str))
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, room_id_str))
 
                 if action == "delete":
-                    qclient.delete(collection_name=QDRANT_COLLECTION, points_selector=[point_id])
-                    console.print(f"🗑️ Đã xóa listing [red]{listing_id_str}[/] khỏi Qdrant.")
+                    qclient.delete(collection_name=QDRANT_ROOMS_COLLECTION, points_selector=[point_id])
+                    console.print(f"🗑️ Đã xóa room [red]{room_id_str}[/] khỏi Qdrant.")
                 
                 elif action == "upsert":
                     # Lấy data mới nhất từ Mongo
-                    doc = collection.find_one({"_id": ObjectId(listing_id_str)})
+                    doc = collection.find_one({"_id": ObjectId(room_id_str)})
                     if not doc:
-                        console.print(f"[yellow]Không tìm thấy listing {listing_id_str} trong MongoDB.[/]")
+                        console.print(f"[yellow]Không tìm thấy room {room_id_str} trong MongoDB.[/]")
                         continue
                     
                     text = extract_text_for_embedding(doc)
                     if not text.strip():
-                        console.print(f"[yellow]Listing {listing_id_str} không có text để nhúng.[/]")
+                        console.print(f"[yellow]Room {room_id_str} không có text để nhúng.[/]")
                         continue
                     
                     # Tính vector & Push lên Qdrant
@@ -117,10 +117,10 @@ def main():
                     payload = build_payload(doc)
 
                     qclient.upsert(
-                        collection_name=QDRANT_COLLECTION,
+                        collection_name=QDRANT_ROOMS_COLLECTION,
                         points=[PointStruct(id=point_id, vector=vector, payload=payload)]
                     )
-                    console.print(f"✅ Đã upsert listing [cyan]{listing_id_str}[/] vào Qdrant thành công!")
+                    console.print(f"✅ Đã upsert room [cyan]{room_id_str}[/] vào Qdrant thành công!")
 
             except json.JSONDecodeError:
                 console.print("[red]Lỗi: Message không phải định dạng JSON hợp lệ.[/]")

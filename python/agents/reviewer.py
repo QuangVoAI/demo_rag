@@ -63,7 +63,7 @@ def needs_review(question: str, answer: str) -> bool:
     return any(kw in combined for kw in _REVIEW_TRIGGERS)
 
 
-async def review(question: str, answer: str, listing_context: str = "") -> dict:
+async def review(question: str, answer: str, room_context: str = "") -> dict:
     """
     Kiểm duyệt câu trả lời.
 
@@ -87,7 +87,7 @@ async def review(question: str, answer: str, listing_context: str = "") -> dict:
     prompt = (
         f"Câu hỏi người dùng: {question}\n\n"
         f"Câu trả lời của assistant:\n{answer}\n\n"
-        f"Dữ liệu đã xác minh (nếu có):\n{listing_context[:1500]}\n\n"
+        f"Dữ liệu đã xác minh (nếu có):\n{room_context[:1500]}\n\n"
         f"Kiểm tra và trả về JSON:"
     )
     try:
@@ -123,7 +123,7 @@ def _parse_result(response: str) -> dict:
 async def review_with_retry(
     question: str,
     answer: str,
-    listing_context: str = "",
+    room_context: str = "",
     max_retries: int = 1,
 ) -> tuple[str, dict]:
     """
@@ -135,7 +135,7 @@ async def review_with_retry(
     result = {"is_approved": True, "issues": [], "suggestion": ""}
 
     for attempt in range(max_retries + 1):
-        result = await review(question, current_answer, listing_context)
+        result = await review(question, current_answer, room_context)
 
         if result["is_approved"] or attempt >= max_retries:
             break
@@ -147,7 +147,7 @@ async def review_with_retry(
         retry_prompt = (
             f"Câu trả lời bị lỗi: {issues_str}\n"
             f"Câu hỏi gốc: {question}\n"
-            f"Dữ liệu xác minh: {listing_context[:1500]}\n\n"
+            f"Dữ liệu xác minh: {room_context[:1500]}\n\n"
             f"Viết lại câu trả lời tự nhiên, đúng sự thật, không vi phạm:"
         )
         try:

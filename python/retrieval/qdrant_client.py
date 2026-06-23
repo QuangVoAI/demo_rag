@@ -206,7 +206,8 @@ class QdrantWrapper:
                 "policy_id": r.payload.get("metadata", {}).get("policy_id", ""),
                 "category": r.payload.get("metadata", {}).get("category", ""),
                 "url": r.payload.get("metadata", {}).get("url", ""),
-                "listing_id": r.payload.get("listing_id", ""),
+                "room_id": r.payload.get("room_id", ""),
+                "house_id": r.payload.get("house_id", ""),
                 "source_version": r.payload.get("source_version", 0),
                 "compensation_limit": (
                     r.payload.get("compensation_limit")
@@ -255,7 +256,7 @@ class QdrantWrapper:
             for r in results.points
         ]
 
-    def search_listings(
+    def search_rooms(
         self,
         query_vector: np.ndarray,
         query_text: str,
@@ -263,8 +264,8 @@ class QdrantWrapper:
         metadata_filter: dict | None = None,
         top_k: int = 20,
     ) -> list[dict]:
-        """Hybrid search for listing chunks, constrained by listing IDs/metadata."""
-        q_filter = self._listing_filter(candidate_ids or [], metadata_filter or {})
+        """Hybrid search for room chunks, constrained by room IDs/metadata."""
+        q_filter = self._room_filter(candidate_ids or [], metadata_filter or {})
         dense_results = self.search_dense(query_vector, top_k=top_k * 2, query_filter=q_filter)
         sparse_results = self.search_sparse(query_text, top_k=top_k * 2, query_filter=q_filter)
 
@@ -273,16 +274,16 @@ class QdrantWrapper:
         fused = reciprocal_rank_fusion(dense_results, sparse_results)
         return fused[:top_k]
 
-    def upsert_listing_chunk(
+    def upsert_room_chunk(
         self,
-        listing_id: str,
+        room_id: str,
         chunk_type: str,
         text: str,
         embedding: np.ndarray,
         payload: dict,
     ) -> str:
-        """Idempotently upsert one deterministic listing chunk point."""
-        point_id = self.listing_point_id(listing_id, chunk_type)
+        """Idempotently upsert one deterministic room chunk point."""
+        point_id = self.room_point_id(room_id, chunk_type)
         sparse_indices, sparse_values = self._text_to_sparse(text)
         point = PointStruct(
             id=point_id,
@@ -292,7 +293,7 @@ class QdrantWrapper:
             },
             payload={
                 **payload,
-                "listing_id": listing_id,
+                "room_id": room_id,
                 "chunk_type": chunk_type,
                 "text": text,
             },
@@ -300,24 +301,24 @@ class QdrantWrapper:
         self.client.upsert(collection_name=self.collection_name, points=[point])
         return point_id
 
-    def delete_listing_points(self, listing_id: str) -> None:
-        """Delete all listing points for one listing_id."""
+    def delete_room_points(self, room_id: str) -> None:
+        """Delete all room points for one room_id."""
         self.client.delete(
             collection_name=self.collection_name,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
                     must=[
                         models.FieldCondition(
-                            key="listing_id",
-                            match=models.MatchValue(value=listing_id),
+                            key="room_id",
+                            match=models.MatchValue(value=room_id),
                         )
                     ]
                 )
             ),
         )
 
-    def get_listing_payload(self, listing_id: str, chunk_type: str = "listing_summary") -> dict | None:
-        point_id = self.listing_point_id(listing_id, chunk_type)
+    def get_room_payload(self, room_id: str, chunk_type: str = "room_summary") -> dict | None:
+        point_id = self.room_point_id(room_id, chunk_type)
         points = self.client.retrieve(
             collection_name=self.collection_name,
             ids=[point_id],
@@ -329,14 +330,14 @@ class QdrantWrapper:
         return points[0].payload or {}
 
     @staticmethod
-    def listing_point_id(listing_id: str, chunk_type: str = "listing_summary") -> str:
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing:{listing_id}:{chunk_type}"))
+    def room_point_id(room_id: str, chunk_type: str = "room_summary") -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"room:{room_id}:{chunk_type}"))
 
-    def _listing_filter(self, candidate_ids: list[str], metadata_filter: dict) -> Filter | None:
+    def _room_filter(self, candidate_ids: list[str], metadata_filter: dict) -> Filter | None:
         must = []
         if candidate_ids:
             must.append(models.FieldCondition(
-                key="listing_id",
+                key="room_id",
                 match=models.MatchAny(any=[str(item) for item in candidate_ids]),
             ))
         for key, value in metadata_filter.items():

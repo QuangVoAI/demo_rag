@@ -75,7 +75,7 @@ async def write_response(
 
     Args:
         question        : Câu hỏi hiện tại của người dùng.
-        verified_context: Dữ liệu listing / FAQ đã được grounding.
+        verified_context: Dữ liệu room / FAQ đã được grounding.
         history         : Lịch sử hội thoại gần nhất (tối đa 6 lượt).
         mood            : Cảm xúc người dùng (frustrated/urgent/normal).
 
@@ -145,7 +145,7 @@ async def write_no_result_response(
         f"Người dùng tìm phòng với điều kiện: {question}\n"
         f"Kết quả: Không tìm được phòng phù hợp.\n"
         f"Gợi ý điều chỉnh:\n" + "\n".join(f"- {s}" for s in suggestions) + "\n\n"
-        f"Viết câu trả lời thân thiện, đồng cảm và đưa ra gợi ý cụ thể:"
+        f"Viết câu trả lời thân thiện, đồng cảm và gợi ý cụ thể:"
     )
     system = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
     try:

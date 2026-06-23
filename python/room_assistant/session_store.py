@@ -180,15 +180,15 @@ def apply_operations(
 def update_turn_state(
     state: dict[str, Any],
     intent: str,
-    current_listing_id: str | None,
-    referenced_listing_ids: list[str],
+    current_room_id: str | None,
+    referenced_room_ids: list[str],
     result_ids: list[str],
 ) -> dict[str, Any]:
     next_state = deepcopy(state)
-    if current_listing_id:
-        next_state["current_listing_id"] = current_listing_id
-    if referenced_listing_ids:
-        next_state["selected_listing_ids"] = referenced_listing_ids[:3]
+    if current_room_id:
+        next_state["current_room_id"] = current_room_id
+    if referenced_room_ids:
+        next_state["selected_room_ids"] = referenced_room_ids[:3]
     if result_ids:
         next_state["last_result_ids"] = result_ids
     next_state["last_intent"] = intent

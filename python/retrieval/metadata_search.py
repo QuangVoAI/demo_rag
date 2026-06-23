@@ -2,8 +2,7 @@
 Metadata-first retrieval: trích tín hiệu rõ từ câu hỏi trước khi vào hybrid search.
 
 Mục tiêu:
-  - Nếu người dùng nhắc tới mã phòng (#A101), arxiv-style id (2604.08423v1) hoặc
-    quận/huyện/thành phố rõ ràng, kéo document đó lên đầu với điểm boost.
+  - Nếu người dùng nhắc tới mã phòng (#A101) hoặc quận/huyện/thành phố rõ ràng, kéo document đó lên đầu với điểm boost.
   - Không thay thế semantic search; chỉ thêm 1 lớp "biết đường" trước khi gọi dense+sparse.
 
 Public API:
@@ -16,9 +15,9 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-# --- Patterns ---------------------------------------------------------------
-# Listing id dạng #A101, #B_202, #listing-12 (bắt cả tiếng Việt có dấu) — case-insensitive.
-_LISTING_ID_RE = re.compile(r"#\s*([A-Za-z0-9_\-]{1,32})")
+# --- Patterns ---
+# Room id dạng #A101, #B_202, #room-12 (bắt cả tiếng Việt có dấu) — case-insensitive.
+_ROOM_ID_RE = re.compile(r"#\s*([A-Za-z0-9_\-]{1,32})")
 # arXiv-style: YYMM.NNNNN(vN). Cho phép cả "2604.08423" và "2604.08423v1".
 _ARXIV_RE = re.compile(r"\b(\d{4}\.\d{4,5})(v\d+)?\b")
 # Mã phòng không có dấu "#": A101, B202 ở đầu câu hoặc sau khoảng trắng.
@@ -61,7 +60,7 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
 
     Returns:
         {
-          "listing_id": [...],   # mã phòng (#A101 hoặc bare A101)
+          "room_id": [...],   # mã phòng (#A101 hoặc bare A101)
           "arxiv_like": [...],   # chuỗi YYMM.NNNNN hoặc YYMM.NNNNNvN
           "district":   [...],   # snippet có từ khoá khu vực
         }
@@ -70,14 +69,14 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
     q_lower = q.lower()
     q_norm = _norm(q)
 
-    listing_ids: list[str] = []
-    for m in _LISTING_ID_RE.findall(q):
-        listing_ids.append(m.upper())
+    room_ids: list[str] = []
+    for m in _ROOM_ID_RE.findall(q):
+        room_ids.append(m.upper())
     for m in _BARE_ID_RE.findall(q):
         upper = m.upper()
-        # Bỏ qua nếu trùng listing_id đã bắt được.
-        if upper not in listing_ids:
-            listing_ids.append(upper)
+        # Bỏ qua nếu trùng room_id đã bắt được.
+        if upper not in room_ids:
+            room_ids.append(upper)
 
     arxiv_ids = [(a + b) for a, b in _ARXIV_RE.findall(q)]
 
@@ -91,7 +90,7 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
         districts.append(q_lower.strip())
 
     return {
-        "listing_id": listing_ids,
+        "room_id": room_ids,
         "arxiv_like": arxiv_ids,
         "district": districts,
         "query": [q] if q else [],
@@ -101,7 +100,7 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
 def metadata_signal_present(signals: dict[str, list[str]]) -> bool:
     """Return true when the query has explicit metadata-like hints."""
     return bool(
-        signals.get("listing_id")
+        signals.get("room_id")
         or signals.get("arxiv_like")
         or signals.get("district")
     )
@@ -129,13 +128,13 @@ def _get_field(payload: dict[str, Any], field: str) -> Any:
 def score_metadata_hit(
     payload: dict[str, Any] | None,
     signals: dict[str, list[str]],
-    fields: Iterable[str] = ("listing_id", "district", "title", "amenities"),
+    fields: Iterable[str] = ("room_id", "district", "title", "amenities"),
 ) -> float:
     """
     Tính điểm boost metadata cho 1 payload. Trả về giá trị 0..1.
 
     Trọng số mặc định:
-      listing_id  = 1.0  (match chính xác)
+      room_id     = 1.0  (match chính xác)
       arxiv_like  = 1.0  (match chính xác)
       district    = 0.5  (substring match, accent-insensitive)
       title       = 0.3
@@ -145,7 +144,7 @@ def score_metadata_hit(
         return 0.0
 
     score = 0.0
-    payload_listing_id = str(payload.get("listing_id") or payload.get("id") or "").upper()
+    payload_room_id = str(payload.get("room_id") or payload.get("id") or "").upper()
     searchable_values = []
     for field in fields:
         value = _get_field(payload, field)
@@ -157,8 +156,8 @@ def score_metadata_hit(
     payload_amenities = " ".join(payload.get("amenities") or [])
     payload_amenities_norm = _norm(payload_amenities)
 
-    for lid in signals.get("listing_id", []) or []:
-        if lid and lid.upper() == payload_listing_id:
+    for rid in signals.get("room_id", []) or []:
+        if rid and rid.upper() == payload_room_id:
             score = max(score, 1.0)
     for aid in signals.get("arxiv_like", []) or []:
         if aid and aid == str(payload.get("arxiv_id") or ""):
@@ -204,27 +203,27 @@ def metadata_lookup(
     repository: Any,
 ) -> dict[str, dict[str, Any]]:
     """
-    Tra cứu payload theo tín hiệu rõ (listing_id chính là khóa chính của repository).
+    Tra cứu payload theo tín hiệu rõ (room_id chính là khóa chính của repository).
 
     Args:
         signals: Output của extract_metadata_signals.
-        repository: Bất kỳ object nào có get_by_id(listing_id) -> dict | None.
+        repository: Bất kỳ object nào có get_by_id(room_id) -> dict | None.
 
     Returns:
-        Mapping listing_id (upper) -> payload (dict). Bỏ qua những id không tìm thấy.
+        Mapping room_id (upper) -> payload (dict). Bỏ qua những id không tìm thấy.
     """
     found: dict[str, dict[str, Any]] = {}
-    for lid in signals.get("listing_id", []) or []:
-        if not lid:
+    for rid in signals.get("room_id", []) or []:
+        if not rid:
             continue
         if not hasattr(repository, "get_by_id"):
             continue
         try:
-            doc = repository.get_by_id(lid)
+            doc = repository.get_by_id(rid)
         except Exception:
             doc = None
         if doc:
-            key = str(doc.get("listing_id") or lid).upper()
+            key = str(doc.get("room_id") or rid).upper()
             found[key] = doc
     return found
 

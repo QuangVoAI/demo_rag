@@ -1,4 +1,4 @@
-"""Continuous listing indexing contract and service."""
+"""Continuous room indexing contract and service."""
 
 from __future__ import annotations
 
@@ -11,20 +11,20 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     import numpy as np
 
-from .repository import ListingRepository
+from .repository import RoomRepository
 
 
 VALID_OPERATIONS = {"upsert", "delete", "publish", "unpublish"}
 RETRYABLE_ERRORS = {"mongo_timeout", "network_timeout", "embedding_timeout", "qdrant_timeout", "inconsistent_data"}
 
 
-class ListingVectorIndex(Protocol):
-    def get_payload(self, listing_id: str, chunk_type: str = "listing_summary") -> dict | None:
+class RoomVectorIndex(Protocol):
+    def get_payload(self, room_id: str, chunk_type: str = "room_summary") -> dict | None:
         ...
 
-    def upsert_listing_chunk(
+    def upsert_room_chunk(
         self,
-        listing_id: str,
+        room_id: str,
         chunk_type: str,
         text: str,
         embedding: Any,
@@ -32,7 +32,7 @@ class ListingVectorIndex(Protocol):
     ) -> str:
         ...
 
-    def delete_listing(self, listing_id: str) -> None:
+    def delete_room(self, room_id: str) -> None:
         ...
 
 
@@ -42,12 +42,12 @@ class EmbeddingProvider(Protocol):
 
 
 class CacheInvalidator(Protocol):
-    def invalidate_listing(self, listing_id: str) -> None:
+    def invalidate_room(self, room_id: str) -> None:
         ...
 
 
 class NoopCacheInvalidator:
-    def invalidate_listing(self, listing_id: str) -> None:
+    def invalidate_room(self, room_id: str) -> None:
         return
 
 
@@ -71,8 +71,8 @@ class RetryableIndexingError(Exception):
         self.error_type = error_type
 
 
-def validate_listing_changed_event(event: dict[str, Any]) -> dict[str, Any]:
-    required = ("event_id", "listing_id", "operation", "source_version", "occurred_at", "producer")
+def validate_room_changed_event(event: dict[str, Any]) -> dict[str, Any]:
+    required = ("event_id", "room_id", "operation", "source_version", "occurred_at", "producer")
     missing = [field for field in required if field not in event]
     if missing:
         raise PermanentIndexingError("invalid_schema", f"Missing fields: {', '.join(missing)}")
@@ -84,7 +84,7 @@ def validate_listing_changed_event(event: dict[str, Any]) -> dict[str, Any]:
         raise PermanentIndexingError("invalid_schema", "source_version must be an integer") from exc
     return {
         "event_id": str(event["event_id"]),
-        "listing_id": str(event["listing_id"]),
+        "room_id": str(event["room_id"]),
         "operation": str(event["operation"]),
         "source_version": source_version,
         "occurred_at": str(event["occurred_at"]),
@@ -92,15 +92,21 @@ def validate_listing_changed_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_canonical_embedding_text(listing: dict[str, Any]) -> str:
+def build_canonical_embedding_text(room: dict[str, Any]) -> str:
+    """Build embedding text for a room document.
+
+    If the room already has embedding_text from the rooms collection, use it directly.
+    Otherwise, build from individual fields.
+    """
+    if room.get("embedding_text"):
+        return room["embedding_text"]
+
     fields = [
-        ("Tiêu đề", listing.get("title")),
-        ("Mô tả", listing.get("description")),
-        ("Đặc điểm không gian", listing.get("space_features") or listing.get("area_m2")),
-        ("Tiện ích", ", ".join(listing.get("amenities") or [])),
-        ("Khu vực xung quanh", listing.get("neighborhood") or listing.get("address")),
-        ("Quy định dạng văn bản", listing.get("rules")),
-        ("Điểm nổi bật", listing.get("highlights")),
+        ("Tiêu đề", room.get("title")),
+        ("Mô tả", room.get("description") or room.get("house_remark")),
+        ("Tiện ích xung quanh", room.get("tien_ich_xq")),
+        ("Khu vực", room.get("address")),
+        ("Tiện ích", ", ".join(room.get("amenities") or [])),
     ]
     return "\n".join(f"{label}: {value}" for label, value in fields if value)
 
@@ -109,81 +115,82 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-class ListingIndexingService:
+class RoomIndexingService:
     def __init__(
         self,
-        repository: ListingRepository,
-        vector_index: ListingVectorIndex,
-        embedding_provider: EmbeddingProvider,
+        repository: RoomRepository,
+        vector_index: RoomVectorIndex,
+        embedding_provider: EmbeddingProvider | None = None,
         cache: CacheInvalidator | None = None,
         embedding_model: str | None = None,
         embedding_version: int | None = None,
     ) -> None:
         self.repository = repository
         self.vector_index = vector_index
-        self.embedding_provider = embedding_provider
+        self.embedding_provider = embedding_provider or BgeEmbeddingProvider()
         self.cache = cache or NoopCacheInvalidator()
         self.embedding_model = embedding_model or _config_value("EMBEDDING_MODEL", "BAAI/bge-m3")
         self.embedding_version = int(embedding_version or _config_value("EMBEDDING_VERSION", 1))
 
     def process_event(self, raw_event: dict[str, Any]) -> dict[str, Any]:
-        event = validate_listing_changed_event(raw_event)
+        event = validate_room_changed_event(raw_event)
         operation = event["operation"]
-        listing_id = event["listing_id"]
+        room_id = event["room_id"]
 
         if operation in {"delete", "unpublish"}:
-            self.vector_index.delete_listing(listing_id)
-            self.cache.invalidate_listing(listing_id)
-            return {"result": "deleted", "listing_id": listing_id, "operation": operation}
+            self.vector_index.delete_room(room_id)
+            self.cache.invalidate_room(room_id)
+            return {"result": "deleted", "room_id": room_id, "operation": operation}
 
-        existing_payload = self.vector_index.get_payload(listing_id) or {}
+        existing_payload = self.vector_index.get_payload(room_id) or {}
         existing_version = int(existing_payload.get("source_version") or -1)
         if existing_version > event["source_version"]:
-            return {"result": "skipped_old_event", "listing_id": listing_id, "source_version": event["source_version"]}
+            return {"result": "skipped_old_event", "room_id": room_id, "source_version": event["source_version"]}
 
-        listing = self.repository.get_by_id(listing_id)
-        if not listing:
-            raise RetryableIndexingError("inconsistent_data", f"Listing not found: {listing_id}")
+        room = self.repository.get_by_id(room_id)
+        if not room:
+            raise RetryableIndexingError("inconsistent_data", f"Room not found: {room_id}")
 
-        latest_version = int(listing.get("source_version") or 0)
+        latest_version = int(room.get("source_version") or 0)
         if latest_version < event["source_version"]:
             raise RetryableIndexingError("inconsistent_data", "Repository version is older than event")
         if latest_version < existing_version:
-            return {"result": "skipped_old_repository_version", "listing_id": listing_id}
+            return {"result": "skipped_old_repository_version", "room_id": room_id}
 
-        text = build_canonical_embedding_text(listing)
+        text = build_canonical_embedding_text(room)
         new_hash = content_hash(text)
         if (
             existing_payload.get("content_hash") == new_hash
             and int(existing_payload.get("source_version") or -1) >= latest_version
             and int(existing_payload.get("embedding_version") or -1) == self.embedding_version
         ):
-            self.cache.invalidate_listing(listing_id)
-            return {"result": "skipped_unchanged", "listing_id": listing_id, "content_hash": new_hash}
+            self.cache.invalidate_room(room_id)
+            return {"result": "skipped_unchanged", "room_id": room_id, "content_hash": new_hash}
 
         embedding = self.embedding_provider.embed(text)
         payload = {
-            "listing_id": listing_id,
-            "chunk_type": "listing_summary",
+            "room_id": room_id,
+            "house_id": room.get("house_id"),
+            "chunk_type": "room_summary",
             "source_version": latest_version,
             "content_hash": new_hash,
             "embedding_model": self.embedding_model,
             "embedding_version": self.embedding_version,
-            "status": listing.get("status", "active"),
-            "district": listing.get("district"),
+            "status": room.get("status", "active"),
+            "district": room.get("district"),
             "indexed_at": datetime.now(timezone.utc).isoformat(),
         }
-        point_id = self.vector_index.upsert_listing_chunk(
-            listing_id=listing_id,
-            chunk_type="listing_summary",
+        point_id = self.vector_index.upsert_room_chunk(
+            room_id=room_id,
+            chunk_type="room_summary",
             text=text,
             embedding=embedding,
             payload=payload,
         )
-        self.cache.invalidate_listing(listing_id)
+        self.cache.invalidate_room(room_id)
         return {
             "result": "upserted",
-            "listing_id": listing_id,
+            "room_id": room_id,
             "point_id": point_id,
             "source_version": latest_version,
             "content_hash": new_hash,
