@@ -34,6 +34,21 @@ console = Console(force_terminal=True, safe_box=True)
 running = True
 
 
+def room_refs(rooms):
+    refs = []
+    seen = set()
+    for room in rooms or []:
+        room_id = room.get("room_id")
+        if not room_id or room_id in seen:
+            continue
+        seen.add(room_id)
+        refs.append({
+            "room_id": room_id,
+            "house_id": room.get("house_id"),
+        })
+    return refs
+
+
 def signal_handler(sig, frame):
     global running
     console.print("[yellow]🛑 Shutting down query worker...[/]")
@@ -146,7 +161,7 @@ def run_worker():
                 "answer": final_answer,
                 "intent": final_state.get("intent"),
                 "session_state": final_state.get("session_state", {}),
-                "rooms": final_state.get("rooms", []),
+                "rooms": room_refs(final_state.get("rooms", [])),
                 "cost_estimate": final_state.get("cost_estimate"),
                 "comparison": final_state.get("comparison"),
                 "suggested_questions": final_state.get("suggested_questions", []),

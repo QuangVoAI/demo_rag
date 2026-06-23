@@ -246,7 +246,7 @@ class QdrantWrapper:
                 "policy_id": r.payload.get("metadata", {}).get("policy_id", ""),
                 "category": r.payload.get("metadata", {}).get("category", ""),
                 "url": r.payload.get("metadata", {}).get("url", ""),
-                "listing_id": r.payload.get("listing_id", ""),
+                "room_id": r.payload.get("room_id", ""),
                 "source_version": r.payload.get("source_version", 0),
                 "compensation_limit": (
                     r.payload.get("compensation_limit")

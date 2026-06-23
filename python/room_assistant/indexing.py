@@ -137,15 +137,15 @@ class RoomIndexingService:
         operation = event["operation"]
         room_id = event["room_id"]
 
-        if operation in {"delete", "unpublish"}:
-            self.vector_index.delete_room(room_id)
-            self.cache.invalidate_room(room_id)
-            return {"result": "deleted", "room_id": room_id, "operation": operation}
-
         existing_payload = self.vector_index.get_payload(room_id) or {}
         existing_version = int(existing_payload.get("source_version") or -1)
         if existing_version > event["source_version"]:
             return {"result": "skipped_old_event", "room_id": room_id, "source_version": event["source_version"]}
+
+        if operation in {"delete", "unpublish"}:
+            self.vector_index.delete_room(room_id)
+            self.cache.invalidate_room(room_id)
+            return {"result": "deleted", "room_id": room_id, "operation": operation}
 
         room = self.repository.get_by_id(room_id)
         if not room:

@@ -42,6 +42,18 @@ fn default_top_k() -> usize {
     5
 }
 
+fn is_cancel_message(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    value
+        .get("type")
+        .or_else(|| value.get("action"))
+        .and_then(|item| item.as_str())
+        .map(|kind| kind.eq_ignore_ascii_case("cancel"))
+        .unwrap_or(false)
+}
+
 /// WebSocket response messages gửi về client
 #[derive(Debug, Serialize)]
 struct WsStreamMessage {
@@ -59,7 +71,7 @@ struct WsAnswerMessage {
     answer: String,
     intent: Option<String>,
     session_state: serde_json::Value,
-    listings: Vec<serde_json::Value>,
+    rooms: Vec<serde_json::Value>,
     cost_estimate: Option<serde_json::Value>,
     comparison: Option<serde_json::Value>,
     suggested_questions: Vec<String>,
@@ -215,6 +227,7 @@ pub async fn ws_chat_handler(
                             // 300s timeout cho cold start (lần đầu load 3 model)
                             let timeout_deadline =
                                 tokio::time::Instant::now() + Duration::from_secs(300);
+                            let mut connection_closed = false;
 
                             loop {
                                 let remaining = timeout_deadline
@@ -234,8 +247,10 @@ pub async fn ws_chat_handler(
                                     break;
                                 }
 
-                                match tokio::time::timeout(remaining, rx.recv()).await {
-                                    Ok(Some(response_event)) => {
+                                tokio::select! {
+                                    response = rx.recv() => {
+                                        match response {
+                                            Some(response_event) => {
                                         if response_event.is_final {
                                             // ─── Final answer ───
                                             let answer_for_db = response_event.answer.clone();
@@ -245,7 +260,7 @@ pub async fn ws_chat_handler(
                                                 answer: response_event.answer,
                                                 intent: response_event.intent,
                                                 session_state: response_event.session_state,
-                                                listings: response_event.listings,
+                                                rooms: response_event.rooms,
                                                 cost_estimate: response_event.cost_estimate,
                                                 comparison: response_event.comparison,
                                                 suggested_questions: response_event
@@ -290,14 +305,52 @@ pub async fn ws_chat_handler(
                                             }
                                         }
                                     }
-                                    Ok(None) => {
+                                            None => {
                                         warn!(
                                             "⚠️ Response channel closed for session {}",
                                             &session_id[..8]
                                         );
                                         break;
                                     }
-                                    Err(_) => {
+                                        }
+                                    },
+                                    inbound = msg_stream.next() => {
+                                        match inbound {
+                                            Some(Ok(Message::Ping(bytes))) => {
+                                                let _ = session.pong(&bytes).await;
+                                            }
+                                            Some(Ok(Message::Text(text))) => {
+                                                if is_cancel_message(&text) {
+                                                    let status_msg = WsStatusMessage {
+                                                        msg_type: "status".to_string(),
+                                                        session_id: Some(session_id.clone()),
+                                                        status: "cancelled".to_string(),
+                                                        message: "Da huy yeu cau dang xu ly.".to_string(),
+                                                    };
+                                                    if let Ok(json) = serde_json::to_string(&status_msg) {
+                                                        let _ = session.text(json).await;
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                            Some(Ok(Message::Close(reason))) => {
+                                                info!("WebSocket client disconnected: {:?}", reason);
+                                                connection_closed = true;
+                                                break;
+                                            }
+                                            Some(Err(e)) => {
+                                                warn!("WebSocket error: {}", e);
+                                                connection_closed = true;
+                                                break;
+                                            }
+                                            None => {
+                                                connection_closed = true;
+                                                break;
+                                            }
+                                            _ => {}
+                                        }
+                                    },
+                                    _ = tokio::time::sleep_until(timeout_deadline) => {
                                         warn!("⏰ Query timeout for session {}", &session_id[..8]);
                                         let timeout_msg = WsErrorMessage {
                                             msg_type: "error".to_string(),
@@ -316,6 +369,9 @@ pub async fn ws_chat_handler(
 
                             // Cleanup
                             kafka_service.unregister_session(&session_id).await;
+                            if connection_closed {
+                                break;
+                            }
                         }
                         Err(e) => {
                             warn!("⚠️ Invalid WS message format: {}", e);

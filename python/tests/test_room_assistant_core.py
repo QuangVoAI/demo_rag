@@ -74,6 +74,13 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn({"op": "set", "path": "budget.max", "value": 5_000_000}, parsed["operations"])
         self.assertIn({"op": "remove", "path": "amenities_required", "value": "air_conditioner"}, parsed["operations"])
 
+    def test_search_phrase_after_phong_is_not_room_id(self):
+        parsed = parse_intent_and_constraint_patch(
+            "tim phong duoi 5 trieu o quan binh thanh co may lanh"
+        )
+        self.assertEqual(parsed["intent"], "SEARCH_ROOM")
+        self.assertEqual(parsed["referenced_room_ids"], [])
+
     def test_budget_parses_grouped_and_compact_values(self):
         parsed = parse_intent_and_constraint_patch("Tìm phòng dưới 1.500.000")
         self.assertIn({"op": "set", "path": "budget.max", "value": 1_500_000}, parsed["operations"])

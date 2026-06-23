@@ -318,9 +318,15 @@ def _extract_room_ids(text: str) -> list[str]:
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             room_id = match.group(1).strip()
+            if not _looks_like_room_id(room_id):
+                continue
             if room_id not in ids:
                 ids.append(room_id)
     return ids
+
+
+def _looks_like_room_id(value: str) -> bool:
+    return any(ch.isdigit() for ch in value)
 
 
 def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:

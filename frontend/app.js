@@ -267,7 +267,7 @@ function addAIMessage(answer, sources, trace, timeMs, label, payload) {
     const data = payload || {};
     const senderName = label || 'Nhatrovn Assistant';
     const traceId = 'trace-' + Date.now();
-    const listingsHtml = renderListings(data.listings || []);
+    const roomsHtml = renderRooms(data.rooms || []);
     const sourcesHtml = renderSources(sources || []);
     const suggestionsHtml = renderSuggestions(data.suggested_questions || []);
 
@@ -296,7 +296,7 @@ function addAIMessage(answer, sources, trace, timeMs, label, payload) {
         <div class="bg-surface-container-low p-6 rounded-2xl rounded-tl-none border border-primary/5 text-on-surface max-w-[90%] shadow-2xl relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-tertiary to-transparent opacity-40"></div>
             <div class="text-base leading-relaxed text-on-surface/90">${formatMarkdown(answer)}</div>
-            ${listingsHtml}
+            ${roomsHtml}
             ${suggestionsHtml}
             ${badgesHtml}
         </div>
@@ -307,17 +307,20 @@ function addAIMessage(answer, sources, trace, timeMs, label, payload) {
     scrollToBottom();
 }
 
-function renderListings(listings) {
-    if (!listings.length) return '';
+function renderRooms(rooms) {
+    if (!rooms.length) return '';
     return `
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-5">
-            ${listings.slice(0, 4).map(l => `
+            ${rooms.slice(0, 4).map(r => `
                 <div class="rounded-lg border border-outline-variant/20 bg-white/70 p-4">
-                    <div class="text-sm font-semibold text-on-surface">${esc(l.title || l.listing_id || 'Listing')}</div>
-                    <div class="mt-2 text-xs text-on-surface-variant">${esc(l.district || l.address || 'Khu vực chưa rõ')}</div>
+                    <div class="text-xs font-bold text-primary uppercase mb-2">Room</div>
+                    <div class="mt-2 flex items-center justify-between gap-3 text-xs">
+                        <span class="text-on-surface-variant">house_id</span>
+                        <span class="font-mono text-on-surface">${esc(r.house_id || '')}</span>
+                    </div>
                     <div class="mt-3 flex items-center justify-between text-xs">
-                        <span class="font-mono text-primary">#${esc(l.listing_id || '')}</span>
-                        <span class="font-semibold">${formatVnd(l.rent_price)}</span>
+                        <span class="text-on-surface-variant">room_id</span>
+                        <span class="font-mono text-primary">#${esc(r.room_id || '')}</span>
                     </div>
                 </div>`).join('')}
         </div>`;
@@ -329,9 +332,9 @@ function renderSources(sources) {
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
             ${sources.slice(0, 3).map(s => `
                 <div class="glass p-4 rounded-xl border border-outline-variant/10 hover:border-primary/20 transition-all">
-                    <div class="text-[10px] font-bold text-primary uppercase mb-1">Nguồn listing</div>
-                    <div class="text-xs font-semibold text-on-surface leading-tight">${esc(s.title || s.listing_id || 'Listing')}</div>
-                    ${s.source_version !== undefined ? `<div class="text-[10px] text-on-surface-variant mt-1 font-mono">v${esc(String(s.source_version))}</div>` : ''}
+                    <div class="text-[10px] font-bold text-primary uppercase mb-1">Nguon room</div>
+                    <div class="text-xs font-semibold text-on-surface leading-tight">#${esc(s.room_id || '')}</div>
+                    ${s.house_id ? `<div class="text-[10px] text-on-surface-variant mt-1 font-mono">${esc(String(s.house_id))}</div>` : ''}
                 </div>`).join('')}
         </div>`;
 }

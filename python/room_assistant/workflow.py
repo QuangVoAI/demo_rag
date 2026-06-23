@@ -275,12 +275,6 @@ def _build_grounding_context(
             "type": "room",
             "room_id": room_id,
             "house_id": room.get("house_id"),
-            "title": room.get("title"),
-            "score": _preferred_source_score(room),
-            "rerank_score": room.get("rerank_score"),
-            "combined_score": room.get("combined_score"),
-            "rrf_score": room.get("rrf_score"),
-            "metadata_score": room.get("metadata_score"),
         })
         unknown.extend(f"{room_id}.{field}" for field in _unknown_fields(room))
 

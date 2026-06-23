@@ -320,16 +320,6 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
         if readable:
             query["$and"].append({"embedding_text": {"$not": {"$regex": f"{readable}.*Có", "$options": "i"}}})
 
-    import json
-    def serialize_query(q):
-        if isinstance(q, dict):
-            return {k: serialize_query(v) for k, v in q.items()}
-        elif isinstance(q, list):
-            return [serialize_query(v) for v in q]
-        else:
-            return str(q) if hasattr(q, "__class__") and q.__class__.__name__ == "ObjectId" else q
-
-    print("MONGO QUERY:", json.dumps(serialize_query(query), ensure_ascii=False))
     return query
 
 
@@ -354,6 +344,10 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
     # Check required amenities
     required = constraints.get("amenities_required") or []
     room_amenities = room.get("amenities") or []
+    required = [
+        amenity for amenity in required
+        if not _room_has_canonical_amenity(room_amenities, amenity)
+    ]
     import re
     for amenity in required:
         readable = _amenity_to_vietnamese(amenity)
@@ -371,6 +365,8 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
     # Check excluded features
     excluded = constraints.get("excluded_features") or []
     for feature in excluded:
+        if _room_has_canonical_amenity(room_amenities, feature):
+            return False
         readable = _amenity_to_vietnamese(feature)
         if readable:
             matched = False
@@ -409,6 +405,11 @@ AMENITY_VIETNAMESE_MAP: dict[str, str] = {
 
 def _amenity_to_vietnamese(amenity: str) -> str | None:
     return AMENITY_VIETNAMESE_MAP.get(amenity)
+
+
+def _room_has_canonical_amenity(room_amenities: list[Any], amenity: str) -> bool:
+    canonical = str(amenity).strip().lower()
+    return any(str(item).strip().lower() == canonical for item in room_amenities)
 
 
 def _normalize_location_value(value: Any) -> str:

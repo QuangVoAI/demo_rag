@@ -220,6 +220,10 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         old = service.process_event(dict(event, event_id="e3", source_version=0))
         self.assertEqual(old["result"], "skipped_old_event")
 
+        old_delete = service.process_event(dict(event, event_id="e3d", operation="delete", source_version=0))
+        self.assertEqual(old_delete["result"], "skipped_old_event")
+        self.assertEqual(vector.deleted, [])
+
         deleted = service.process_event(dict(event, event_id="e4", operation="delete"))
         self.assertEqual(deleted["result"], "deleted")
         self.assertEqual(vector.deleted, ["A101"])

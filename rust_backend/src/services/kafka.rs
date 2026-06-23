@@ -21,8 +21,8 @@ use crate::config::AppConfig;
 
 pub const TOPIC_QUERY_REQUEST: &str = "query.request";
 pub const TOPIC_QUERY_RESPONSE: &str = "query.response";
-pub const TOPIC_LISTING_CHANGED: &str = "listing.changed";
-pub const TOPIC_LISTING_INDEX_DLQ: &str = "listing.index.dlq";
+pub const TOPIC_ROOM_CHANGED: &str = "room.changed";
+pub const TOPIC_ROOM_INDEX_DLQ: &str = "room.index.dlq";
 
 // ─── Message Types ───────────────────────────────────────────
 
@@ -49,7 +49,7 @@ pub struct QueryResponseEvent {
     #[serde(default)]
     pub session_state: serde_json::Value,
     #[serde(default)]
-    pub listings: Vec<serde_json::Value>,
+    pub rooms: Vec<serde_json::Value>,
     #[serde(default)]
     pub cost_estimate: Option<serde_json::Value>,
     #[serde(default)]
@@ -78,6 +78,7 @@ pub struct QueryResponseEvent {
 pub struct KafkaService {
     producer: FutureProducer,
     brokers: String,
+    response_consumer_group_id: String,
     /// Channel senders: session_id → mpsc sender for response routing
     response_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<QueryResponseEvent>>>>,
 }
@@ -96,6 +97,7 @@ impl KafkaService {
         Ok(Self {
             producer,
             brokers: config.kafka_brokers.clone(),
+            response_consumer_group_id: config.kafka_response_consumer_group_id.clone(),
             response_channels: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -146,6 +148,7 @@ impl KafkaService {
     /// Routes responses to the correct session via registered channels.
     pub fn spawn_response_consumer(self: Arc<Self>) {
         let brokers = self.brokers.clone();
+        let group_id = self.response_consumer_group_id.clone();
         let channels = self.response_channels.clone();
 
         tokio::spawn(async move {
@@ -153,7 +156,7 @@ impl KafkaService {
 
             let consumer: StreamConsumer = match ClientConfig::new()
                 .set("bootstrap.servers", &brokers)
-                .set("group.id", "rust-backend-response-consumer")
+                .set("group.id", &group_id)
                 .set("auto.offset.reset", "latest")
                 .set("enable.auto.commit", "true")
                 .create()
