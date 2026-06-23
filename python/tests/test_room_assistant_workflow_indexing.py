@@ -176,6 +176,16 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         ))
         self.assertEqual(cost["cost_estimate"]["total_initial_cost"], 9_250_000)
 
+        cost_six_months = asyncio.run(run_room_assistant(
+            "Tính tổng chi phí #A101 nếu thuê 6 tháng",
+            session_id="s4b",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=semantic,
+        ))
+        self.assertEqual(cost_six_months["cost_estimate"]["rental_months"], 6)
+        self.assertEqual(cost_six_months["cost_estimate"]["total_period_cost"], 33_000_000)
+
         compare = asyncio.run(run_room_assistant(
             "So sánh #A101 #B202 #C303 #D404",
             session_id="s5",

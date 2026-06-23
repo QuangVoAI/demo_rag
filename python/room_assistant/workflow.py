@@ -266,7 +266,11 @@ def _execute_workflow(
         )
         estimate = _tool_registry.execute(
             "calculate_cost_estimate",
-            {"listing": listing},
+            {
+                "listing": listing,
+                "rental_months": _extract_rental_months(question),
+                "constraints": constraints,
+            },
             context,
         )
         return {"listings": [listing] if listing else [], "cost_estimate": estimate}
@@ -356,11 +360,13 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
         for listing in listings[:5]:
             rent = format_vnd(listing.get("rent_price"))
             amenities = ", ".join(listing.get("amenities") or []) or "chưa có dữ liệu"
+            parking = "có" if listing.get("shared_parking") is True else "chưa có dữ liệu"
             parts.append(
                 f"- [{listing.get('listing_id')}] {listing.get('title')} | "
                 f"{rent}/tháng | {listing.get('district') or 'chưa rõ khu vực'} | "
                 f"Diện tích: {listing.get('area_m2') or '?'} m² | "
-                f"Tiện ích: {amenities}"
+                f"Tiện ích: {amenities} | "
+                f"Chỗ để xe máy: {parking}"
             )
 
     estimate = tool_results.get("cost_estimate")
@@ -369,6 +375,10 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
         for item in estimate.get("items", []):
             parts.append(f"  - {item['name']}: {format_vnd(item.get('amount'))}")
         parts.append(f"  Tổng: {format_vnd(estimate.get('total_initial_cost'))}")
+        if estimate.get("rental_months"):
+            for item in estimate.get("period_items", []):
+                parts.append(f"  - {item['name']}: {format_vnd(item.get('amount'))}")
+            parts.append(f"  Tổng {estimate['rental_months']} tháng: {format_vnd(estimate.get('total_period_cost'))}")
         if estimate.get("unknown"):
             parts.append(f"  Chưa có dữ liệu: {', '.join(estimate['unknown'])}")
 
@@ -453,10 +463,21 @@ def _compose_answer_template(
         estimate = tool_results.get("cost_estimate") or {}
         if not estimate.get("available"):
             return "Mình chưa có đủ dữ liệu phòng để tính chi phí. Bạn gửi mã phòng cụ thể hơn nhé."
-        lines = ["**Ước tính chi phí ban đầu** (tính toán deterministic từ dữ liệu đã xác nhận):"]
-        for item in estimate.get("items", []):
-            lines.append(f"- {item['name']}: {format_vnd(item.get('amount'))}")
-        lines.append(f"\n**Tổng tạm tính:** {format_vnd(estimate.get('total_initial_cost'))}")
+        lines = ["**Ước tính chi phí** (calculator deterministic từ dữ liệu đã xác nhận):"]
+        if estimate.get("rental_months"):
+            lines.append(f"- Thời gian thuê: {estimate['rental_months']} tháng")
+        if estimate.get("rental_months"):
+            for item in estimate.get("period_items", []):
+                lines.append(f"- {_cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
+            if estimate.get("recurring_fees_for_period"):
+                lines.append(f"- Phí cố định {estimate['rental_months']} tháng: {format_vnd(estimate.get('recurring_fees_for_period'))}")
+            lines.append(f"\n**Tổng tạm tính {estimate['rental_months']} tháng:** {format_vnd(estimate.get('total_period_cost'))}")
+        else:
+            for item in estimate.get("items", []):
+                if item.get("amount") == 0:
+                    continue
+                lines.append(f"- {_cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
+            lines.append(f"\n**Tổng tạm tính ban đầu:** {format_vnd(estimate.get('total_initial_cost'))}")
         if estimate.get("unknown"):
             lines.append(f"_Chưa có dữ liệu: {', '.join(estimate['unknown'])}._")
         return "\n".join(lines)
@@ -596,6 +617,17 @@ def _first_or_none(values: list[Any]) -> Any | None:
     return values[0] if values else None
 
 
+def _extract_rental_months(question: str) -> int | None:
+    import re
+
+    normalized = question.lower()
+    match = re.search(r"\b(\d{1,2})\s*(?:tháng|thang|month|months)\b", normalized)
+    if not match:
+        return None
+    months = int(match.group(1))
+    return months if months > 0 else None
+
+
 def _has_soft_preferences(constraints: dict[str, Any]) -> bool:
     return bool(constraints.get("amenities_preferred"))
 
@@ -638,3 +670,23 @@ def format_vnd(value: Any) -> str:
         return f"{int(value):,} VND".replace(",", ".")
     except Exception:
         return str(value)
+
+
+def _cost_item_label(name: str) -> str:
+    labels = {
+        "rent_first_month": "Tiền thuê tháng đầu",
+        "deposit": "Tiền cọc",
+        "fee_management": "Phí quản lý",
+        "fee_parking": "Phí gửi xe",
+        "fee_wifi": "Wifi",
+        "fee_washing_machine": "Máy giặt",
+    }
+    if name.startswith("rent_") and name.endswith("_months"):
+        parts = name.split("_")
+        if len(parts) >= 2:
+            return f"Tiền thuê {parts[1]} tháng"
+    if name in labels:
+        return labels[name]
+    if name.startswith("fee_"):
+        return "Phí " + name.removeprefix("fee_").replace("_", " ")
+    return name

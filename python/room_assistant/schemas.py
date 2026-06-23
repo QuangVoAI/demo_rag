@@ -168,6 +168,10 @@ def normalize_listing(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     fees = raw.get("fees") if isinstance(raw.get("fees"), dict) else {}
     location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
     property_info = raw.get("property_info") if isinstance(raw.get("property_info"), dict) else {}
+    rules = raw.get("rules") if isinstance(raw.get("rules"), dict) else {}
+    address = raw.get("address")
+    if isinstance(address, dict):
+        address = address.get("full") or address.get("street")
 
     rent = (
         raw.get("rent_price")
@@ -206,7 +210,7 @@ def normalize_listing(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized["rent_price"] = int(rent) if isinstance(rent, (int, float)) else rent
     normalized["deposit"] = raw.get("deposit") or price.get("deposit")
     normalized["fees"] = fees
-    normalized["address"] = raw.get("address") or location.get("address") or ""
+    normalized["address"] = address or location.get("address") or ""
     normalized["province"] = raw_province
     normalized["district"] = raw_district
     normalized["ward"] = raw.get("ward") or location.get("ward")
@@ -223,11 +227,21 @@ def normalize_listing(raw: dict[str, Any] | None) -> dict[str, Any] | None:
         except Exception:
             pass
             
-    normalized["amenities"] = list(raw_amenities)
+    normalized_amenities = list(raw_amenities)
+    if rules.get("window") is True and "window" not in normalized_amenities:
+        normalized_amenities.append("window")
+    if rules.get("balcony") is True and "balcony" not in normalized_amenities:
+        normalized_amenities.append("balcony")
+    if str(rules.get("toilet") or "").lower() in {"riêng", "rieng", "private"} and "private_bathroom" not in normalized_amenities:
+        normalized_amenities.append("private_bathroom")
+    if str(rules.get("curfew") or "").lower() in {"tự do", "tu do", "free"} and "free_hours" not in normalized_amenities:
+        normalized_amenities.append("free_hours")
+    normalized["amenities"] = normalized_amenities
     normalized["max_occupants"] = raw.get("max_occupants")
     normalized["pets_allowed"] = raw.get("pets_allowed")
     normalized["vehicles_allowed"] = list(raw.get("vehicles_allowed") or raw.get("vehicles") or [])
-    normalized["electric_bike_allowed"] = raw.get("electric_bike_allowed")
+    normalized["electric_bike_allowed"] = raw.get("electric_bike_allowed", rules.get("electric_vehicle_allowed"))
+    normalized["shared_parking"] = raw.get("shared_parking", rules.get("shared_parking"))
     normalized["available_from"] = raw.get("available_from")
     normalized["source_version"] = int(raw.get("source_version") or raw.get("version") or 0)
     normalized["updated_at"] = raw.get("updated_at")

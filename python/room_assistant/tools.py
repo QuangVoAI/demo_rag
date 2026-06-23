@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Callable
 
 from .repository import ListingRepository
@@ -139,33 +140,58 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
     if not listing:
         return {"available": False, "unknown": ["listing_not_found"], "items": [], "total_initial_cost": None}
 
+    rental_months = _positive_int(args.get("rental_months"))
     rent = listing.get("rent_price")
     deposit = listing.get("deposit")
     fees = listing.get("fees") or {}
     items: list[dict[str, Any]] = []
+    period_items: list[dict[str, Any]] = []
     unknown: list[str] = []
     total = 0
+    period_total = 0
+    recurring_fees_total = 0
 
     if rent is None:
         unknown.append("rent_price")
     else:
-        items.append({"name": "rent_first_month", "amount": rent, "confirmed": True})
-        total += int(rent)
+        rent_amount = int(rent)
+        items.append({"name": "rent_first_month", "amount": rent_amount, "confirmed": True})
+        total += rent_amount
+        if rental_months:
+            rent_for_period = rent_amount * rental_months
+            period_items.append({
+                "name": f"rent_{rental_months}_months",
+                "amount": rent_for_period,
+                "confirmed": True,
+            })
+            period_total += rent_for_period
 
     if deposit is None:
         unknown.append("deposit")
     else:
-        items.append({"name": "deposit", "amount": deposit, "confirmed": True})
-        total += int(deposit)
+        deposit_amount = int(deposit)
+        items.append({"name": "deposit", "amount": deposit_amount, "confirmed": True})
+        total += deposit_amount
+        if rental_months:
+            period_total += deposit_amount
 
     for name, amount in fees.items():
         if amount is None:
             unknown.append(f"fees.{name}")
             continue
-        items.append({"name": f"fee_{name}", "amount": amount, "confirmed": True})
-        total += int(amount)
+        fee_amount = _money_amount_or_none(amount, name, args)
+        if fee_amount is None:
+            unknown.append(f"fees.{name}")
+            continue
+        items.append({"name": f"fee_{name}", "amount": fee_amount, "confirmed": True})
+        total += fee_amount
+        if rental_months:
+            recurring_fees_total += fee_amount * rental_months
 
-    return {
+    if rental_months:
+        period_total += recurring_fees_total
+
+    result = {
         "available": True,
         "listing_id": listing.get("listing_id"),
         "currency": "VND",
@@ -174,6 +200,14 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
         "unknown": unknown,
         "note": "Ước tính deterministic từ giá, cọc và phí đã xác nhận trong listing.",
     }
+    if rental_months:
+        result.update({
+            "rental_months": rental_months,
+            "period_items": period_items,
+            "recurring_fees_for_period": recurring_fees_total,
+            "total_period_cost": period_total if period_total else None,
+        })
+    return result
 
 
 def compare_listings(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
@@ -226,3 +260,47 @@ def find_similar_listings(args: dict[str, Any], context: ToolExecutionContext) -
 
 def _unknown_listing_fields(listing: dict[str, Any]) -> list[str]:
     return unknown_listing_fields(listing)
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[str, Any] | None = None) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip().lower()
+    if normalized in {"free", "miễn phí", "mien phi", "0", "0đ", "0d"}:
+        return 0
+    if any(unit in normalized for unit in ("/kwh", "/kw", "/m3", "/m³", "/kg")):
+        return None
+    if "/xe" in normalized and not _has_vehicle(args, "motorbike"):
+        return None
+
+    match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(k|nghìn|nghin|tr|triệu|trieu)?", normalized)
+    if not match:
+        return None
+    number = float(match.group(1).replace(",", "."))
+    unit = match.group(2) or ""
+    if unit in {"tr", "triệu", "trieu"}:
+        return int(number * 1_000_000)
+    if unit in {"k", "nghìn", "nghin"}:
+        return int(number * 1_000)
+    if number < 1000 and fee_name:
+        return int(number * 1_000)
+    return int(number)
+
+
+def _has_vehicle(args: dict[str, Any] | None, vehicle: str) -> bool:
+    constraints = (args or {}).get("constraints") or {}
+    return vehicle in set(constraints.get("vehicles") or [])
+    return None

@@ -29,6 +29,9 @@ ACTION_KEYWORDS = {
     "message_owner": (
         "nhắn chủ", "nhan chu", "gửi tin", "gui tin",
         "liên hệ chủ", "lien he chu", "nhắn tin cho chủ",
+        "chat ngay", "gọi hỗ trợ", "goi ho tro", "gọi tư vấn",
+        "goi tu van", "gọi tổng đài", "goi tong dai",
+        "số điện thoại", "so dien thoai", "xin số", "xin so",
     ),
     "save_favorite": (
         "lưu phòng", "luu phong", "yêu thích", "yeu thich",
@@ -69,6 +72,8 @@ AMENITY_ALIASES: dict[str, str] = {
     # Giặt giũ
     "máy giặt": "washing_machine",
     "may giat": "washing_machine",
+    "giặt đồ": "washing_machine",
+    "giat do": "washing_machine",
     # Vệ sinh
     "wc riêng": "private_bathroom",
     "toilet riêng": "private_bathroom",
@@ -82,6 +87,18 @@ AMENITY_ALIASES: dict[str, str] = {
     "bếp": "kitchen",
     "bep": "kitchen",
     "bếp riêng": "kitchen",
+    "kệ bếp": "kitchen",
+    "ke bep": "kitchen",
+    "tủ lạnh": "refrigerator",
+    "tu lanh": "refrigerator",
+    "nước nóng": "hot_water",
+    "nuoc nong": "hot_water",
+    "giường": "bed",
+    "giuong": "bed",
+    "nệm": "mattress",
+    "nem": "mattress",
+    "tủ quần áo": "wardrobe",
+    "tu quan ao": "wardrobe",
     # Cửa sổ / ánh sáng
     "cửa sổ": "window",
     "cua so": "window",
@@ -94,11 +111,6 @@ AMENITY_ALIASES: dict[str, str] = {
     # Internet
     "wifi": "wifi",
     "internet": "wifi",
-    # Chỗ đậu xe
-    "chỗ để xe": "parking",
-    "cho de xe": "parking",
-    "hầm xe": "parking",
-    "ham xe": "parking",
     # Thú cưng
     "nuôi thú cưng": "pets_allowed",
     "nuoi thu cung": "pets_allowed",
@@ -112,6 +124,8 @@ AMENITY_ALIASES: dict[str, str] = {
     "gio tu do": "free_hours",
     "tự do giờ giấc": "free_hours",
     "tu do gio giac": "free_hours",
+    "giờ giấc tự do": "free_hours",
+    "gio giac tu do": "free_hours",
 }
 
 ROOM_TYPE_ALIASES: dict[str, str] = {
@@ -169,6 +183,10 @@ SOFT_PREFERENCE_ALIASES: dict[str, str] = {
     "an toan": "safe_neighborhood",
     "mới": "newly_renovated",
     "moi": "newly_renovated",
+    "không chung chủ": "no_owner_shared",
+    "khong chung chu": "no_owner_shared",
+    "không chủ chung": "no_owner_shared",
+    "khong chu chung": "no_owner_shared",
 }
 
 # ---------------------------------------------------------------------------
@@ -184,7 +202,9 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "CALCULATE_COST": (
         "tong chi phi", "chi phi", "tien coc", "phi hang thang",
         "uoc tinh", "bao nhieu tien", "tinh tien", "phi phat sinh",
-        "mat bao nhieu", "mat bao nhieu tien",
+        "mat bao nhieu", "mat bao nhieu tien", "gia dien", "gia nuoc",
+        "phi dien", "phi nuoc", "phi quan ly", "phi gui xe",
+        "tien dien", "tien nuoc", "wifi bao nhieu", "gui xe bao nhieu",
     ),
     "FIND_SIMILAR": (
         "tuong tu", "giong phong", "phong giong", "phong khac tuong tu",
@@ -207,13 +227,39 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "thue phong", "muon thue", "can thue", "tim nha",
         "phong cho thue", "nha cho thue", "chdv", "duplex",
         "sleepbox", "giuong", "mat bang", "nha pho",
+        "con phong", "phong trong", "sap het", "hot",
     ),
     "REQUEST_FAQ": (
         "quy dinh", "dieu khoan", "chinh sach", "huong dan",
         "lam the nao", "can lam gi", "thu tuc", "ho so can gi",
         "ky hop dong", "hop dong thue", "bao nhieu coc",
+        "phong that", "thong tin that", "da xac thuc", "xac thuc",
+        "dan xem", "xem tan noi", "mien phi", "mat phi",
+        "anhome", "tai app", "ky gui", "lap mang", "chu nha",
+        "dang tin", "hoa hong",
     ),
 }
+
+DETAIL_FIELD_KEYWORDS: tuple[str, ...] = (
+    "dien tich", "gia phong", "gia bao nhieu", "con phong", "phong trong",
+    "ma phong", "vi tri", "dia chi", "gan dau", "gan truong", "gan cho",
+    "gan sieu thi", "toilet", "wc", "nha ve sinh", "gio giac", "cua so",
+    "ban cong", "thu cung", "nuoi meo", "nuoi cho", "de xe", "cho de xe",
+    "gui xe", "xe dien", "may giat", "wifi", "tu lanh", "nuoc nong",
+    "gac", "nem", "giuong", "tu quan ao", "ke bep", "thang may",
+    "may lanh", "dien", "nuoc", "quan ly", "xac thuc", "anhome ho tro",
+)
+
+ROOM_REFERENCE_KEYWORDS: tuple[str, ...] = (
+    "phong nay", "phong do", "phong tren", "dang xem", "can ho nay",
+    "cho nay", "nha nay", "muc nay", "tin nay",
+)
+
+COST_FIELD_KEYWORDS: tuple[str, ...] = (
+    "chi phi", "gia dien", "gia nuoc", "phi dien", "phi nuoc",
+    "phi quan ly", "phi gui xe", "tien dien", "tien nuoc",
+    "tien coc", "bao nhieu tien",
+)
 
 
 def _strip_accents(value: str) -> str:
@@ -331,6 +377,19 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     for district in districts:
         _append_unique(ops, "append", "location.districts", district)
 
+    wards = []
+    for match in re.finditer(
+        r"\b(?:phuong|phường|xa|xã)\s+([a-z0-9 àáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]{1,35})",
+        normalized,
+        re.IGNORECASE,
+    ):
+        value = match.group(1).strip()
+        value = re.split(r"\b(?:gan|duoi|tren|co|va|gia|,|\.)\b", value)[0].strip()
+        if value and value not in wards:
+            wards.append(value)
+    for ward in wards:
+        _append_unique(ops, "append", "location.wards", ward)
+
     # Nhận diện mốc địa lý gần (gần ĐHQG, gần Vincom...)
     landmarks = []
     for match in re.finditer(r"\b(?:gan|gần)\s+([a-z0-9 àáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]{2,40})", normalized):
@@ -340,6 +399,42 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
             landmarks.append(value)
     for landmark in landmarks:
         _append_unique(ops, "append", "location.near_landmarks", landmark)
+
+    street_patterns = (
+        r"\b(?:duong|đường|mat tien|mặt tiền|hem|hẻm)\s+([a-z0-9 àáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ/-]{2,45})",
+    )
+    for pattern in street_patterns:
+        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            value = match.group(0).strip()
+            value = re.split(r"\b(?:duoi|tren|co|va|gia|,|\.)\b", value)[0].strip()
+            if value:
+                _append_unique(ops, "append", "location.near_landmarks", value)
+
+
+def _extract_move_in_date(normalized: str, ops: list[dict[str, Any]]) -> None:
+    """Trích xuất thời gian dự kiến vào ở theo các lựa chọn trên form đặt lịch."""
+    if re.search(r"(o ngay|ở ngay|can phong o ngay|cần phòng ở ngay)", normalized):
+        _append_unique(ops, "set", "move_in_date", "immediate")
+        return
+    match = re.search(r"\b(\d{1,2})\s*(?:ngay|ngày)\b", normalized)
+    if match:
+        _append_unique(ops, "set", "move_in_date", f"in_{int(match.group(1))}_days")
+        return
+    for phrase, value in (
+        ("dau thang sau", "early_next_month"),
+        ("đầu tháng sau", "early_next_month"),
+        ("giua thang sau", "mid_next_month"),
+        ("giữa tháng sau", "mid_next_month"),
+        ("cuoi thang sau", "late_next_month"),
+        ("cuối tháng sau", "late_next_month"),
+        ("giua thang nay", "mid_this_month"),
+        ("giữa tháng này", "mid_this_month"),
+        ("cuoi thang nay", "late_this_month"),
+        ("cuối tháng này", "late_this_month"),
+    ):
+        if phrase in normalized:
+            _append_unique(ops, "set", "move_in_date", value)
+            return
 
 
 def _extract_people_and_pets(normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -354,19 +449,27 @@ def _extract_people_and_pets(normalized: str, ops: list[dict[str, Any]]) -> None
         _append_unique(ops, "append", "pets_required", "cat")
     if re.search(r"nuoi\s*(cho|chó|dog)", normalized):
         _append_unique(ops, "append", "pets_required", "dog")
+    if re.search(r"(thu\s*cung|pet|nuoi\s*thu\s*cung)", normalized):
+        _append_unique(ops, "append", "pets_required", "pet")
 
     # Phương tiện đặc biệt
     if re.search(r"(gui\s*xe|cho\s*de\s*xe)\s*(dien|electric)", normalized):
         _append_unique(ops, "append", "vehicles", "electric_bike")
-    if re.search(r"xe\s*(may|máy|motor)", normalized):
+    if re.search(r"(xe\s*(may|máy|motor)|\b\d+\s*xe\b|cho\s*de\s*xe|gui\s*xe|ham\s*xe)", normalized):
         _append_unique(ops, "append", "vehicles", "motorbike")
     if re.search(r"\b(o\s*to|oto|car|xe\s*hoi)\b", normalized):
         _append_unique(ops, "append", "vehicles", "car")
 
+
+def _contains_phrase(normalized: str, phrase: str) -> bool:
+    escaped = re.escape(_norm(phrase))
+    return bool(re.search(rf"(?<!\w){escaped}(?!\w)", normalized))
+
+
 def _extract_categories(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
     """Trích xuất loại phòng từ câu hỏi."""
     for alias, canonical in ROOM_TYPE_ALIASES.items():
-        if _norm(alias) in normalized:
+        if _contains_phrase(normalized, alias):
             _append_unique(ops, "append", "categories", canonical)
 
 
@@ -376,7 +479,7 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
     remove_mode = bool(re.search(r"\b(bo|bỏ|khong can|không cần|loai|loại|xoa|xóa)\b", normalized))
 
     for alias, canonical in AMENITY_ALIASES.items():
-        if _norm(alias) in normalized:
+        if _contains_phrase(normalized, alias):
             _append_unique(
                 ops,
                 "remove" if remove_mode else "append",
@@ -390,7 +493,7 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
         _append_unique(ops, "append", "excluded_features", "mezzanine")
 
     for alias, canonical in SOFT_PREFERENCE_ALIASES.items():
-        if _norm(alias) in normalized:
+        if _contains_phrase(normalized, alias):
             _append_unique(ops, "append", "amenities_preferred", canonical)
 
     # Lệnh xóa toàn bộ điều kiện tìm kiếm
@@ -416,6 +519,26 @@ def _requested_action(normalized: str) -> str | None:
     return None
 
 
+def _has_current_listing(current_state: dict[str, Any] | None) -> bool:
+    if not current_state:
+        return False
+    return bool(current_state.get("current_listing_id") or current_state.get("selected_listing_ids") or current_state.get("last_result_ids"))
+
+
+def _has_keyword(normalized: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in normalized for keyword in keywords)
+
+
+def _is_room_detail_question(normalized: str, ids: list[str], current_state: dict[str, Any] | None) -> bool:
+    if _has_keyword(normalized, COST_FIELD_KEYWORDS):
+        return False
+    if not _has_keyword(normalized, DETAIL_FIELD_KEYWORDS):
+        return False
+    if ids or _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+        return True
+    return _has_current_listing(current_state) and bool(re.search(r"\b(co|có|khong|không|bao nhieu|bao nhiêu|the nao|thế nào|la gi|là gì)\b", normalized))
+
+
 # ---------------------------------------------------------------------------
 # Tầng 1: Phân loại intent bằng regex
 # Trả về (intent, confidence) — confidence < 1.0 thì cần LLM verify
@@ -436,6 +559,8 @@ def _regex_classify(
     """
     if action:
         return "REQUEST_ACTION", 1.0
+    if _is_room_detail_question(normalized, ids, current_state):
+        return "ASK_ABOUT_ROOM", 1.0
 
     for intent, keywords in _INTENT_KEYWORDS.items():
         if any(kw in normalized for kw in keywords):
@@ -528,6 +653,7 @@ def parse_intent_and_constraint_patch(
 
     _extract_budget(text, normalized, operations)
     _extract_location(normalized, operations)
+    _extract_move_in_date(normalized, operations)
     _extract_people_and_pets(normalized, operations)
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
@@ -535,6 +661,10 @@ def parse_intent_and_constraint_patch(
     referenced_listing_ids = _extract_listing_ids(text)
     action = _requested_action(normalized)
     intent, _ = _regex_classify(normalized, action, referenced_listing_ids, current_state)
+    if operations and intent == "GENERAL_HELP":
+        intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
+    if operations and intent == "ASK_ABOUT_ROOM" and not referenced_listing_ids and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+        intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
 
     if intent not in INTENTS:
         intent = "GENERAL_HELP"
@@ -568,6 +698,7 @@ async def parse_intent_async(
 
     _extract_budget(text, normalized, operations)
     _extract_location(normalized, operations)
+    _extract_move_in_date(normalized, operations)
     _extract_people_and_pets(normalized, operations)
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
@@ -576,6 +707,12 @@ async def parse_intent_async(
     action = _requested_action(normalized)
 
     regex_intent, regex_conf = _regex_classify(normalized, action, referenced_listing_ids, current_state)
+    if operations and regex_intent == "GENERAL_HELP":
+        regex_intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
+        regex_conf = max(regex_conf, 0.85)
+    if operations and regex_intent == "ASK_ABOUT_ROOM" and not referenced_listing_ids and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+        regex_intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
+        regex_conf = max(regex_conf, 0.85)
 
     # Nếu câu dài hơn 5 từ, ép giảm confidence của regex để bắt LLM phải check lại
     # Tránh trường hợp "Hôm trước mình thuê phòng, giờ muốn lấy cọc" bị regex "thuê phòng" bắt nhầm

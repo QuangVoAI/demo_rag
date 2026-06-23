@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import uuid
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -7,7 +8,7 @@ from agents.graph import run_streaming
 from utils.console import console
 
 async def main():
-    session_id = "test_backend_v2_session_1"
+    session_id = f"test_backend_v2_session_{uuid.uuid4().hex[:8]}"
     history = []
     
     questions = [

@@ -133,17 +133,20 @@ class MongoListingRepository:
         from pymongo import MongoClient
 
         self._client = MongoClient(uri, serverSelectionTimeoutMS=server_selection_timeout_ms)
-        self._collection = self._client[database][collection]
+        self._database = self._client[database]
+        self._collection = self._database[collection]
+        self._properties_collection = self._database["properties"]
 
     def search_by_constraints(self, constraints: dict[str, Any], limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         query = build_mongo_query(constraints)
+        self._append_vehicle_query(query, constraints)
         cursor = (
             self._collection
             .find(query)
             .skip(max(offset, 0))
             .limit(max(limit, 1))
         )
-        return [item for item in (normalize_listing(doc) for doc in cursor) if item]
+        return [item for item in (normalize_listing(doc) for doc in self._enrich_listing_docs(list(cursor))) if item]
 
     def search_by_metadata(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
         import re
@@ -156,11 +159,7 @@ class MongoListingRepository:
 
         clauses: list[dict[str, Any]] = []
         for listing_id in signals.get("listing_id", []) or []:
-            clauses.extend([
-                {"listing_id": str(listing_id)},
-                {"id": str(listing_id)},
-                {"slug": str(listing_id)},
-            ])
+            clauses.extend(_mongo_id_or_clauses(str(listing_id)))
         for snippet in signals.get("district", []) or []:
             escaped = re.escape(str(snippet))
             clauses.extend([
@@ -189,7 +188,7 @@ class MongoListingRepository:
             ]
         }).limit(max(limit, 1))
         results = []
-        for item in (normalize_listing(doc) for doc in cursor):
+        for item in (normalize_listing(doc) for doc in self._enrich_listing_docs(list(cursor))):
             if not item:
                 continue
             item["_metadata_score"] = score_metadata_hit(item, signals, METADATA_FIELDS)
@@ -198,47 +197,23 @@ class MongoListingRepository:
         return results
 
     def get_by_id(self, listing_id: str) -> dict[str, Any] | None:
-        from bson import ObjectId
-        or_clauses = [
-            {"listing_id": str(listing_id)},
-            {"id": str(listing_id)},
-            {"slug": str(listing_id)},
-        ]
-        try:
-            or_clauses.append({"_id": ObjectId(str(listing_id))})
-        except Exception:
-            pass
-            
-        doc = self._collection.find_one({"$or": or_clauses})
+        doc = self._collection.find_one({"$or": _mongo_id_or_clauses(str(listing_id))})
+        doc = self._enrich_listing_doc(doc)
         return normalize_listing(doc)
 
     def get_many_by_ids(self, listing_ids: list[str]) -> list[dict[str, Any]]:
-        from bson import ObjectId
         ids = [str(item) for item in listing_ids]
         if not ids:
             return []
-            
-        or_clauses = [
-            {"listing_id": {"$in": ids}},
-            {"id": {"$in": ids}},
-            {"slug": {"$in": ids}},
-        ]
-        
-        object_ids = []
-        for item in ids:
-            try:
-                object_ids.append(ObjectId(item))
-            except Exception:
-                pass
-        if object_ids:
-            or_clauses.append({"_id": {"$in": object_ids}})
-            
-        cursor = self._collection.find({"$or": or_clauses})
-        by_id = {
-            item["listing_id"]: item
-            for item in (normalize_listing(doc) for doc in cursor)
-            if item
-        }
+
+        docs = self._enrich_listing_docs(list(self._collection.find({"$or": _mongo_many_id_or_clauses(ids)})))
+        by_id: dict[str, dict[str, Any]] = {}
+        for doc in docs:
+            item = normalize_listing(doc)
+            if not item:
+                continue
+            for key in _listing_lookup_keys(doc, item):
+                by_id.setdefault(key, item)
         return [by_id[item] for item in ids if item in by_id]
 
     def get_current_version(self, listing_id: str) -> int | None:
@@ -250,12 +225,16 @@ class MongoListingRepository:
     def iter_listing_ids(self, batch_size: int = 100, resume_after: str | None = None) -> Iterable[list[str]]:
         query: dict[str, Any] = {}
         if resume_after:
-            query["listing_id"] = {"$gt": resume_after}
-        cursor = self._collection.find(query, {"listing_id": 1, "id": 1, "slug": 1}).sort("listing_id", 1)
+            object_id = _to_object_id(resume_after)
+            if object_id is not None:
+                query["_id"] = {"$gt": object_id}
+            else:
+                query["listing_id"] = {"$gt": resume_after}
+        cursor = self._collection.find(query, {"listing_id": 1, "id": 1, "slug": 1}).sort("_id", 1)
 
         batch: list[str] = []
         for doc in cursor:
-            listing_id = doc.get("listing_id") or doc.get("id") or doc.get("slug")
+            listing_id = doc.get("listing_id") or doc.get("id") or doc.get("slug") or doc.get("_id")
             if not listing_id:
                 continue
             batch.append(str(listing_id))
@@ -264,6 +243,85 @@ class MongoListingRepository:
                 batch = []
         if batch:
             yield batch
+
+    def _append_vehicle_query(self, query: dict[str, Any], constraints: dict[str, Any]) -> None:
+        vehicles = set(constraints.get("vehicles") or [])
+        if not vehicles:
+            return
+
+        property_ids = self._property_ids_for_vehicle_constraints(vehicles)
+        vehicle_clauses: list[dict[str, Any]] = []
+        if "electric_bike" in vehicles:
+            vehicle_clauses.extend([
+                {"electric_bike_allowed": True},
+                {"rules.electric_vehicle_allowed": True},
+                {"amenities": {"$in": ["ev_charging", "sac_xe_dien"]}},
+            ])
+        if "motorbike" in vehicles:
+            vehicle_clauses.extend([
+                {"shared_parking": True},
+                {"rules.shared_parking": True},
+                {"vehicles_allowed": {"$in": ["motorbike", "xe_may"]}},
+                {"vehicles": {"$in": ["motorbike", "xe_may"]}},
+                {"amenities": {"$in": ["parking", "cho_de_xe", "ham_xe"]}},
+                {"fees.parking": {"$exists": True}},
+            ])
+        if property_ids:
+            vehicle_clauses.append({"property_id": {"$in": property_ids}})
+        if vehicle_clauses:
+            query["$and"].append({"$or": vehicle_clauses})
+
+    def _property_ids_for_vehicle_constraints(self, vehicles: set[str]) -> list[Any]:
+        if not hasattr(self, "_properties_collection"):
+            return []
+        clauses = []
+        if "motorbike" in vehicles:
+            clauses.extend([
+                {"rules.shared_parking": True},
+                {"fees.parking": {"$exists": True}},
+                {"amenities": {"$in": ["parking", "cho_de_xe", "ham_xe"]}},
+            ])
+        if "electric_bike" in vehicles:
+            clauses.extend([
+                {"rules.electric_vehicle_allowed": True},
+                {"amenities": {"$in": ["ev_charging", "sac_xe_dien"]}},
+            ])
+        if not clauses:
+            return []
+        cursor = self._properties_collection.find({"$or": clauses}, {"_id": 1}).limit(1000)
+        return [doc["_id"] for doc in cursor if doc.get("_id")]
+
+    def _enrich_listing_docs(self, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not hasattr(self, "_properties_collection"):
+            return docs
+        property_ids = [doc.get("property_id") for doc in docs if doc and doc.get("property_id")]
+        if not property_ids:
+            return docs
+        properties = {
+            prop["_id"]: prop
+            for prop in self._properties_collection.find({"_id": {"$in": property_ids}})
+            if prop.get("_id")
+        }
+        return [self._merge_property_doc(doc, properties.get(doc.get("property_id"))) for doc in docs]
+
+    def _enrich_listing_doc(self, doc: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not doc or not doc.get("property_id") or not hasattr(self, "_properties_collection"):
+            return doc
+        prop = self._properties_collection.find_one({"_id": doc["property_id"]})
+        return self._merge_property_doc(doc, prop)
+
+    def _merge_property_doc(self, listing: dict[str, Any], prop: dict[str, Any] | None) -> dict[str, Any]:
+        if not prop:
+            return listing
+        merged = dict(listing)
+        for key in ("amenities", "fees", "media", "nearby_places", "rules"):
+            if not merged.get(key) and prop.get(key) is not None:
+                merged[key] = prop.get(key)
+        if not merged.get("address") and prop.get("address") is not None:
+            merged["address"] = prop.get("address")
+        if not merged.get("landlord_id") and prop.get("landlord_id") is not None:
+            merged["landlord_id"] = prop.get("landlord_id")
+        return merged
 
 
 def create_listing_repository() -> ListingRepository:
@@ -284,6 +342,50 @@ def create_listing_repository() -> ListingRepository:
         except Exception:
             return EmptyListingRepository()
     return EmptyListingRepository()
+
+
+def _mongo_id_or_clauses(listing_id: str) -> list[dict[str, Any]]:
+    clauses: list[dict[str, Any]] = [
+        {"listing_id": listing_id},
+        {"id": listing_id},
+        {"slug": listing_id},
+    ]
+    object_id = _to_object_id(listing_id)
+    if object_id is not None:
+        clauses.append({"_id": object_id})
+    return clauses
+
+
+def _mongo_many_id_or_clauses(listing_ids: list[str]) -> list[dict[str, Any]]:
+    clauses: list[dict[str, Any]] = [
+        {"listing_id": {"$in": listing_ids}},
+        {"id": {"$in": listing_ids}},
+        {"slug": {"$in": listing_ids}},
+    ]
+    object_ids = [object_id for item in listing_ids if (object_id := _to_object_id(item)) is not None]
+    if object_ids:
+        clauses.append({"_id": {"$in": object_ids}})
+    return clauses
+
+
+def _to_object_id(value: str) -> Any | None:
+    from bson import ObjectId
+
+    try:
+        return ObjectId(str(value))
+    except Exception:
+        return None
+
+
+def _listing_lookup_keys(raw: dict[str, Any], normalized: dict[str, Any]) -> set[str]:
+    keys = {
+        normalized.get("listing_id"),
+        raw.get("listing_id"),
+        raw.get("id"),
+        raw.get("slug"),
+        raw.get("_id"),
+    }
+    return {str(key) for key in keys if key}
 
 
 def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
@@ -360,9 +462,6 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
         query["$and"].append({"max_occupants": {"$gte": constraints["occupants"]}})
     if constraints.get("pets_required"):
         query["$and"].append({"pets_allowed": True})
-    if "electric_bike" in (constraints.get("vehicles") or []):
-        query["$and"].append({"electric_bike_allowed": True})
-
     excluded = constraints.get("excluded_features") or []
     if excluded:
         query["$and"].append({"amenities": {"$nin": excluded}})
@@ -413,15 +512,58 @@ def listing_matches_constraints(listing: dict[str, Any], constraints: dict[str, 
             return False
     required = constraints.get("amenities_required") or []
     amenities = set(listing.get("amenities") or [])
-    if any(item not in amenities for item in required):
+    if any(not _amenity_present(amenities, item) for item in required):
         return False
     if constraints.get("pets_required") and listing.get("pets_allowed") is not True:
         return False
-    if "electric_bike" in (constraints.get("vehicles") or []) and listing.get("electric_bike_allowed") is not True:
+    vehicles = set(constraints.get("vehicles") or [])
+    if "electric_bike" in vehicles and listing.get("electric_bike_allowed") is not True:
+        return False
+    if "motorbike" in vehicles and not _supports_motorbike_parking(listing):
         return False
     if any(item in amenities for item in (constraints.get("excluded_features") or [])):
         return False
     return True
+
+
+AMENITY_EQUIVALENTS: dict[str, set[str]] = {
+    "air_conditioner": {"air_conditioner", "may_lanh", "mlanh-y"},
+    "may_lanh": {"air_conditioner", "may_lanh", "mlanh-y"},
+    "mezzanine": {"mezzanine", "gac", "gac-y"},
+    "gac": {"mezzanine", "gac", "gac-y"},
+    "kitchen": {"kitchen", "ke_bep", "bep"},
+    "refrigerator": {"refrigerator", "tu_lanh"},
+    "hot_water": {"hot_water", "nuoc_nong"},
+    "bed": {"bed", "giuong"},
+    "mattress": {"mattress", "nem"},
+    "wardrobe": {"wardrobe", "tu_quan_ao"},
+    "elevator": {"elevator", "thang_may"},
+    "washing_machine": {"washing_machine", "may_giat"},
+    "balcony": {"balcony", "ban_cong", "balcony-y"},
+    "window": {"window", "cua_so", "window-y"},
+    "free_hours": {"free_hours", "gio_tu_do"},
+    "private_bathroom": {"private_bathroom", "toilet_rieng"},
+    "ev_charging": {"ev_charging", "sac_xe_dien", "xedien-y"},
+}
+
+
+def _amenity_present(amenities: set[str], required: Any) -> bool:
+    required_text = str(required)
+    allowed = AMENITY_EQUIVALENTS.get(required_text, {required_text})
+    return bool(amenities & allowed)
+
+
+def _supports_motorbike_parking(listing: dict[str, Any]) -> bool:
+    amenities = set(listing.get("amenities") or [])
+    vehicles = set(listing.get("vehicles_allowed") or listing.get("vehicles") or [])
+    fees = listing.get("fees") if isinstance(listing.get("fees"), dict) else {}
+    return (
+        listing.get("shared_parking") is True
+        or "motorbike" in vehicles
+        or "xe_may" in vehicles
+        or bool({"parking", "cho_de_xe", "ham_xe"} & amenities)
+        or fees.get("parking") is not None
+    )
 
 
 def _normalize_location_value(value: Any) -> str:
