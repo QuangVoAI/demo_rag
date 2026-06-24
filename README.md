@@ -1,4 +1,4 @@
-# Demo RAG Django + MongoDB Cho Website Cho Thuê Nhà Trọ
+﻿# Demo RAG Django + MongoDB Cho Website Cho Thuê Nhà Trọ
 
 ## 1. Mục tiêu demo
 
@@ -109,7 +109,7 @@ Luồng này chạy khi thêm mới hoặc cập nhật bài đăng nhà trọ.
 2. Django nhận document nhà trọ
 3. Tạo một trường text tổng hợp, ví dụ `embedding_text`
 4. Gọi embedding model để tạo vector
-5. Lưu vector vào vector DB kèm `listing_id`
+5. Lưu vector vào vector DB kèm `room_id`
 6. Khi update document thì cập nhật lại vector
 7. Khi xóa document thì xóa vector tương ứng
 
@@ -249,17 +249,17 @@ Lý do:
 
 Vì `nhatrovn.vn` có nhiều danh mục như phòng trọ, căn hộ, nhà phố, mặt bằng, giường nam, giường nữ, sleepbox, studio, CHDV và duplex, nên không nên thiết kế database chỉ cho một loại phòng.
 
-Nên dùng một collection chung tên là `listings` với schema tổng quát, sau đó phân loại bằng `category` và `subtype`.
+Nên dùng một collection chung tên là `rooms` với schema phòng, sau đó phân loại bằng `category` và `subtype`.
 
-### 7.1. Collection chính: `listings`
+### 7.1. Collection chính: `rooms`
 
 ```json
 {
-  "_id": "listing_6a37b10088ac4122462ef477",
+  "_id": "room_6a37b10088ac4122462ef477",
   "source": {
     "site": "nhatrovn.vn",
     "url": "https://nhatrovn.vn/cho-thue-phong-tro/ho-chi-minh/quan-10/chi-tiet/6a37b10088ac4122462ef477/",
-    "listing_code": "102",
+    "room_code": "102",
     "crawl_time": "2026-06-22T10:00:00Z",
     "status": "active"
   },
@@ -416,7 +416,7 @@ Lưu lịch sử chat để đánh giá RAG:
 - `session_id`
 - `user_message`
 - `filters_extracted`
-- `retrieved_listing_ids`
+- `retrieved_room_ids`
 - `final_answer`
 
 ## 8. Thiết kế crawl toàn site
@@ -445,7 +445,7 @@ Tầng này dùng để lấy:
 - số phòng tổng
 - tag như `Hot`, `Mới`, `Đã xác thực`
 
-#### Tầng 2: trang chi tiết từng listing/phòng
+#### Tầng 2: trang chi tiết từng room/phòng
 
 Tầng này dùng để lấy:
 
@@ -516,7 +516,7 @@ Bạn yêu cầu mỗi danh mục khoảng 15 mẫu data và đủ nhiều đị
 - `chdv_3pn`: 15 mẫu
 - `duplex`: 15 mẫu
 
-Tổng mục tiêu ban đầu: khoảng `195 listing`.
+Tổng mục tiêu ban đầu: khoảng `195 room`.
 
 ### 9.2. Chỉ tiêu phủ địa điểm
 
@@ -622,7 +622,7 @@ Diện tích: {area_m2}m2. Tiện ích: {amenities}. Điều kiện: {rules}. M�
 ```text
 demo_rag/
 ├─ apps/
-│  ├─ listings/
+│  ├─ rooms/
 │  │  ├─ models.py
 │  │  ├─ serializers.py
 │  │  ├─ views.py
@@ -684,7 +684,7 @@ Chức năng:
 
 - crawl trang chi tiết
 - parse dữ liệu đầy đủ
-- lưu `listings`
+- lưu `rooms`
 - tạo `embedding_text`
 - sync Chroma
 
@@ -712,7 +712,7 @@ POST /api/embeddings/reindex
 
 Chức năng:
 
-- đọc tất cả listing
+- đọc tất cả room
 - tạo lại vector cho demo khi cần
 
 ## 13. Pseudocode cho crawl và chat
@@ -722,11 +722,11 @@ Chức năng:
 ```python
 def crawl_one_detail(url: str):
     html = fetch_html(url)
-    listing = parse_detail_page(html, url=url)
-    listing = normalize_listing(listing)
-    listing["embedding_text"] = build_embedding_text(listing)
-    upsert_listing(listing)
-    sync_listing_to_chroma(listing)
+    room = parse_detail_page(html, url=url)
+    room = normalize_room(room)
+    room["embedding_text"] = build_embedding_text(room)
+    upsert_room(room)
+    sync_room_to_chroma(room)
 ```
 
 ### 13.2. Pseudocode chat
@@ -761,7 +761,7 @@ Nên làm theo 4 phase:
 
 ### Phase 1. Thiết kế dữ liệu và crawler
 
-- tạo schema `listings`
+- tạo schema `rooms`
 - tạo queue crawl
 - crawl 2 tầng list/detail
 - thu đủ khoảng 15 mẫu cho mỗi danh mục
@@ -778,7 +778,7 @@ Mục tiêu: người dùng có thể tìm đúng dữ liệu bằng filter cứ
 ### Phase 3. Thêm RAG
 
 - tạo `embedding_text`
-- tạo vector cho listing
+- tạo vector cho room
 - search Chroma
 - hybrid search với MongoDB
 
@@ -811,7 +811,7 @@ Stack đề xuất cho bản demo hiện tại:
 Để demo nhanh, dễ quản lý và dễ trình bày, nên triển khai theo kiến trúc sau:
 
 - `Django`: xử lý API, crawler, logic tìm kiếm và chatbot
-- `MongoDB Atlas`: lưu dữ liệu gốc của listing, queue crawl, log chat
+- `MongoDB Atlas`: lưu dữ liệu gốc của room, queue crawl, log chat
 - `Chroma`: lưu vector embedding để semantic search
 - `Railway`: deploy Django app và chạy cron crawl định kỳ
 
@@ -840,15 +840,15 @@ LLM / Embedding API
 
 #### MongoDB Atlas
 
-- lưu `listings`
+- lưu `rooms`
 - lưu `crawl_urls`
 - lưu `crawl_jobs`
 - lưu `chat_logs`
 
 #### Chroma
 
-- lưu vector embedding của mỗi listing
-- tìm top K listing gần nghĩa nhất
+- lưu vector embedding của mỗi room
+- tìm top K room gần nghĩa nhất
 
 #### Railway
 

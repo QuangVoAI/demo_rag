@@ -1,0 +1,39 @@
+# Core ML — torch cần cài trước sentence-transformers
+torch>=2.1.0
+sentence-transformers>=2.7.0    # >=2.7.0: hỗ trợ model_kwargs fp16
+qdrant-client>=1.8.0
+confluent-kafka>=2.3.0
+pymongo>=4.6.0
+
+# LLM
+aiohttp>=3.9.0
+tiktoken>=0.6.0
+tenacity>=8.2.3
+
+# Data Processing
+pymupdf>=1.23.0
+pandas>=2.2.0
+scikit-learn>=1.4.0
+tqdm>=4.66.0
+
+# AI Pipeline
+langgraph>=0.2.0               # 0.2.x: stable API với ainvoke + async nodes
+langchain-core>=0.2.0
+
+# Observability
+langfuse>=2.0.0
+
+# Utils
+rich>=13.7.0
+python-dotenv>=1.0.0
+
+# Caching
+upstash-redis>=1.0.0
+
+# Data & Fine-tuning
+datasets>=2.18.0
+huggingface_hub>=0.22.0
+
+# Vertex AI (Google Cloud)
+google-cloud-aiplatform>=1.50.0  # package mới thay vertexai>=1.42.0
+google-auth>=2.28.0              # authentication cho Vertex AI custom endpoint

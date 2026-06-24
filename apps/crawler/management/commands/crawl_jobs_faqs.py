@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 from apps.crawler.jobs_crawler import crawl_jobs_and_faqs
 
 class Command(BaseCommand):
-    help = 'Crawl recruitment vacancies and FAQs from nhatrovn.vn.'
+    help = 'Crawl recruitment vacancies and FAQs from nhatrovn.'
 
     def handle(self, *args, **options):
         self.stdout.write("Starting careers & FAQs crawler...")

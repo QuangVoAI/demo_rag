@@ -2,20 +2,20 @@ from django.core.management.base import BaseCommand
 from apps.crawler.detail_crawler import crawl_detail_pages
 
 class Command(BaseCommand):
-    help = 'Crawl property detail pages and save listings to MongoDB.'
+    help = 'Crawl property detail pages and save rooms to MongoDB.'
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--limit-cat',
             type=int,
             default=15,
-            help='Max listings to crawl per category.'
+            help='Max rooms to crawl per category.'
         )
         parser.add_argument(
             '--max-total',
             type=int,
             default=None,
-            help='Max total listings to crawl in this execution.'
+            help='Max total rooms to crawl in this execution.'
         )
 
     def handle(self, *args, **options):

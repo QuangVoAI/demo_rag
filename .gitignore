@@ -25,3 +25,16 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Generated runtime data
+data/e2e_*.json
+data/state/
+qdrant_storage/
+
+# Local tool state
+.codex/
+.agents/
+.deepeval/
+
+# Local agent routing artifacts
+.ai-router/

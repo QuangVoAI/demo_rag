@@ -24,8 +24,8 @@ def get_collection(name):
 def get_properties_collection():
     return get_collection("properties")
 
-def get_listings_collection():
-    return get_collection("listings")
+def get_rooms_collection():
+    return get_collection("rooms")
 
 def get_users_collection():
     return get_collection("users")
@@ -79,7 +79,7 @@ def upsert_listing(listing_data, job_id=None):
     from apps.crawler.normalizers import build_embedding_text, build_search_text
     
     properties_col = get_properties_collection()
-    listings_col = get_listings_collection()
+    rooms_col = get_rooms_collection()
     
     source_url = listing_data.get('source', {}).get('url')
     if not source_url:
@@ -123,13 +123,13 @@ def upsert_listing(listing_data, job_id=None):
             "price": listing_data.get("price", {}).get("min") or 0
         }]
         
-    # 3. Insert listings (rooms) referencing the property_id
+    # 3. Insert rooms referencing the property_id
     results = []
     for room in available_rooms:
         room_code = room.get("room_code")
         price_val = room.get("price") or 0
+        room_id = f"{source_url}#{room_code}"
         
-        # Build listing document
         room_title = f"{listing_data.get('title', 'Phòng')} {room_code}"
         room_price_data = {
             "min": price_val,
@@ -140,9 +140,20 @@ def upsert_listing(listing_data, job_id=None):
         }
         
         room_listing = {
+            "room_id": room_id,
+            "house_id": str(property_id),
             "property_id": property_id,
             "room_code": room_code,
             "category": listing_data.get("category", "phong_tro"),
+            "metadata": {
+                "status_code": "0",
+                "price": price_val,
+                "house_name": listing_data.get("title", "Phòng"),
+                "room_code": room_code,
+                "ward_name": listing_data.get("address", {}).get("ward"),
+                "district_name": listing_data.get("address", {}).get("district"),
+                "province_name": listing_data.get("address", {}).get("city"),
+            },
             "title": room_title,
             "description": listing_data.get("description", ""),
             "summary": f"{room_title} tại {listing_data.get('address', {}).get('district', '')}, giá {room_price_data['display_text']} VND.",
@@ -156,7 +167,7 @@ def upsert_listing(listing_data, job_id=None):
             "tags": listing_data.get("tags", []),
             "status": "active",
             "source": {
-                "site": "nhatrovn.vn",
+                "site": "nhatrovn",
                 "url": source_url,
                 "listing_code": room_code,
                 "crawl_time": listing_data.get("source", {}).get("crawl_time")
@@ -171,9 +182,9 @@ def upsert_listing(listing_data, job_id=None):
         room_listing["embedding_text"] = build_embedding_text(mock_full_listing)
         room_listing["search_text"] = build_search_text(mock_full_listing)
         
-        # Upsert room listing based on property_id and room_code
-        res = listings_col.update_one(
-            {"property_id": property_id, "room_code": room_code},
+        # Upsert room based on its source URL and room code.
+        res = rooms_col.update_one(
+            {"room_id": room_id},
             {"$set": room_listing},
             upsert=True
         )

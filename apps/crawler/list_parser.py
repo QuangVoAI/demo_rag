@@ -1,7 +1,7 @@
-import requests
+﻿import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from apps.listings.services import get_collection
+from apps.rooms.services import get_collection
 
 CAT_WEIGHTS = {
     "phong_tro": 0,

@@ -1,10 +1,10 @@
-{% extends "listings/base.html" %}
+﻿{% extends "rooms/base.html" %}
 
-{% block title %}nhatrovn.vn - Danh sách phòng trọ, căn hộ cho thuê thực tế{% endblock %}
+{% block title %}nhatrovn - Danh sách phòng trọ, căn hộ cho thuê thực tế{% endblock %}
 
 {% block content %}
 <main class="listing-page">
-  <form action="{% url 'listings:listing_list' %}" method="GET" id="unifiedFilterForm">
+  <form action="{% url 'rooms:room_list' %}" method="GET" id="unifiedFilterForm">
     <input type="hidden" name="quick_filter" value="{{ current_quick_filter|default:'' }}">
     <section class="listing-search-wrap">
       <div class="shell">
@@ -17,16 +17,16 @@
           </div>
   
           <div class="category-chip-row">
-            <a href="{% url 'listings:listing_list' %}" onclick="filterNavigate('category', ''); event.preventDefault();" class="category-chip {% if not current_category %}active{% endif %}">Tất cả phòng</a>
+            <a href="{% url 'rooms:room_list' %}" onclick="filterNavigate('category', ''); event.preventDefault();" class="category-chip {% if not current_category %}active{% endif %}">Tất cả phòng</a>
             {% for category in categories %}
-            <a href="{% url 'listings:listing_list' %}?category={{ category|slugify }}" onclick="filterNavigate('category', '{{ category|slugify }}'); event.preventDefault();" class="category-chip {% if current_category == category|slugify %}active{% endif %}">{{ category }}</a>
+            <a href="{% url 'rooms:room_list' %}?category={{ category|slugify }}" onclick="filterNavigate('category', '{{ category|slugify }}'); event.preventDefault();" class="category-chip {% if current_category == category|slugify %}active{% endif %}">{{ category }}</a>
             {% endfor %}
           </div>
   
           <div class="filter-chip-row">
             <span class="filter-caption">Lọc nhanh:</span>
             {% for chip in filter_chips %}
-            <a href="{% url 'listings:listing_list' %}?quick_filter={{ chip|slugify }}" onclick="filterNavigate('quick_filter', '{{ chip|slugify }}'); event.preventDefault();" class="quick-chip {% if current_quick_filter == chip|slugify %}active{% endif %}">{{ chip }}</a>
+            <a href="{% url 'rooms:room_list' %}?quick_filter={{ chip|slugify }}" onclick="filterNavigate('quick_filter', '{{ chip|slugify }}'); event.preventDefault();" class="quick-chip {% if current_quick_filter == chip|slugify %}active{% endif %}">{{ chip }}</a>
             {% endfor %}
           </div>
         </div>
@@ -108,49 +108,66 @@
         </aside>
 
       <section class="listing-feed">
-        {% for listing in listings %}
+        {% for room in rooms %}
         <article class="listing-result-card">
-          <a class="listing-result-media" href="{% url 'listings:listing_detail' listing.id %}">
-            <img src="{{ listing.image }}" alt="{{ listing.title }}">
-            <span class="media-badge">{{ listing.hero_badge }}</span>
+          <a class="listing-result-media" href="{% url 'rooms:room_detail' room.id %}">
+            <img src="{{ room.image }}" alt="{{ room.title }}">
+            {% if room.hero_badge %}
+            <span class="media-badge">{{ room.hero_badge }}</span>
+            {% endif %}
           </a>
           <div class="listing-result-body">
             <div>
               <div class="pill-row">
-                {% for tag in listing.tags %}
-                <span class="pill {% if tag == 'Đã xác thực' or tag == 'Da xac thuc' %}success{% elif tag == 'Hot' %}pill{% else %}warning{% endif %}">{{ tag }}</span>
+                {% for tag in room.tags %}
+                <span class="pill warning">{{ tag }}</span>
                 {% endfor %}
               </div>
-              <h2><a href="{% url 'listings:listing_detail' listing.id %}">{{ listing.title }}</a></h2>
-              <p class="listing-address">{{ listing.address }}</p>
+              <h2><a href="{% url 'rooms:room_detail' room.id %}">{{ room.title }}</a></h2>
+              <div class="room-id-row">
+                {% if room.room_id %}<span>room_id: {{ room.room_id }}</span>{% endif %}
+                {% if room.house_id %}<span>house_id: {{ room.house_id }}</span>{% endif %}
+              </div>
+              <p class="listing-address">{{ room.address }}</p>
             </div>
 
             <div class="result-price-line">
-              <strong>{{ listing.price_text }}</strong>
-              <span>{{ listing.area_text }}</span>
-              <span>{{ listing.floor_position }}</span>
+              <strong>{{ room.price_text }}</strong>
+              {% if room.area_text %}
+              <span>{{ room.area_text }}</span>
+              {% endif %}
+              {% if room.floor_position %}
+              <span>{{ room.floor_position }}</span>
+              {% endif %}
             </div>
 
             <div class="result-stock-line">
-              {% if listing.available_room_count %}
-              <span>Còn {{ listing.available_room_count }} phòng trống</span>
+              {% if room.available_room_count %}
+              <span>Còn {{ room.available_room_count }} phòng trống</span>
               {% endif %}
-              {% if listing.total_room_count %}
-              <span>Tổng {{ listing.total_room_count }} phòng</span>
+              {% if room.total_room_count %}
+              <span>Tổng {{ room.total_room_count }} phòng</span>
               {% endif %}
-              <span>{{ listing.category }}</span>
+              {% if room.status_text %}
+              <span>{{ room.status_text }}</span>
+              {% endif %}
+              {% if room.category %}
+              <span>{{ room.category }}</span>
+              {% endif %}
             </div>
 
-            <p class="result-description">{{ listing.description|truncatewords:28 }}</p>
+            {% if room.description %}
+            <p class="result-description">{{ room.description|truncatewords:28 }}</p>
+            {% endif %}
 
             <div class="amenity-row" style="margin-bottom: 14px;">
-              {% for amenity in listing.amenities|slice:":6" %}
+              {% for amenity in room.amenities|slice:":6" %}
               <span>{{ amenity }}</span>
               {% endfor %}
             </div>
 
             <div class="result-actions">
-              <a class="btn btn-primary" href="{% url 'listings:listing_detail' listing.id %}">Xem chi tiết phòng</a>
+              <a class="btn btn-primary" href="{% url 'rooms:room_detail' room.id %}">Xem chi tiết phòng</a>
             </div>
           </div>
         </article>

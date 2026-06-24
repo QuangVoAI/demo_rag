@@ -1,29 +1,29 @@
-{% load static %}
+﻿{% load static %}
 <!DOCTYPE html>
 <html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}nhatrovn.vn - Cho thuê phòng trọ, căn hộ dịch vụ giá rẻ{% endblock %}</title>
+  <title>{% block title %}nhatrovn - Cho thuê phòng trọ, căn hộ dịch vụ giá rẻ{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'listings/demo.css' %}">
+  <link rel="stylesheet" href="{% static 'rooms/demo.css' %}">
 </head>
 <body>
   <header class="site-header">
     <div class="shell header-inner header-grid">
       <div class="header-left">
-        <a class="brand" href="{% url 'listings:home' %}">
-          <span class="brand-mark">N</span>
+        <a class="brand" href="{% url 'rooms:home' %}">
+          <span class="brand-mark"><img src="{% static 'rooms/logo.png' %}" alt="nhatrovn"></span>
           <span>
-            <strong>nhatrovn.vn</strong>
+            <strong>nhatrovn</strong>
             <small>Tìm trọ thật - Giá thật</small>
           </span>
         </a>
         <nav class="main-nav">
-          <a href="{% url 'listings:home' %}">Trang chủ</a>
-          <a href="{% url 'listings:listing_list' %}">Tìm phòng</a>
+          <a href="{% url 'rooms:home' %}">Trang chủ</a>
+          <a href="{% url 'rooms:room_list' %}">Tìm phòng</a>
           <a href="#">Dành cho chủ nhà</a>
           <a href="#chatbot">Chatbot AI</a>
         </nav>
@@ -35,7 +35,7 @@
       </div>
       <div class="header-right">
         <a class="header-link" href="#">Đăng nhập</a>
-        <a class="header-pill" href="{% url 'listings:listing_list' %}">Tìm phòng ngay</a>
+        <a class="header-pill" href="{% url 'rooms:room_list' %}">Tìm phòng ngay</a>
       </div>
     </div>
   </header>
@@ -44,7 +44,7 @@
     <div class="shell app-banner-inner">
       <div class="app-banner-badge">Tải App</div>
       <div>
-        <strong>Tìm trọ trên di động - nhatrovn.vn</strong>
+        <strong>Tìm trọ trên di động - nhatrovn</strong>
         <p>Quét mã QR hoặc tải ứng dụng trên AppStore / CHPlay để trải nghiệm tiện lợi hơn.</p>
       </div>
     </div>
@@ -53,8 +53,8 @@
   {% block content %}{% endblock %}
 
   <footer class="mobile-footer-preview">
-    <a href="{% url 'listings:home' %}" class="footer-item active">Trang chủ</a>
-    <a href="{% url 'listings:listing_list' %}" class="footer-item">Tìm phòng</a>
+    <a href="{% url 'rooms:home' %}" class="footer-item active">Trang chủ</a>
+    <a href="{% url 'rooms:room_list' %}" class="footer-item">Tìm phòng</a>
     <a href="#" class="footer-item">Tìm việc</a>
     <a href="#chatbot" class="footer-item">Nhắn tin</a>
   </footer>
@@ -204,7 +204,7 @@
       // 3. Post to backend
       const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
       try {
-        const response = await fetch("{% url 'listings:api_chat' %}", {
+        const response = await fetch("{% url 'rooms:api_chat' %}", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -226,25 +226,31 @@
           messagesWrap.appendChild(botBubble);
           
           // Render results as inline cards
-          if (result.listings && result.listings.length > 0) {
+          if (result.rooms && result.rooms.length > 0) {
             const cardsContainer = document.createElement('div');
             cardsContainer.className = 'chat-cards-grid';
             
-            result.listings.forEach(listing => {
+            result.rooms.forEach(room => {
               const card = document.createElement('a');
               card.className = 'chat-card-inline';
-              card.href = `/tim-phong/${listing.id}/`;
+              card.href = `/tim-phong/${room.id}/`;
+              const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
+              const idLines = [
+                room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
+                room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
+              ].filter(Boolean).join('');
               card.innerHTML = `
-                <img src="${listing.image}" alt="${listing.title}">
+                <img src="${room.image}" alt="${room.title}">
                 <div class="chat-card-body">
                   <div class="chat-card-topline">
-                    <span class="chat-card-location">${listing.district || ''}${listing.city ? ' • ' + listing.city : ''}</span>
+                    <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
                   </div>
-                  <h4>${listing.title}</h4>
-                  <p class="price">${listing.price_text}</p>
-                  <p class="meta">${listing.area_text} • ${listing.category}${listing.available_room_count ? ' • Còn ' + listing.available_room_count + ' phòng' : ''}</p>
-                  <div class="chat-card-amenities">${(listing.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
-                  <p class="address">${listing.address}</p>
+                  <h4>${room.title}</h4>
+                  ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
+                  <p class="price">${room.price_text}</p>
+                  <p class="meta">${metaParts.join(' • ')}</p>
+                  <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
+                  <p class="address">${room.address}</p>
                   <span class="chat-card-cta">Xem chi tiết</span>
                 </div>
               `;

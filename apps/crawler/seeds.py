@@ -1,4 +1,4 @@
-from apps.listings.services import get_collection
+﻿from apps.rooms.services import get_collection
 
 CITIES = ["ho-chi-minh", "ha-noi", "binh-duong", "da-nang", "can-tho"]
 

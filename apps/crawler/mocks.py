@@ -1,9 +1,9 @@
-import random
+﻿import random
 from datetime import datetime, timedelta
 from bson import ObjectId
-from apps.listings.services import (
+from apps.rooms.services import (
     get_users_collection, get_sessions_collection, get_properties_collection,
-    get_listings_collection, get_bookings_collection, get_payments_collection,
+    get_rooms_collection, get_bookings_collection, get_payments_collection,
     get_vouchers_collection, get_user_voucher_logs_collection, get_reviews_collection,
     get_comments_collection, get_support_tickets_collection, get_consignments_collection,
     get_jobs_collection, get_job_applications_collection, get_media_assets_collection
@@ -42,7 +42,7 @@ def seed_platform_mocks():
     users_col = get_users_collection()
     sessions_col = get_sessions_collection()
     properties_col = get_properties_collection()
-    listings_col = get_listings_collection()
+    rooms_col = get_rooms_collection()
     bookings_col = get_bookings_collection()
     payments_col = get_payments_collection()
     vouchers_col = get_vouchers_collection()
@@ -157,16 +157,19 @@ def seed_platform_mocks():
     print("Seeded 3 vouchers.")
 
     # 4. Seed Bookings & Payments & Vouchers Log
-    listings = list(listings_col.find({}))
+    rooms = list(rooms_col.find({}))
     bookings_seeded = 0
     payments_seeded = 0
     
-    if listings:
-        # Create bookings for first 20 listings
-        for idx, room in enumerate(listings[:20]):
+    if rooms:
+        # Create bookings for first 20 rooms
+        for idx, room in enumerate(rooms[:20]):
             tenant_id = random.choice(tenant_ids)
-            prop_id = room["property_id"]
-            price_val = room.get("price", {}).get("min") or 3000000
+            house_id = room.get("house_id")
+            prop_id = room.get("property_id")
+            if not prop_id and house_id and len(str(house_id)) == 24:
+                prop_id = ObjectId(str(house_id))
+            price_val = room.get("metadata", {}).get("price") or room.get("price", {}).get("min") or 3000000
             
             # Booking Form inputs match
             status = "confirmed" if idx % 3 != 0 else ("pending" if idx % 3 == 1 else "cancelled")
@@ -174,7 +177,8 @@ def seed_platform_mocks():
             b_doc = {
                 "tenant_id": tenant_id,
                 "property_id": prop_id,
-                "listing_id": room["_id"],
+                "room_id": room.get("room_id") or str(room["_id"]),
+                "room_object_id": room["_id"],
                 "status": status,
                 "number_people": random.randint(1, 4),
                 "number_vehicles": random.randint(0, 2),
@@ -233,13 +237,14 @@ def seed_platform_mocks():
                 
         print(f"Seeded {reviews_seeded} reviews.")
 
-    if listings:
-        for room in listings[:15]:
+    if rooms:
+        for room in rooms[:15]:
             tenant_id = random.choice(tenant_ids)
             # Create a question comment
             q_res = comments_col.insert_one({
                 "user_id": tenant_id,
-                "listing_id": room["_id"],
+                "room_id": room.get("room_id") or str(room["_id"]),
+                "room_object_id": room["_id"],
                 "content": "Phòng này còn trống từ ngày 1 tới không ạ? Tôi muốn thuê lâu dài.",
                 "parent_id": None,
                 "created_at": (datetime.utcnow() - timedelta(days=4)).isoformat() + "Z"
@@ -247,11 +252,16 @@ def seed_platform_mocks():
             comments_seeded += 1
             
             # Create landlord reply comment
-            prop_doc = properties_col.find_one({"_id": room["property_id"]})
+            house_id = room.get("house_id")
+            prop_id = room.get("property_id")
+            if not prop_id and house_id and len(str(house_id)) == 24:
+                prop_id = ObjectId(str(house_id))
+            prop_doc = properties_col.find_one({"_id": prop_id}) if prop_id else None
             landlord_id = prop_doc.get("landlord_id") if prop_doc else random.choice(landlord_ids)
             comments_col.insert_one({
                 "user_id": landlord_id,
-                "listing_id": room["_id"],
+                "room_id": room.get("room_id") or str(room["_id"]),
+                "room_object_id": room["_id"],
                 "content": "Chào bạn, phòng này vẫn còn trống nhé bạn. Bạn có thể đặt hẹn đi xem phòng thực tế.",
                 "parent_id": q_res.inserted_id,
                 "created_at": (datetime.utcnow() - timedelta(days=3)).isoformat() + "Z"

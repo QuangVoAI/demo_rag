@@ -1,9 +1,9 @@
-import time
+﻿import time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
-from apps.listings.services import get_jobs_collection, get_faqs_collection
+from apps.rooms.services import get_jobs_collection, get_faqs_collection
 from apps.crawler.list_parser import fetch_html
 from apps.crawler.normalizers import parse_price
 

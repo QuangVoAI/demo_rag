@@ -276,7 +276,7 @@ def parse_detail_page_content(html, url, parent_category=None, parent_city=None)
     # Build listing document
     listing = {
         "source": {
-            "site": "nhatrovn.vn",
+            "site": "nhatrovn",
             "url": url,
             "listing_code": listing_code,
             "crawl_time": datetime.utcnow().isoformat() + "Z",

@@ -1,6 +1,6 @@
-{% extends "listings/base.html" %}
+﻿{% extends "rooms/base.html" %}
 
-{% block title %}nhatrovn.vn - Tìm kiếm phòng trọ, căn hộ dịch vụ thật giá tốt{% endblock %}
+{% block title %}nhatrovn - Tìm kiếm phòng trọ, căn hộ dịch vụ thật giá tốt{% endblock %}
 
 {% block content %}
 <main>
@@ -13,14 +13,14 @@
           Tìm kiếm phòng trọ, giường tầng KTX, sleepbox, studio nhanh chóng bằng bộ lọc thông minh.
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="{% url 'listings:listing_list' %}">Bắt đầu tìm phòng</a>
+          <a class="btn btn-primary" href="{% url 'rooms:room_list' %}">Bắt đầu tìm phòng</a>
           <a class="btn btn-secondary" href="#featured">Xem danh sách nổi bật</a>
         </div>
       </div>
       
       <div class="search-card">
         <h2>Bộ lọc thông minh</h2>
-        <form class="search-grid" action="{% url 'listings:listing_list' %}" method="GET">
+        <form class="search-grid" action="{% url 'rooms:room_list' %}" method="GET">
           <label>
             <span>Thành phố</span>
             <select name="city">
@@ -80,37 +80,45 @@
         <span class="eyebrow">Tin nổi bật</span>
         <h2>Phòng trống nổi bật hàng tuần</h2>
       </div>
-      <a class="text-link" href="{% url 'listings:listing_list' %}">Xem tất cả phòng trống</a>
+      <a class="text-link" href="{% url 'rooms:room_list' %}">Xem tất cả phòng trống</a>
     </div>
     
     <div class="shell card-grid">
-      {% for listing in featured_listings %}
+      {% for room in featured_rooms %}
       <article class="listing-card">
-        <a class="listing-media" href="{% url 'listings:listing_detail' listing.id %}">
-          <img src="{{ listing.image }}" alt="{{ listing.title }}">
-          <span class="media-badge">{{ listing.hero_badge }}</span>
+        <a class="listing-media" href="{% url 'rooms:room_detail' room.id %}">
+          <img src="{{ room.image }}" alt="{{ room.title }}">
+          {% if room.hero_badge %}
+          <span class="media-badge">{{ room.hero_badge }}</span>
+          {% endif %}
         </a>
         <div class="listing-body">
           <div class="pill-row">
-            {% for tag in listing.tags %}
-            <span class="pill {% if tag == 'Đã xác thực' or tag == 'Da xac thuc' %}success{% elif tag == 'Hot' %}pill{% else %}warning{% endif %}">{{ tag }}</span>
+            {% for tag in room.tags %}
+            <span class="pill warning">{{ tag }}</span>
             {% endfor %}
           </div>
-          <h3><a href="{% url 'listings:listing_detail' listing.id %}">{{ listing.title }}</a></h3>
-          <p class="listing-address">{{ listing.address }}</p>
+          <h3><a href="{% url 'rooms:room_detail' room.id %}">{{ room.title }}</a></h3>
+          <div class="room-id-row">
+            {% if room.room_id %}<span>room_id: {{ room.room_id }}</span>{% endif %}
+            {% if room.house_id %}<span>house_id: {{ room.house_id }}</span>{% endif %}
+          </div>
+          <p class="listing-address">{{ room.address }}</p>
           <div class="listing-meta">
-            <strong>{{ listing.price_text }}</strong>
-            <span>{{ listing.area_text }}</span>
+            <strong>{{ room.price_text }}</strong>
+            {% if room.area_text %}
+            <span>{{ room.area_text }}</span>
+            {% endif %}
           </div>
           <div class="amenity-row" style="margin-top: 10px;">
-            {% for amenity in listing.amenities|slice:":4" %}
+            {% for amenity in room.amenities|slice:":4" %}
             <span>{{ amenity }}</span>
             {% endfor %}
           </div>
         </div>
       </article>
       {% empty %}
-      <p class="full">Đang cập nhật danh sách phòng nổi bật.</p>
+      <p class="full">Chưa có phòng nổi bật từ dữ liệu hiện tại.</p>
       {% endfor %}
     </div>
   </section>

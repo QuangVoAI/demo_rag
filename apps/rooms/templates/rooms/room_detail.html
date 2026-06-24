@@ -1,36 +1,44 @@
-{% extends "listings/base.html" %}
+﻿{% extends "rooms/base.html" %}
 
-{% block title %}nhatrovn.vn - {{ listing.title }}{% endblock %}
+{% block title %}nhatrovn - {{ room.title }}{% endblock %}
 
 {% block content %}
 <main class="section">
   <div class="shell detail-hero" style="margin-bottom: 24px;">
     <div class="detail-copy">
       <div class="pill-row">
-        {% for tag in listing.tags %}
-        <span class="pill {% if tag == 'Đã xác thực' or tag == 'Da xac thuc' %}success{% elif tag == 'Hot' %}pill{% else %}warning{% endif %}">{{ tag }}</span>
+        {% for tag in room.tags %}
+        <span class="pill warning">{{ tag }}</span>
         {% endfor %}
       </div>
-      <h1>{{ listing.title }}</h1>
-      <p class="listing-address">{{ listing.address }}</p>
+      <h1>{{ room.title }}</h1>
+      <div class="room-id-row">
+        {% if room.room_id %}<span>room_id: {{ room.room_id }}</span>{% endif %}
+        {% if room.house_id %}<span>house_id: {{ room.house_id }}</span>{% endif %}
+      </div>
+      <p class="listing-address">{{ room.address }}</p>
       
       <div class="detail-price">
-        <strong>{{ listing.price_text }}</strong>
-        <span>{{ listing.area_text }}</span>
-        <span>{{ listing.floor_position }}</span>
+        <strong>{{ room.price_text }}</strong>
+        {% if room.area_text %}
+        <span>{{ room.area_text }}</span>
+        {% endif %}
+        {% if room.floor_position %}
+        <span>{{ room.floor_position }}</span>
+        {% endif %}
       </div>
       
-      <p style="color: var(--muted); margin: 16px 0; font-size: 14px; line-height: 1.6;">{{ listing.description }}</p>
+      <p style="color: var(--muted); margin: 16px 0; font-size: 14px; line-height: 1.6;">{{ room.description }}</p>
       
       <div class="amenity-row">
-        {% for amenity in listing.amenities %}
+        {% for amenity in room.amenities %}
         <span>{{ amenity }}</span>
         {% endfor %}
       </div>
     </div>
     
     <div class="detail-image">
-      <img src="{{ listing.image }}" alt="{{ listing.title }}">
+      <img src="{{ room.image }}" alt="{{ room.title }}">
     </div>
   </div>
 
@@ -38,13 +46,13 @@
     <section class="detail-card">
       <h2>Biểu phí dịch vụ</h2>
       <div class="kv-grid">
-        {% for item in listing.fees %}
+        {% for item in room.fees %}
         <div>
           <span>{{ item.label }}</span>
           <strong>{{ item.value }}</strong>
         </div>
         {% empty %}
-        <p>Đang cập nhật biểu phí.</p>
+        <p>Chưa có dữ liệu biểu phí trong MongoDB.</p>
         {% endfor %}
       </div>
     </section>
@@ -52,13 +60,13 @@
     <section class="detail-card">
       <h2>Điều kiện & Quy định</h2>
       <div class="kv-grid">
-        {% for item in listing.rules %}
+        {% for item in room.rules %}
         <div>
           <span>{{ item.label }}</span>
           <strong>{{ item.value }}</strong>
         </div>
         {% empty %}
-        <p>Đang cập nhật quy định.</p>
+        <p>Chưa có dữ liệu quy định trong MongoDB.</p>
         {% endfor %}
       </div>
     </section>
@@ -66,13 +74,13 @@
     <section class="detail-card">
       <h2>Phòng trống khả dụng</h2>
       <div class="room-list">
-        {% for room in listing.available_rooms %}
+        {% for room in room.available_rooms %}
         <article>
           <strong>Phòng {{ room.room_code }}</strong>
           <span>{{ room.price_text }} / tháng</span>
         </article>
         {% empty %}
-        <p style="color: var(--muted); font-size: 13px;">Đang cập nhật danh sách phòng trống.</p>
+        <p style="color: var(--muted); font-size: 13px;">Chưa có dữ liệu phòng trống trong MongoDB.</p>
         {% endfor %}
       </div>
     </section>
@@ -93,12 +101,12 @@
   <div class="shell" style="margin-bottom: 24px;">
     <section class="booking-form-card" id="booking-section">
       <h2 style="margin: 0; font-size: 20px; font-weight: 700; border-bottom: 2px solid var(--primary-light); padding-bottom: 10px;">Đặt lịch hẹn xem phòng trống</h2>
-      <p style="color: var(--muted); font-size: 13px; margin: 8px 0 0;">Điền thông tin của bạn bên dưới. Đội ngũ nhatrovn.vn - Anhome sẽ liên hệ hỗ trợ dẫn xem phòng thực tế miễn phí.</p>
+      <p style="color: var(--muted); font-size: 13px; margin: 8px 0 0;">Điền thông tin của bạn bên dưới. Đội ngũ nhatrovn - Anhome sẽ liên hệ hỗ trợ dẫn xem phòng thực tế miễn phí.</p>
       
       <form id="viewingBookingForm" style="margin-top: 20px;">
         {% csrf_token %}
-        <input type="hidden" name="house_id" value="{{ listing.property_id }}">
-        <input type="hidden" name="room_id" value="{{ listing.id }}">
+        <input type="hidden" name="house_id" value="{{ room.property_id }}">
+        <input type="hidden" name="room_id" value="{{ room.id }}">
         
         <div class="booking-form-grid">
           <label>
@@ -173,14 +181,18 @@
       </div>
     </div>
     <div class="shell card-grid">
-      {% for item in related_listings %}
+      {% for item in related_rooms %}
       <article class="listing-card">
-        <a class="listing-media" href="{% url 'listings:listing_detail' item.id %}">
+        <a class="listing-media" href="{% url 'rooms:room_detail' item.id %}">
           <img src="{{ item.image }}" alt="{{ item.title }}">
           <span class="media-badge">{{ item.hero_badge }}</span>
         </a>
         <div class="listing-body">
-          <h3><a href="{% url 'listings:listing_detail' item.id %}">{{ item.title }}</a></h3>
+          <h3><a href="{% url 'rooms:room_detail' item.id %}">{{ item.title }}</a></h3>
+          <div class="room-id-row">
+            {% if item.room_id %}<span>room_id: {{ item.room_id }}</span>{% endif %}
+            {% if item.house_id %}<span>house_id: {{ item.house_id }}</span>{% endif %}
+          </div>
           <p class="listing-address">{{ item.address }}</p>
           <div class="listing-meta">
             <strong>{{ item.price_text }}</strong>
@@ -215,7 +227,7 @@
         const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
         
         try {
-          const response = await fetch("{% url 'listings:book_viewing' %}", {
+          const response = await fetch("{% url 'rooms:book_viewing' %}", {
             method: 'POST',
             body: formData,
             headers: {

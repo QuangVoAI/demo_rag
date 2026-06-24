@@ -1,7 +1,7 @@
-import time
+﻿import time
 from datetime import datetime
 from bson import ObjectId
-from apps.listings.services import get_collection, upsert_listing
+from apps.rooms.services import get_collection, upsert_listing
 from apps.crawler.detail_parser import parse_detail_page_content
 from apps.crawler.list_parser import fetch_html
 from apps.crawler.normalizers import build_embedding_text, build_search_text
@@ -29,7 +29,7 @@ CAT_TEXTS = {
 
 def crawl_detail_pages(limit_per_category=15, max_total_crawl=None):
     collection_urls = get_collection("crawl_urls")
-    collection_listings = get_collection("listings")
+    collection_rooms = get_collection("rooms")
     collection_jobs = get_collection("crawl_jobs")
     
     # 1. Create a crawl job entry
@@ -45,7 +45,7 @@ def crawl_detail_pages(limit_per_category=15, max_total_crawl=None):
     # 2. Get current category counts
     category_counts = {cat: 0 for cat in TARGET_CATEGORIES}
     pipeline = [{"$group": {"_id": "$category", "count": {"$sum": 1}}}]
-    for group in collection_listings.aggregate(pipeline):
+    for group in collection_rooms.aggregate(pipeline):
         cat_id = group["_id"]
         if cat_id in category_counts:
             category_counts[cat_id] = group["count"]
@@ -76,8 +76,8 @@ def crawl_detail_pages(limit_per_category=15, max_total_crawl=None):
         parent_cat = doc["category"]
         city = doc["city"]
         
-        # Determine target category
-        # First check if the database already has enough listings for ALL categories
+        # Determine target category.
+        # First check if the database already has enough rooms for all categories.
         # Let's find the category with the lowest current count
         sorted_cats = sorted(TARGET_CATEGORIES, key=lambda c: category_counts[c])
         lowest_cat = sorted_cats[0]
