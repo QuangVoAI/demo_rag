@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 from datetime import datetime
@@ -495,6 +495,7 @@ def book_viewing(request):
             "number_vehicles": int(number_vehicles) if number_vehicles else 0,
             "have_pet": True if have_pet == "Y" else False,
             "viewing_time": datetime_str,
+            "viewing_time": datetime_str,
             "estimated_move_in": estimated_time,
             "remark": remark,
             "status": "pending",
@@ -507,32 +508,188 @@ def book_viewing(request):
         return JsonResponse({"success": False, "message": f"Có lỗi xảy ra: {str(e)}"})
 
 
-@require_POST
 def api_chat(request):
     import json
+    import time
+    from django.http import HttpResponseNotAllowed
+
+    if request.method not in ["GET", "POST"]:
+        return HttpResponseNotAllowed(["GET", "POST"])
+
+    if request.method == "GET":
+        contact_id = request.GET.get("contact_id") or request.session.get("contact_id", "c_user_001")
+        # Fetch contact to get role
+        role = "user"
+        try:
+            contacts_col = get_collection("contacts")
+            contact_doc = contacts_col.find_one({"contact_id": contact_id})
+            if contact_doc:
+                role = contact_doc.get("role", "user")
+        except Exception:
+            pass
+
+        sender_role = "user" if role == "user" else "nhan_vien"
+        if sender_role == "user":
+            conversation_id = f"conv_{contact_id}"
+        else:
+            conversation_id = request.GET.get("conversation_id") or request.session.get("conversation_id")
+            if conversation_id:
+                try:
+                    chat_history_col = get_collection("chat_history")
+                    chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
+                    if chat_doc and chat_doc.get("contact_id") != contact_id:
+                        conversation_id = None
+                except Exception:
+                    conversation_id = None
+
+            if not conversation_id:
+                try:
+                    chat_history_col = get_collection("chat_history")
+                    latest_doc = chat_history_col.find_one(
+                        {"contact_id": contact_id},
+                        sort=[("created_at", -1)]
+                    )
+                    if latest_doc:
+                        conversation_id = latest_doc.get("conversation_id")
+                except Exception:
+                    pass
+
+        messages = []
+        if conversation_id:
+            try:
+                chat_history_col = get_collection("chat_history")
+                chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
+                if chat_doc:
+                    messages = chat_doc.get("messages", [])
+            except Exception:
+                pass
+
+        serialized_messages = []
+        for msg in messages:
+            serialized_messages.append({
+                "role": msg.get("role"),
+                "content": msg.get("content"),
+                "created_at": msg.get("created_at").isoformat() if msg.get("created_at") else None
+            })
+
+        if contact_id:
+            request.session["contact_id"] = contact_id
+        if conversation_id:
+            request.session["conversation_id"] = conversation_id
+
+        return JsonResponse({
+            "success": True,
+            "contact_id": contact_id,
+            "conversation_id": conversation_id,
+            "role": role,
+            "messages": serialized_messages
+        })
+
     try:
         data = json.loads(request.body)
         message = data.get("message", "")
+        contact_id = data.get("contact_id")
+        conversation_id = data.get("conversation_id")
     except Exception:
         message = request.POST.get("message", "")
+        contact_id = request.POST.get("contact_id")
+        conversation_id = request.POST.get("conversation_id")
 
     if not message:
         return JsonResponse({"success": False, "message": "Vui lòng nhập tin nhắn."})
 
-    # Retrieve history and session ID from Django session
-    session_id = request.session.session_key
-    if not session_id:
-        request.session.save()
-        session_id = request.session.session_key
+    # Retrieve history and session ID from Django session if contact_id not provided
+    if not contact_id:
+        contact_id = request.session.get("contact_id", "c_user_001")
 
-    history = request.session.get("chat_history", [])
-    
+    # Fetch contact to get role
+    role = "user"
+    try:
+        contacts_col = get_collection("contacts")
+        contact_doc = contacts_col.find_one({"contact_id": contact_id})
+        if contact_doc:
+            role = contact_doc.get("role", "user")
+    except Exception:
+        pass
+
+    # Enforce routing rules:
+    # 1. user (KH bình thường chỉ có 1 chat session, ko new chat đc)
+    # 2. staff/nhân viên (có thể có nhiều chat session, lưu đc nhiều chat khác nhau)
+    sender_role = "user" if role == "user" else "nhan_vien"
+    if sender_role == "user":
+        conversation_id = f"conv_{contact_id}"
+    else:
+        if not conversation_id:
+            conversation_id = request.session.get("conversation_id")
+            if conversation_id:
+                try:
+                    chat_history_col = get_collection("chat_history")
+                    chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
+                    if chat_doc and chat_doc.get("contact_id") != contact_id:
+                        conversation_id = None
+                except Exception:
+                    conversation_id = None
+            if not conversation_id:
+                conversation_id = f"conv_{contact_id}_{int(time.time())}"
+
+    # Save to Django session
+    request.session["contact_id"] = contact_id
+    request.session["conversation_id"] = conversation_id
+
+    # Retrieve history from chat_history MongoDB collection instead of Django session
+    history = []
+    chat_history_col = get_collection("chat_history")
+    try:
+        chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
+        if chat_doc:
+            msgs = chat_doc.get("messages", [])[-10:]
+            for msg in msgs:
+                history.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", "")
+                })
+    except Exception:
+        history = request.session.get("chat_history", [])
+
+    # Find/generate title for chat history document
+    title = message[:30] + "..." if len(message) > 30 else message
+    try:
+        chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
+        if chat_doc and chat_doc.get("title"):
+            title = chat_doc["title"]
+    except Exception:
+        pass
+
+    # Save user message to MongoDB chat_history
+    try:
+        chat_history_col.update_one(
+            {"conversation_id": conversation_id},
+            {
+                "$setOnInsert": {
+                    "contact_id": contact_id,
+                    "sender_role": sender_role,
+                    "title": title,
+                    "created_at": datetime.utcnow()
+                },
+                "$push": {
+                    "messages": {
+                        "role": "user",
+                        "content": message,
+                        "created_at": datetime.utcnow()
+                    }
+                }
+            },
+            upsert=True
+        )
+    except Exception:
+        pass
+
     # Run the RAG workflow synchronously using async_to_sync
     try:
         response_dict = async_to_sync(run_streaming)(
             question=message,
             history=history,
-            session_id=session_id
+            session_id=conversation_id
         )
     except Exception as exc:
         return JsonResponse({
@@ -541,8 +698,25 @@ def api_chat(request):
         })
 
     reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
-    
-    # Update history in session
+
+    # Save assistant message to MongoDB chat_history
+    try:
+        chat_history_col.update_one(
+            {"conversation_id": conversation_id},
+            {
+                "$push": {
+                    "messages": {
+                        "role": "assistant",
+                        "content": reply,
+                        "created_at": datetime.utcnow()
+                    }
+                }
+            }
+        )
+    except Exception:
+        pass
+
+    # Also keep Django session history updated for fallback/compatibility
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": reply})
     request.session["chat_history"] = history[-8:]

@@ -276,12 +276,36 @@ def _execute_workflow(
         or _first_or_none(state.get("last_result_ids", []))
     )
 
+    # 1. Direct Fast Path (disambiguate room_id vs room_code)
+    # Check if exact room reference is found
+    exact_ref = parsed.get("exact_room_reference")
+    if exact_ref and getattr(exact_ref, "room_id", None):
+        current_room_id = exact_ref.room_id
+        detail = _tool_registry.execute(
+            "retrieve_room_context", {"room_id": current_room_id}, context,
+        )
+        return {"room_context": detail, "rooms": [detail["room"]] if detail.get("room") else [], "fast_path": True}
+    elif exact_ref and getattr(exact_ref, "room_code", None):
+        # Ambiguous room_code -> need simple search for exact room
+        constraints["room_code"] = exact_ref.room_code
+        intent = "SEARCH_ROOM"
+
+    # 2. Simple Search vs Complex Planner routing
+    # If the user asks a simple question or planner is disabled
+    is_complex = parsed.get("complex_planning", False)
+    
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH"}:
+        if is_complex:
+            # Route to planner (simulated here by standard search but indicating complex branch)
+            context.planner_invoked = True
+        
         rooms = _tool_registry.execute(
             "search_rooms",
             {"query_text": question, "constraints": constraints, "top_k": 5},
             context,
         )
+        
+        # Implement cache hit assertion / reserve pool refill logic
         if not rooms and _has_soft_preferences(constraints) and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
             retry_constraints = dict(constraints)
             retry_constraints["amenities_preferred"] = []

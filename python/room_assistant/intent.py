@@ -168,20 +168,32 @@ ROOM_TYPE_ALIASES: dict[str, str] = {
     "mat bang": "mat_bang",
 }
 
-KNOWN_DISTRICT_ALIASES: tuple[str, ...] = (
-    "binh thanh",
-    "go vap",
-    "tan binh",
-    "tan phu",
-    "phu nhuan",
-    "binh tan",
-    "thu duc",
-    "nha be",
-    "hoc mon",
-    "binh chanh",
-    "can gio",
-    "cu chi",
-)
+DISTRICT_ALIASES: dict[str, str] = {
+    "binh thanh": "binh thanh", "b.thanh": "binh thanh", "bình thạnh": "binh thanh",
+    "tan binh": "tan binh", "tân bình": "tan binh",
+    "binh tan": "binh tan", "bình tân": "binh tan",
+    "q1": "quan 1", "q.1": "quan 1", "quận 1": "quan 1", "quan 1": "quan 1",
+    "q2": "quan 2", "q.2": "quan 2", "quận 2": "quan 2", "quan 2": "quan 2",
+    "q3": "quan 3", "q.3": "quan 3", "quận 3": "quan 3", "quan 3": "quan 3",
+    "q4": "quan 4", "q.4": "quan 4", "quận 4": "quan 4", "quan 4": "quan 4",
+    "q5": "quan 5", "q.5": "quan 5", "quận 5": "quan 5", "quan 5": "quan 5",
+    "q6": "quan 6", "q.6": "quan 6", "quận 6": "quan 6", "quan 6": "quan 6",
+    "q7": "quan 7", "q.7": "quan 7", "quận 7": "quan 7", "quan 7": "quan 7",
+    "q8": "quan 8", "q.8": "quan 8", "quận 8": "quan 8", "quan 8": "quan 8",
+    "q9": "quan 9", "q.9": "quan 9", "quận 9": "quan 9", "quan 9": "quan 9",
+    "q10": "quan 10", "q.10": "quan 10", "quận 10": "quan 10", "quan 10": "quan 10",
+    "q11": "quan 11", "q.11": "quan 11", "quận 11": "quan 11", "quan 11": "quan 11",
+    "q12": "quan 12", "q.12": "quan 12", "quận 12": "quan 12", "quan 12": "quan 12",
+    "go vap": "go vap", "gò vấp": "go vap", "gv": "go vap",
+    "phu nhuan": "phu nhuan", "phú nhuận": "phu nhuan", "pn": "phu nhuan",
+    "tan phu": "tan phu", "tân phú": "tan phu",
+    "thu duc": "thu duc", "thủ đức": "thu duc",
+    "nha be": "nha be", "nhà bè": "nha be",
+    "hoc mon": "hoc mon", "hóc môn": "hoc mon",
+    "binh chanh": "binh chanh", "bình chánh": "binh chanh",
+    "can gio": "can gio", "cần giờ": "can gio",
+    "cu chi": "cu chi", "củ chi": "cu chi"
+}
 
 # Tùy chọn mềm — không loại phòng nhưng dùng để ranking
 SOFT_PREFERENCE_ALIASES: dict[str, str] = {
@@ -447,9 +459,9 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     for district in districts:
         _append_unique(ops, "append", "location.districts", district)
 
-    for alias in KNOWN_DISTRICT_ALIASES:
+    for alias, standard_name in DISTRICT_ALIASES.items():
         if _contains_phrase(normalized, alias):
-            _append_unique(ops, "append", "location.districts", alias)
+            _append_unique(ops, "append", "location.districts", standard_name)
 
     wards = []
     for match in re.finditer(

@@ -10,6 +10,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Literal, TypedDict
 
+MAX_TURN_HISTORY = 10
+
 
 Intent = Literal[
     "SEARCH_ROOM",      # Tìm phòng mới theo tiêu chí
@@ -53,6 +55,15 @@ READ_ONLY_TOOLS: tuple[str, ...] = (
 
 MAX_READ_TOOL_CALLS_PER_TURN = 3
 
+ALLOWED_OPERATIONS: set[str] = {
+    "resolve_baseline_room",
+    "inherit_location",
+    "derive_budget",
+    "search_candidates",
+    "calculate_cost",
+    "compare_rooms",
+}
+
 ALLOWED_OPERATION_PATHS: set[str] = {
     "location.province",
     "location.districts",
@@ -93,12 +104,62 @@ class Operation(TypedDict, total=False):
     value: Any
 
 
+class ExactRoomReference(TypedDict, total=False):
+    room_id: str | None
+    house_id: str | None
+    room_code: str | None
+    confidence: float
+
+
 class ParsedRequest(TypedDict):
     intent: str
     operations: list[Operation]
     current_room_id: str | None
     referenced_room_ids: list[str]
     requested_action: str | None
+    exact_reference: ExactRoomReference | None
+
+
+class TurnRecord(TypedDict, total=False):
+    turn_id: str
+    session_id: str
+    client_sequence: int
+    idempotency_key: str
+    intent: str
+    user_message: str
+    bot_response: str
+    resolved_entities: dict[str, Any]
+    parent_state_version: int
+    started_at: str
+    completed_at: str
+
+
+class SessionProjection(TypedDict, total=False):
+    session_id: str
+    constraints: dict[str, Any]
+    current_room_id: str | None
+    selected_room_ids: list[str]
+    last_result_ids: list[str]
+    last_intent: str | None
+    conversation_summary: str
+    recent_turn_ids: list[str]
+    resolved_entities: dict[str, Any]
+    state_version: int
+    updated_at: str
+
+
+class CanonicalRequest(TypedDict, total=False):
+    intent: str
+    resolved_entities: dict[str, Any]
+    must_have: dict[str, Any]
+    preferred: dict[str, Any]
+    sort: str
+    limit: int
+    comparison_baseline: Any
+    operations: list[Operation]
+    schema_version: str
+    retrieval_version: str
+    inventory_epochs: dict[str, int]
 
 
 def utc_now_iso() -> str:
@@ -140,6 +201,8 @@ def default_session_state(session_id: str) -> dict[str, Any]:
         "last_result_ids": [],
         "last_intent": None,
         "conversation_summary": "",
+        "recent_turn_ids": [],
+        "resolved_entities": {},
         "state_version": 1,
         "updated_at": utc_now_iso(),
     }
@@ -275,6 +338,7 @@ def public_session_state(state: dict[str, Any]) -> dict[str, Any]:
         "last_result_ids": state.get("last_result_ids", []),
         "last_intent": state.get("last_intent"),
         "conversation_summary": state.get("conversation_summary", ""),
+        "recent_turn_ids": state.get("recent_turn_ids", []),
         "state_version": state.get("state_version", 1),
         "updated_at": state.get("updated_at"),
     }

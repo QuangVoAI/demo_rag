@@ -134,90 +134,172 @@ def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[di
     return []
 
 
+def _extract_rate(value: Any) -> int | None:
+    if not isinstance(value, str):
+        return None
+    import re
+    match = re.search(r"(\d+k|\d{3,}(?:\.\d{3})*)", value.lower())
+    if not match:
+        return None
+    raw = match.group(1).replace(".", "")
+    if raw.endswith("k"):
+        return int(raw[:-1]) * 1000
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+def _extract_unit(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    val_lower = value.lower()
+    if "kwh" in val_lower or "ký" in val_lower or "số" in val_lower:
+        return "kWh"
+    if "khối" in val_lower or "m3" in val_lower:
+        return "m³"
+    if "người" in val_lower:
+        return "người"
+    if "xe" in val_lower or "chiếc" in val_lower:
+        return "xe"
+    return None
+
 def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
     room = args.get("room")
     if not room and args.get("room_id"):
         room = context.repository.get_by_id(str(args["room_id"]))
     if not room:
-        return {"available": False, "unknown": ["room_not_found"], "items": [], "total_initial_cost": None}
+        return {"available": False, "unknown_inputs": ["room_not_found"]}
 
-    rental_months = _positive_int(args.get("rental_months"))
     rent = room.get("rent_price")
     deposit = room.get("deposit")
+    deposit_options = room.get("deposit_options")
     fees = room.get("fees") or {}
-    items: list[dict[str, Any]] = []
-    period_items: list[dict[str, Any]] = []
-    unknown: list[str] = []
-    not_calculated: list[dict[str, Any]] = []
-    total = 0
-    period_total = 0
-    recurring_fees_total = 0
+    
+    fixed_items: list[dict[str, Any]] = []
+    variable_items: list[dict[str, Any]] = []
+    unknown_inputs: list[str] = []
+    
+    display_parts = []
 
     if rent is None:
-        unknown.append("rent_price")
+        unknown_inputs.append("rent_price")
     else:
         rent_amount = _money_value_or_none(rent)
         if rent_amount is None:
-            unknown.append("rent_price")
+            unknown_inputs.append("rent_price")
         else:
-            items.append({"name": "rent_first_month", "amount": rent_amount, "confirmed": True})
-            total += rent_amount
-            if rental_months:
-                rent_for_period = rent_amount * rental_months
-                period_items.append({
-                    "name": f"rent_{rental_months}_months",
-                    "amount": rent_for_period,
-                    "confirmed": True,
+            fixed_items.append({"field": "monthly_rent", "amount": rent_amount, "period": "month"})
+            display_parts.append(f"{rent_amount:,}".replace(",", "."))
+
+    for name, value in fees.items():
+        if value is None:
+            unknown_inputs.append(f"fees.{name}")
+            continue
+        amount = _money_amount_or_none(value, name, args)
+        if amount is not None:
+            fixed_items.append({"field": name, "amount": amount, "period": "month"})
+            display_parts.append(f"{amount:,}".replace(",", "."))
+        else:
+            rate = _extract_rate(value)
+            if rate is not None:
+                unit = _extract_unit(value) or "đơn vị"
+                variable_items.append({
+                    "field": name,
+                    "rate": rate,
+                    "unit": unit,
+                    "quantity_key": f"{name}_qty",
+                    "quantity": args.get(f"{name}_qty")
                 })
-                period_total += rent_for_period
+                display_parts.append(f"{rate:,}".replace(",", ".") + f" × số {unit}")
+            else:
+                unknown_inputs.append(f"fees.{name}")
 
-    if deposit is None:
-        unknown.append("deposit")
+    display_formula = " + ".join(display_parts) if display_parts else None
+    base_subtotal = sum(item["amount"] for item in fixed_items)
+    
+    initial_payment_options = []
+    if deposit_options:
+        for opt in deposit_options:
+            dep_amt = _money_value_or_none(opt.get("deposit"))
+            if dep_amt is not None:
+                initial_payment_options.append({
+                    "deposit": dep_amt,
+                    "hold_days": opt.get("hold_days"),
+                    "refundability": opt.get("refundability", "unknown"),
+                    "known_initial_subtotal": base_subtotal + dep_amt
+                })
+    elif deposit is not None:
+        dep_amt = _money_value_or_none(deposit)
+        if dep_amt is not None:
+            initial_payment_options.append({
+                "deposit": dep_amt,
+                "hold_days": None,
+                "refundability": "unknown",
+                "known_initial_subtotal": base_subtotal + dep_amt
+            })
     else:
-        deposit_amount = _money_value_or_none(deposit)
-        if deposit_amount is None:
-            unknown.append("deposit")
+        unknown_inputs.append("deposit")
+
+    # Compute legacy compatibility fields
+    rental_months = args.get("rental_months") or 1
+    monthly_rent_val = 0
+    monthly_fees_val = 0
+    for item in fixed_items:
+        if item["field"] == "monthly_rent":
+            monthly_rent_val = item["amount"]
         else:
-            items.append({"name": "deposit", "amount": deposit_amount, "confirmed": True})
-            total += deposit_amount
-            if rental_months:
-                period_total += deposit_amount
+            monthly_fees_val += item["amount"]
 
-    for name, amount in fees.items():
-        if amount is None:
-            unknown.append(f"fees.{name}")
-            continue
-        fee_amount = _money_amount_or_none(amount, name, args)
-        if fee_amount is None:
-            not_calculated.append({"name": f"fees.{name}", "value": amount})
-            continue
-        items.append({"name": f"fee_{name}", "amount": fee_amount, "confirmed": True})
-        total += fee_amount
-        if rental_months:
-            recurring_fees_total += fee_amount * rental_months
+    recurring_fees_for_period = monthly_fees_val * rental_months
+    dep_amt_val = 0
+    if initial_payment_options:
+        dep_amt_val = initial_payment_options[0]["deposit"]
+    total_period_cost = (monthly_rent_val * rental_months) + recurring_fees_for_period + dep_amt_val
+    total_initial_cost = monthly_rent_val + monthly_fees_val + dep_amt_val
 
-    if rental_months:
-        period_total += recurring_fees_total
+    legacy_unknown = []
+    not_calculated_list = []
+    for item in unknown_inputs:
+        if item.startswith("fees."):
+            field_name = item.split(".", 1)[1]
+            if field_name in fees:
+                not_calculated_list.append({
+                    "name": item,
+                    "value": fees[field_name]
+                })
+        else:
+            legacy_unknown.append(item)
 
-    result = {
+    for var_item in variable_items:
+        if var_item.get("quantity") is None:
+            field_name = var_item["field"]
+            if not any(x["name"] == f"fees.{field_name}" for x in not_calculated_list):
+                not_calculated_list.append({
+                    "name": f"fees.{field_name}",
+                    "value": fees.get(field_name)
+                })
+
+    return {
         "available": True,
         "room_id": room.get("room_id"),
         "house_id": room.get("house_id"),
         "currency": "VND",
-        "items": items,
-        "total_initial_cost": total if items else None,
-        "unknown": unknown,
-        "not_calculated": not_calculated,
-        "note": "Ước tính deterministic từ giá, cọc và phí đã xác nhận trong dữ liệu phòng.",
+        "fixed_items": fixed_items,
+        "variable_items": variable_items,
+        "exact_monthly_total": base_subtotal if not variable_items else None,
+        "display_formula": display_formula,
+        "initial_payment_options": initial_payment_options,
+        "unknown_inputs": unknown_inputs,
+        "note": "Ước tính deterministic. known_initial_subtotal có thể chưa bao gồm các khoản phí biến đổi.",
+        # Legacy compatibility fields
+        "rental_months": rental_months,
+        "total_initial_cost": total_initial_cost,
+        "total_period_cost": total_period_cost,
+        "recurring_fees_for_period": recurring_fees_for_period,
+        "unknown": legacy_unknown,
+        "not_calculated": not_calculated_list,
     }
-    if rental_months:
-        result.update({
-            "rental_months": rental_months,
-            "period_items": period_items,
-            "recurring_fees_for_period": recurring_fees_total,
-            "total_period_cost": period_total if period_total else None,
-        })
-    return result
+
 
 
 def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
@@ -335,3 +417,54 @@ def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[st
     if number < 1000 and fee_name:
         return int(number * 1_000)
     return int(number)
+
+from enum import Enum
+
+class SufficiencyStatus(str, Enum):
+    SUFFICIENT = "SUFFICIENT"
+    PARTIAL_SAFE = "PARTIAL_SAFE"
+    INSUFFICIENT = "INSUFFICIENT"
+
+REQUIRED_FIELDS = {
+    "price_query": {"monthly_rent"},
+    "deposit_query": {"deposit", "hold_days"},
+    "room_detail": {"monthly_rent", "status", "location"}
+}
+
+def check_sufficiency(room: dict[str, Any], answer_type: str) -> tuple[SufficiencyStatus, set[str]]:
+    required = REQUIRED_FIELDS.get(answer_type)
+    if not required:
+        return SufficiencyStatus.SUFFICIENT, set()
+        
+    missing = set()
+    for field in required:
+        if field == "monthly_rent" and room.get("rent_price") is None:
+            missing.add(field)
+        elif field == "deposit" and room.get("deposit") is None and not room.get("deposit_options"):
+            missing.add(field)
+        elif field == "hold_days":
+            has_hold = False
+            if room.get("deposit_options"):
+                has_hold = any(opt.get("hold_days") is not None for opt in room.get("deposit_options", []))
+            if not has_hold:
+                missing.add(field)
+        elif field == "status" and room.get("available") is None:
+            missing.add(field)
+        elif field == "location" and not room.get("address") and not room.get("district"):
+            missing.add(field)
+            
+    if not missing:
+        return SufficiencyStatus.SUFFICIENT, set()
+    if "monthly_rent" in missing and answer_type in {"price_query", "room_detail"}:
+        return SufficiencyStatus.INSUFFICIENT, missing
+    return SufficiencyStatus.PARTIAL_SAFE, missing
+
+MAX_TARGETED_FETCH_ATTEMPTS = 1
+
+def targeted_fetch(
+    repository: RoomRepository, 
+    candidate_ids: list[str], 
+    missing_fields: set[str]
+) -> list[dict[str, Any]]:
+    """Bounded Targeted Fetch loop (`MAX_TARGETED_FETCH_ATTEMPTS = 1`, batch projection)"""
+    return repository.get_many_by_ids(candidate_ids)

@@ -26,175 +26,99 @@ def search_rooms_with_hard_filters(
     constraints: dict[str, Any],
     repository: RoomRepository,
     semantic_index: RoomSemanticIndex | None = None,
-    top_k: int = 5,
+    top_k: int = 20,
     candidate_limit: int = 50,
     trace: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Search rooms by enforcing DB constraints before semantic ranking."""
+    """Search rooms by enforcing DB constraints after semantic retrieval and batch rehydration."""
     cfg = _retrieval_config()
-    feedback_retries = cfg["feedback_max_retries"] if cfg["enable_feedback_retry"] else 0
     signals = extract_metadata_signals(query_text)
-    base_candidates = repository.search_by_constraints(
-        constraints=constraints,
-        limit=max(candidate_limit, top_k),
-        offset=0,
-    )
+    
+    # 1. Fetch metadata candidates
     metadata_candidates = []
     if query_text.strip():
-        metadata_candidates = repository.search_by_metadata(query_text, limit=max(top_k * 2, 10))
-        metadata_candidates = [
-            item for item in metadata_candidates
-            if room_matches_constraints(item, constraints)
-        ]
-
-    candidates = _merge_rooms(metadata_candidates, base_candidates)
-    candidate_ids = [item["room_id"] for item in candidates if item.get("room_id")]
-
-    attempts: list[dict[str, Any]] = []
-    best_rooms: list[dict[str, Any]] = []
-    best_confidence = 0.0
-    best_low_confidence = True
-    retry_count = 0
-    query_for_attempt = query_text
-
-    if candidate_ids:
-        for attempt_index in range(feedback_retries + 1):
-            attempt = _rank_attempt(
-                query_text=query_for_attempt,
-                original_query=query_text,
-                constraints=constraints,
-                candidates=candidates,
-                candidate_ids=candidate_ids,
-                repository=repository,
-                semantic_index=semantic_index,
-                top_k=top_k,
-            )
-            attempts.append(attempt["trace"])
-            confidence = attempt["confidence"]
-            low_confidence = _is_low_confidence(
-                attempt["rooms"],
-                confidence,
-                cfg["low_confidence_min_docs"],
-                cfg["low_confidence_min_score"],
-            )
-            if (
-                not best_rooms
-                or confidence > best_confidence
-                or (confidence == best_confidence and len(attempt["rooms"]) > len(best_rooms))
-            ):
-                best_rooms = attempt["rooms"]
-                best_confidence = confidence
-                best_low_confidence = low_confidence
-            if not low_confidence or attempt_index >= feedback_retries:
-                break
-            retry_count += 1
-            query_for_attempt = _build_retry_query(query_text, constraints, metadata_candidates)
+        metadata_candidates = repository.search_by_metadata(query_text, limit=candidate_limit)
+        
+    # 2. Fetch base constraints candidates (if any)
+    base_candidates = repository.search_by_constraints(
+        constraints=constraints,
+        limit=candidate_limit,
+        offset=0,
+    )
+    
+    metadata_ids = [item["room_id"] for item in metadata_candidates if item.get("room_id")]
+    base_ids = [item["room_id"] for item in base_candidates if item.get("room_id")]
+    
+    # 3. Semantic Retrieval (Hybrid)
+    semantic_results = []
+    if semantic_index and query_text.strip():
+        # Pass base_ids to restrict semantic index search to constraint-matching candidates
+        semantic_results = semantic_index.search_rooms(
+            query_text=query_text,
+            candidate_ids=base_ids, 
+            top_k=candidate_limit,
+            metadata_filter=_metadata_filter_from_constraints(constraints),
+        )
+    semantic_ids = [item["room_id"] for item in semantic_results if item.get("room_id")]
+    
+    # 4. Combine all candidate IDs
+    all_candidate_ids = list(dict.fromkeys(metadata_ids + base_ids + semantic_ids))
+    
+    # 5. Batch Canonical Mongo Rehydration using $in
+    authoritative_rooms = repository.get_many_by_ids(all_candidate_ids)
+    
+    # 6. Hard Filtering
+    valid_rooms = []
+    for room in authoritative_rooms:
+        if room_matches_constraints(room, constraints):
+            valid_rooms.append(room)
+            
+    # 7. Standard RRF Ranking (missing candidates get strictly 0.0)
+    K = 60
+    semantic_rank_map = {room_id: idx + 1 for idx, room_id in enumerate(semantic_ids)}
+    metadata_rank_map = {room_id: idx + 1 for idx, room_id in enumerate(metadata_ids)}
+    
+    ranked_rooms = []
+    for room in valid_rooms:
+        room_id = room["room_id"]
+        sem_rank = semantic_rank_map.get(room_id)
+        meta_rank = metadata_rank_map.get(room_id)
+        
+        sem_score = 1.0 / (K + sem_rank) if sem_rank else 0.0
+        meta_score = 1.0 / (K + meta_rank) if meta_rank else 0.0
+        
+        # Also incorporate any existing metadata hit scores if present
+        meta_hit_score = score_metadata_hit(room, signals, cfg["metadata_fields"])
+        
+        rrf_score = sem_score + meta_score
+        combined_score = rrf_score + (meta_hit_score * cfg["metadata_boost"])
+        room = dict(room)
+        room["rrf_score"] = rrf_score
+        room["metadata_score"] = meta_score
+        room["semantic_score"] = sem_score
+        room["combined_score"] = combined_score
+        room["retrieval_score"] = combined_score
+        ranked_rooms.append(room)
+        
+    ranked_rooms.sort(key=lambda r: r["combined_score"], reverse=True)
+    best_rooms = ranked_rooms[:top_k]
+    confidence = max((r["combined_score"] for r in best_rooms), default=0.0)
 
     if trace is not None:
         trace.clear()
+        low_confidence = len(best_rooms) < cfg.get("low_confidence_min_docs", 1) or confidence < cfg.get("low_confidence_min_score", 0.015)
         trace.update({
-            "retrieval_confidence": best_confidence,
-            "retrieval_low_confidence": best_low_confidence,
-            "retrieval_feedback_retry_count": retry_count,
-            "retrieval_attempts": attempts,
+            "retrieval_confidence": confidence,
             "metadata_signals": signals,
-            "metadata_hit_count": len(metadata_candidates),
-            "candidate_count": len(candidate_ids),
+            "candidate_count": len(all_candidate_ids),
+            "valid_candidate_count": len(valid_rooms),
+            "result_count": len(best_rooms),
+            "retrieval_low_confidence": low_confidence,
+            "retrieval_feedback_retry_count": 0,
+            "retrieval_attempts": [{"top_room_ids": [room["room_id"] for room in best_rooms]}],
         })
 
-    _write_feedback_log(
-        query_text=query_text,
-        trace=trace or {
-            "retrieval_confidence": best_confidence,
-            "retrieval_low_confidence": best_low_confidence,
-            "retrieval_feedback_retry_count": retry_count,
-            "retrieval_attempts": attempts,
-            "metadata_hit_count": len(metadata_candidates),
-            "candidate_count": len(candidate_ids),
-        },
-    )
-    return best_rooms[:top_k]
-
-
-def _rank_attempt(
-    query_text: str,
-    original_query: str,
-    constraints: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    candidate_ids: list[str],
-    repository: RoomRepository,
-    semantic_index: RoomSemanticIndex | None,
-    top_k: int,
-) -> dict[str, Any]:
-    cfg = _retrieval_config()
-    signals = extract_metadata_signals(original_query)
-    semantic_results: list[dict[str, Any]] = []
-    if semantic_index and query_text.strip():
-        metadata_filter = _metadata_filter_from_constraints(constraints)
-        semantic_results = semantic_index.search_rooms(
-            query_text=query_text,
-            candidate_ids=candidate_ids,
-            top_k=max(top_k, cfg["top_k_retrieval"]),
-            metadata_filter=metadata_filter,
-        )
-    semantic_by_id = {
-        str(item.get("room_id")): item
-        for item in semantic_results
-        if item.get("room_id") in candidate_ids
-    }
-
-    ranked = []
-    candidate_position = {room_id: idx for idx, room_id in enumerate(candidate_ids)}
-    for candidate in candidates:
-        room_id = candidate.get("room_id")
-        if not room_id:
-            continue
-        semantic = semantic_by_id.get(room_id, {})
-        rrf_score = _score_value(semantic, "rerank_score", "combined_score", "rrf_score", "score")
-        metadata_score = max(
-            float(candidate.get("_metadata_score") or 0.0),
-            score_metadata_hit(candidate, signals, cfg["metadata_fields"]),
-        )
-        combined_score = rrf_score + metadata_score * cfg["metadata_boost"]
-        ranked.append({
-            "room_id": room_id,
-            "rrf_score": rrf_score,
-            "metadata_score": metadata_score,
-            "combined_score": combined_score,
-            "rerank_score": semantic.get("rerank_score"),
-            "position": candidate_position.get(room_id, 999999),
-        })
-
-    ranked.sort(key=lambda item: (item["combined_score"], -item["position"]), reverse=True)
-    ranked_ids = [item["room_id"] for item in ranked[:top_k]]
-    authoritative = repository.get_many_by_ids(ranked_ids)
-    score_by_id = {item["room_id"]: item for item in ranked}
-    rooms = []
-    for room in authoritative:
-        if not room_matches_constraints(room, constraints):
-            continue
-        scores = score_by_id.get(room.get("room_id"), {})
-        room = dict(room)
-        room["rrf_score"] = scores.get("rrf_score", 0.0)
-        room["metadata_score"] = scores.get("metadata_score", 0.0)
-        room["combined_score"] = scores.get("combined_score", 0.0)
-        if scores.get("rerank_score") is not None:
-            room["rerank_score"] = scores.get("rerank_score")
-        room["retrieval_score"] = _preferred_source_score(room)
-        rooms.append(room)
-
-    confidence = max((_preferred_source_score(item) for item in rooms), default=0.0)
-    return {
-        "rooms": rooms,
-        "confidence": confidence,
-        "trace": {
-            "query": query_text,
-            "result_count": len(rooms),
-            "confidence": confidence,
-            "top_room_ids": [item.get("room_id") for item in rooms],
-            "semantic_result_count": len(semantic_results),
-        },
-    }
+    return best_rooms
 
 
 def _metadata_filter_from_constraints(constraints: dict[str, Any]) -> dict[str, Any]:

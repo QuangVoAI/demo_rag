@@ -163,3 +163,64 @@ async def review_with_retry(
 
     result["retry_count"] = max_retries
     return current_answer, result
+
+import re
+from typing import Any
+
+SAFE_NUMBER_PATTERNS = [
+    r"\b\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|k|nghìn|nghin|đ|d|vnd|vnđ)\b",
+]
+
+def deterministic_claim_validator(answer: str, claims: dict[str, Any]) -> list[str]:
+    """
+    Xác minh claims bằng Regex thay vì LLM.
+    Nếu answer đề cập đến một con số có vẻ là giá/cọc mà không khớp với claims đã duyệt, trả về lỗi.
+    """
+    issues = []
+    
+    # Tìm tất cả số tiền được nhắc đến trong answer
+    found_money = []
+    for pattern in SAFE_NUMBER_PATTERNS:
+        for match in re.finditer(pattern, answer.lower()):
+            found_money.append(match.group(0))
+            
+    # Lấy danh sách số tiền hợp lệ từ claims (fixed_items, deposit)
+    valid_amounts = set()
+    for item in claims.get("fixed_items", []):
+        amt = item.get("amount")
+        if amt:
+            valid_amounts.add(str(amt))
+            # Cũng thêm dạng format, vd: 4.5
+            if amt >= 1000000:
+                valid_amounts.add(str(round(amt / 1000000.0, 2)).rstrip('0').rstrip('.'))
+            
+    for opt in claims.get("initial_payment_options", []):
+        dep = opt.get("deposit")
+        if dep:
+            valid_amounts.add(str(dep))
+            if dep >= 1000000:
+                valid_amounts.add(str(round(dep / 1000000.0, 2)).rstrip('0').rstrip('.'))
+                
+    # Logic kiểm tra: Đảm bảo answer không nhắc đến số tiền lạ (rất đơn giản)
+    # Tuy nhiên vì ngôn ngữ tự nhiên rất đa dạng, ta chỉ flag cảnh báo nếu thấy số lạ hoàn toàn
+    for money_text in found_money:
+        # Nếu có số liệu, ta extract digits
+        digits = re.sub(r"\D", "", money_text)
+        if not digits:
+            continue
+        # Simplistic check
+        is_safe = False
+        for valid in valid_amounts:
+            if valid in digits or digits in valid:
+                is_safe = True
+                break
+            # Nếu valid là '45' (4.5tr) và digits chứa '45'
+            if valid.replace('.', '') in digits:
+                is_safe = True
+                break
+                
+        if not is_safe:
+            issues.append(f"Số tiền '{money_text}' có thể không chính xác so với dữ liệu xác minh.")
+            
+    return issues
+

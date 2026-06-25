@@ -1,4 +1,4 @@
-﻿{% load static %}
+{% load static %}
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -92,6 +92,10 @@
         </span>
         <div>
           <h3>CSKH nhatrovn</h3>
+          <div style="margin-top: 6px; display: flex; gap: 6px; align-items: center;">
+            <span style="font-size: 11px; opacity: 0.8;">Contact ID:</span>
+            <input type="text" id="chatContactIdInput" value="c_user_001" style="font-size: 11px; padding: 2px 6px; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; background: rgba(0,0,0,0.15); color: inherit; width: 120px;" onchange="changeChatContact()" onkeydown="if(event.key === 'Enter') { this.blur(); }">
+          </div>
           <small>Hỗ trợ tìm phòng theo khu vực, giá và tiện ích</small>
         </div>
       </div>
@@ -127,10 +131,53 @@
       </div>
     `;
 
+    async function loadChatHistory(force = false) {
+      const messagesWrap = document.getElementById('chatMessagesWrap');
+      if (!force && messagesWrap.querySelector('.chat-bubble:not(.chat-bubble--welcome)')) {
+        return;
+      }
+      
+      const loadingEl = document.createElement('div');
+      loadingEl.className = 'chat-bubble bot loading-history';
+      loadingEl.innerText = 'Đang tải lịch sử trò chuyện...';
+      messagesWrap.appendChild(loadingEl);
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+
+      const contactId = document.getElementById('chatContactIdInput').value || 'c_user_001';
+      try {
+        const response = await fetch(`{% url 'rooms:api_chat' %}?contact_id=${contactId}`);
+        const result = await response.json();
+        loadingEl.remove();
+        
+        if (result.success && result.messages && result.messages.length > 0) {
+          messagesWrap.innerHTML = '';
+          result.messages.forEach(msg => {
+            const bubble = document.createElement('div');
+            bubble.className = msg.role === 'user' ? 'chat-bubble user' : 'chat-bubble bot';
+            bubble.innerHTML = formatMarkdown(msg.content);
+            messagesWrap.appendChild(bubble);
+          });
+          messagesWrap.scrollTop = messagesWrap.scrollHeight;
+        } else {
+          messagesWrap.innerHTML = CHAT_WELCOME_HTML;
+        }
+      } catch (err) {
+        loadingEl.remove();
+        console.error("Lỗi khi tải lịch sử:", err);
+      }
+    }
+
     function openChatDrawer() {
       document.getElementById('chatDrawer').classList.add('open');
       document.getElementById('chatDrawerBackdrop').classList.add('open');
       document.body.style.overflow = 'hidden';
+      loadChatHistory();
+    }
+
+    function changeChatContact() {
+      const messagesWrap = document.getElementById('chatMessagesWrap');
+      messagesWrap.innerHTML = '';
+      loadChatHistory(true);
     }
 
     function closeChatDrawer() {
@@ -203,6 +250,7 @@
 
       // 3. Post to backend
       const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
+      const contactId = document.getElementById('chatContactIdInput').value || 'c_user_001';
       try {
         const response = await fetch("{% url 'rooms:api_chat' %}", {
           method: 'POST',
@@ -210,7 +258,10 @@
             'Content-Type': 'application/json',
             'X-CSRFToken': csrfToken
           },
-          body: JSON.stringify({ message: message })
+          body: JSON.stringify({ 
+            message: message,
+            contact_id: contactId
+          })
         });
         
         const result = await response.json();
