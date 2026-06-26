@@ -38,3 +38,15 @@ qdrant_storage/
 
 # Local agent routing artifacts
 .ai-router/
+
+# Generated audit / trace artifacts (recreated by scripts/)
+tracing.jsonl
+qa-audit-report.json
+qa-audit-report.md
+pre-demo-audit.json
+pre-demo-audit.md
+deep-research-report.md
+
+# Local reference docs (content encoded in staff_knowledge.py)
+*.xlsx
+*.docx
