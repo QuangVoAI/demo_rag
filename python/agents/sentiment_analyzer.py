@@ -30,6 +30,7 @@ MOOD_CLUSTERS: dict[str, list[str]] = {
         "tìm hoài không thấy", "chán quá", "thất vọng",
         "phòng nào cũng không ổn", "điều kiện không đáp ứng",
         "không đúng khu vực", "quá xa chỗ làm", "ô nhiễm",
+        "thuê không nổi", "sinh viên sao mà thuê nổi", "mắc quá",
     ],
     "urgent": [
         "cần phòng gấp", "hết hạn hợp đồng", "bị đuổi", "chuyển nhà sớm",
@@ -50,7 +51,8 @@ MOOD_CUES: dict[str, tuple[str, ...]] = {
         "khong tim duoc", "tim mai khong ra", "tim hoai khong thay",
         "het phong", "gia cao", "dat qua", "qua tam tien",
         "khong phu hop", "chan qua", "that vong", "khong on",
-        "khong dung khu vuc", "qua xa",
+        "khong dung khu vuc", "qua xa", "thue khong noi", "thue noi",
+        "sinh vien sao ma thue noi", "mac qua",
     ),
     "urgent": (
         "gap", "can ngay", "het han hop dong", "bi duoi",

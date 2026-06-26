@@ -238,7 +238,7 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "FIND_SIMILAR": (
         "tuong tu", "giong phong", "phong giong", "phong khac tuong tu",
-        "co phong nao", "tim phong khac",
+        "tim phong khac",
     ),
     "SUMMARIZE_ROOM": (
         "tom tat", "uu diem", "han che", "diem manh", "diem yeu",
@@ -297,6 +297,57 @@ CHITCHAT_KEYWORDS: tuple[str, ...] = (
     "duoc roi", "được rồi", "tam biet", "tạm biệt", "bye",
 )
 
+OFF_TOPIC_KEYWORDS: tuple[str, ...] = (
+    "giai bai",
+    "giai bai tap",
+    "lam bai tap",
+    "lam ho bai",
+    "viet code",
+    "code giup",
+    "lap trinh giup",
+    "debug code",
+    "fix bug",
+    "viet bai van",
+    "viet essay",
+    "dich doan van",
+    "dich bai",
+    "lam slide",
+    "lam powerpoint",
+    "lam cv",
+    "viet cv",
+    "viet email",
+    "tom tat tai lieu",
+    "giai toan",
+    "giai ly",
+    "giai hoa",
+    "lam de thi",
+    "xem boi",
+    "coi tarot",
+    "tu van tinh cam",
+)
+
+DOMAIN_KEYWORDS: tuple[str, ...] = (
+    "phong",
+    "nha tro",
+    "phong tro",
+    "can ho",
+    "chdv",
+    "thue",
+    "gia phong",
+    "tien coc",
+    "tien ich",
+    "quan",
+    "phuong",
+    "dia chi",
+    "xem phong",
+    "dat lich",
+    "chu nha",
+    "hop dong",
+    "wifi",
+    "may lanh",
+    "ban cong",
+)
+
 
 def _strip_accents(value: str) -> str:
     """Loại bỏ dấu thanh tiếng Việt để so sánh không phân biệt."""
@@ -309,6 +360,16 @@ def _strip_accents(value: str) -> str:
 def _norm(text: str) -> str:
     """Chuẩn hoá text: bỏ dấu, viết thường, xóa khoảng trắng thừa."""
     return re.sub(r"\s+", " ", _strip_accents(text).lower().replace("đ", "d")).strip()
+
+
+def _is_off_topic_request(normalized: str) -> bool:
+    if not normalized:
+        return False
+    has_off_topic_signal = any(phrase in normalized for phrase in OFF_TOPIC_KEYWORDS)
+    if not has_off_topic_signal:
+        return False
+    has_domain_signal = any(phrase in normalized for phrase in DOMAIN_KEYWORDS)
+    return not has_domain_signal
 
 
 def _money_to_vnd(raw: str, unit: str | None) -> int:
@@ -350,6 +411,7 @@ def _extract_room_ids(text: str) -> list[str]:
     patterns = [
         r"#([A-Za-z0-9][A-Za-z0-9_-]{1,40})",
         r"\b(?:phòng|phong|mã|ma)\s+([A-Za-z0-9][A-Za-z0-9_-]{1,40})\b",
+        r"\b([a-f0-9]{24})\b",
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
@@ -514,7 +576,7 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     landmarks = []
     for match in re.finditer(r"\b(?:gan|gần)\s+([a-z0-9 àáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]{2,40})", normalized):
         value = match.group(1).strip()
-        value = re.split(r"\b(?:duoi|tren|co|va|,|\.)\b", value)[0].strip()
+        value = re.split(r"\b(?:duoi|tren|co|va|khong|ko|k|,|\.)\b", value)[0].strip()
         if value and value not in landmarks:
             landmarks.append(value)
     for landmark in landmarks:
@@ -1079,6 +1141,8 @@ def _regex_classify(
         (intent, confidence) — confidence = 1.0 nếu chắc chắn,
         nhỏ hơn nếu cần LLM kiểm tra lại.
     """
+    if _is_off_topic_request(normalized):
+        return "GENERAL_HELP", 1.0
     if action:
         return "REQUEST_ACTION", 1.0
     if _is_result_set_compare_request(normalized):
@@ -1224,6 +1288,15 @@ def parse_intent_and_constraint_patch(
     normalized = _norm(text)
     operations: list[dict[str, Any]] = []
 
+    if _is_off_topic_request(normalized):
+        return {
+            "intent": "GENERAL_HELP",
+            "operations": [],
+            "current_room_id": None,
+            "referenced_room_ids": [],
+            "requested_action": None,
+        }
+
     _extract_budget(text, normalized, operations)
     _extract_location(normalized, operations)
     _extract_move_in_date(normalized, operations)
@@ -1286,6 +1359,14 @@ async def parse_intent_async(
     """
     text = question or ""
     normalized = _norm(text)
+    if _is_off_topic_request(normalized):
+        return {
+            "intent": "GENERAL_HELP",
+            "operations": [],
+            "current_room_id": None,
+            "referenced_room_ids": [],
+            "requested_action": None,
+        }
     regex_parsed = parse_intent_and_constraint_patch(text, current_state)
     regex_intent, regex_confidence = _regex_classify(
         normalized,

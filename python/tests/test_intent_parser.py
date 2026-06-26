@@ -99,6 +99,8 @@ class IntentParserTests(unittest.TestCase):
             ("Xin chào", None, "GENERAL_HELP"),
             ("Tôi muốn tìm phòng ở TP.HCM", None, "SEARCH_ROOM"),
             ("Ngân sách 6-8 triệu, 1 người ở", None, "SEARCH_ROOM"),
+            ("Viết code Python giúp tôi", None, "GENERAL_HELP"),
+            ("Giải bài toán này giúp mình", None, "GENERAL_HELP"),
             ("Rẻ hơn một chút được không?", state, "REFINE_SEARCH"),
             ("Hãy cho tôi biết giá và tiện ích của phòng đầu tiên", state, "ASK_ABOUT_ROOM"),
             ("Diện tích bao nhiêu?", state, "ASK_ABOUT_ROOM"),
@@ -160,6 +162,16 @@ class IntentParserTests(unittest.TestCase):
         self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
         self.assertEqual(parsed["current_room_id"], "C303")
 
+    def test_compare_can_extract_two_bare_mongo_room_ids(self):
+        parsed = parse_intent_and_constraint_patch(
+            "so sánh 61ea636e3048d576be90729f với 62cc0e17ff6aae63cefbeda7 đi"
+        )
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+        self.assertEqual(
+            parsed["referenced_room_ids"],
+            ["61ea636e3048d576be90729f", "62cc0e17ff6aae63cefbeda7"],
+        )
+
     def test_async_llm_can_rescue_unclear_general_text(self):
         async def faq_llm(_question, _state):
             return "REQUEST_FAQ", 0.95
@@ -167,6 +179,20 @@ class IntentParserTests(unittest.TestCase):
         with patch("room_assistant.intent._llm_classify_intent", faq_llm):
             parsed = asyncio.run(parse_intent_async("Quy trình bên mình ra sao?", None))
         self.assertEqual(parsed["intent"], "REQUEST_FAQ")
+
+    def test_off_topic_request_is_blocked_before_llm_rescue(self):
+        async def wrong_llm(_question, _state):
+            return {
+                "intent": "SEARCH_ROOM",
+                "confidence": 0.99,
+                "operations": [{"op": "append", "path": "location.districts", "value": "quan 1"}],
+                "referenced_room_ids": [],
+            }
+
+        with patch("room_assistant.intent._llm_classify_intent", wrong_llm):
+            parsed = asyncio.run(parse_intent_async("Viết code Python giúp tôi", None))
+        self.assertEqual(parsed["intent"], "GENERAL_HELP")
+        self.assertEqual(parsed["operations"], [])
 
     def test_async_llm_university_path_is_mapped_to_near_landmark(self):
         async def tdtu_llm(_question, _state):
@@ -183,6 +209,22 @@ class IntentParserTests(unittest.TestCase):
             {"op": "append", "path": "location.near_landmarks", "value": "tdtu"},
             parsed["operations"],
         )
+        self.assertNotIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu k"},
+            parsed["operations"],
+        )
+
+    def test_extract_near_landmark_ignores_chat_suffix_k(self):
+        parsed = parse_intent_and_constraint_patch("có phòng nào gần TDTU k")
+        self.assertIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu"},
+            parsed["operations"],
+        )
+        self.assertNotIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu k"},
+            parsed["operations"],
+        )
+        self.assertEqual(parsed["intent"], "SEARCH_ROOM")
 
     def test_async_router_verifier_keeps_regex_hard_slots_on_conflict(self):
         state = default_session_state("s-verifier")

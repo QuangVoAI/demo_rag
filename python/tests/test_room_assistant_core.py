@@ -249,6 +249,14 @@ class RoomAssistantCoreTests(unittest.TestCase):
             )
         )
 
+    def test_frustrated_mood_catches_student_cannot_afford_phrase(self):
+        self.assertTrue(
+            sentiment_analyzer._has_explicit_mood_cue(
+                "Giá cao thế, sinh viên sao mà thuê nổi?",
+                "frustrated",
+            )
+        )
+
     def test_runtime_config_validation_reports_invalid_values(self):
         import config
 
@@ -668,6 +676,89 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("Tiền cọc", answer)
         self.assertIn("Tổng tạm tính 6 tháng", answer)
 
+    def test_general_help_price_objection_uses_empathic_script(self):
+        parsed = {"intent": "GENERAL_HELP"}
+        grounding = {"rooms": [], "constraints": {}}
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {},
+            question="Giá cao thế, sinh viên sao mà thuê nổi?",
+            user_mood="frustrated",
+        )
+        self.assertIn("Dạ em hiểu", answer)
+        self.assertIn("ngân sách", answer)
+        self.assertIn("lọc lại", answer)
+
+    def test_general_help_off_topic_request_is_refused_softly(self):
+        parsed = {"intent": "GENERAL_HELP"}
+        grounding = {"rooms": [], "constraints": {}}
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {},
+            question="Viết code Python giúp tôi",
+        )
+        self.assertIn("chỉ hỗ trợ tư vấn phòng trọ", answer)
+        self.assertIn("viết code", answer)
+        self.assertIn("khu vực", answer)
+
+    def test_compare_template_highlights_price_area_and_feature_tradeoffs(self):
+        parsed = {"intent": "COMPARE_ROOMS"}
+        grounding = {"rooms": [], "constraints": {}}
+        tool_results = {
+            "comparison": {
+                "rows": [
+                    {
+                        "room_id": "61ea636e3048d576be90729f",
+                        "title": "C2-C3 HOÀNG QUỐC VIỆT - P.206",
+                        "rent_price": 4_800_000,
+                        "area_m2": 20,
+                        "district": "Quận 7",
+                        "available": True,
+                        "status_desc": "Phòng trống",
+                        "amenities": ["Thang máy", "Tủ lạnh", "Giường"],
+                        "embedding_text": "## Tiện ích\n- Wifi: Không\n- Gác: Không\n- Ban công: Có\n- Cửa sổ: Có\n- Thang máy: Có\n",
+                    },
+                    {
+                        "room_id": "62cc0e17ff6aae63cefbeda7",
+                        "title": "CUBICITY - INDIAN HOUSE Q7 - 107",
+                        "rent_price": 4_500_000,
+                        "area_m2": 15,
+                        "district": "Quận 7",
+                        "available": True,
+                        "status_desc": "Phòng trống",
+                        "amenities": ["Wifi", "Gác", "Tủ lạnh"],
+                        "embedding_text": "## Tiện ích\n- Wifi: Có\n- Gác: Có\n- Ban công: Không\n- Cửa sổ: Không\n",
+                    },
+                ]
+            }
+        }
+
+        answer = _compose_answer_template(parsed, grounding, tool_results)
+        self.assertIn("rẻ hơn", answer)
+        self.assertIn("rộng hơn", answer)
+        self.assertIn("Ưu điểm C2-C3 HOÀNG QUỐC VIỆT - P.206", answer)
+        self.assertIn("Ưu điểm CUBICITY - INDIAN HOUSE Q7 - 107", answer)
+
+    def test_search_template_mentions_matching_landmark_hint(self):
+        parsed = {"intent": "SEARCH_ROOM"}
+        grounding = {
+            "rooms": [
+                {
+                    "room_id": "A101",
+                    "title": "Phong gan truong",
+                    "rent_price": 2_500_000,
+                    "district": "Quận 7",
+                    "embedding_text": "",
+                    "tien_ich_xq": "Gan TDTU, di hoc tien",
+                }
+            ],
+            "constraints": {"location": {"near_landmarks": ["tdtu"]}},
+        }
+        answer = _compose_answer_template(parsed, grounding, {"rooms": grounding["rooms"]})
+        self.assertIn("gần TDTU", answer)
+
     def test_trace_cost_room_id_with_hash_is_resolved(self):
         repo = InMemoryRoomRepository([
             {
@@ -743,6 +834,83 @@ class RoomAssistantCoreTests(unittest.TestCase):
                 {"location": {"near_landmarks": ["tdtu"]}},
             )
         )
+
+    def test_run_room_assistant_finds_room_near_tdtu_with_chat_suffix_k(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "TDTU-1",
+                "metadata": {
+                    "house_name": "C2-C3 HOANG QUOC VIET",
+                    "room_code": "P206",
+                    "price": 4_800_000,
+                    "status_code": "0",
+                    "district_name": "Quận 7",
+                },
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n- Ghi chú: gần TDTU, tiện đi học",
+                "available": True,
+                "status": "active",
+            },
+            {
+                "room_id": "Q7-OTHER",
+                "metadata": {
+                    "house_name": "PHONG KHAC",
+                    "room_code": "101",
+                    "price": 4_500_000,
+                    "status_code": "0",
+                    "district_name": "Quận 7",
+                },
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n- Ghi chú: gần chợ, gần siêu thị",
+                "available": True,
+                "status": "active",
+            },
+        ])
+        state = default_session_state("tdtu-chat-suffix")
+        state["last_intent"] = "FIND_SIMILAR"
+        store = InMemorySessionStore()
+        store.save("tdtu-chat-suffix", state, ttl_seconds=3600)
+
+        async def tdtu_llm(_question, _state):
+            return {
+                "intent": "SEARCH_ROOM",
+                "confidence": 0.95,
+                "operations": [{"op": "set", "path": "location.university", "value": "tdtu"}],
+                "referenced_room_ids": [],
+            }
+
+        with patch("room_assistant.intent._llm_classify_intent", tdtu_llm):
+            result = asyncio.run(run_room_assistant(
+                "có phòng nào gần TDTU k",
+                session_id="tdtu-chat-suffix",
+                repository=repo,
+                session_store=store,
+                semantic_index=None,
+            ))
+
+        self.assertEqual(result["intent"], "SEARCH_ROOM")
+        self.assertEqual([room["room_id"] for room in result["rooms"]], ["TDTU-1"])
+
+    def test_compare_result_set_respects_requested_first_two_rooms(self):
+        repo = InMemoryRoomRepository([
+            {"room_id": "R1", "metadata": {"price": 1_000_000, "status_code": "0"}, "available": True, "status": "active", "title": "R1"},
+            {"room_id": "R2", "metadata": {"price": 2_000_000, "status_code": "0"}, "available": True, "status": "active", "title": "R2"},
+            {"room_id": "R3", "metadata": {"price": 3_000_000, "status_code": "0"}, "available": True, "status": "active", "title": "R3"},
+        ])
+        state = default_session_state("compare-first-two")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["R1", "R2", "R3"]
+        store = InMemorySessionStore()
+        store.save("compare-first-two", state, ttl_seconds=3600)
+
+        result = asyncio.run(run_room_assistant(
+            "so sánh 2 phòng đầu tiên đi",
+            session_id="compare-first-two",
+            repository=repo,
+            session_store=store,
+            semantic_index=None,
+        ))
+
+        self.assertEqual(result["intent"], "COMPARE_ROOMS")
+        self.assertEqual([room["room_id"] for room in result["rooms"]], ["R1", "R2"])
 
     def test_new_district_replaces_previous_search_district(self):
         state = default_session_state("trace-district")

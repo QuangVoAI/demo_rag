@@ -362,7 +362,9 @@ def _execute_workflow(
         selected_ids = state.get("selected_room_ids") or []
         last_result_ids = state.get("last_result_ids") or []
         if len(ids) < 2 and _asks_to_compare_result_set(question):
-            ids = last_result_ids or selected_ids or ids
+            pool = last_result_ids or selected_ids or ids
+            requested_count = _requested_result_set_count(question, len(pool))
+            ids = pool[:requested_count] if requested_count else pool
         if not ids:
             ids = selected_ids if len(selected_ids) >= 2 else last_result_ids
         comparison = _tool_registry.execute("compare_rooms", {"room_ids": ids[:3]}, context)
@@ -542,7 +544,12 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
 
 
 def _compose_answer_template(
-    parsed: dict[str, Any], grounding: dict[str, Any], tool_results: dict[str, Any],
+    parsed: dict[str, Any],
+    grounding: dict[str, Any],
+    tool_results: dict[str, Any],
+    *,
+    question: str = "",
+    user_mood: str = "normal",
 ) -> str:
     intent = parsed["intent"]
     if tool_results.get("error") == "tool_budget_exceeded":
@@ -559,11 +566,13 @@ def _compose_answer_template(
         if not rooms:
             return "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ. Anh/chị thử nới ngân sách hoặc mở rộng khu vực giúp em nhé, đảm bảo sẽ có nhiều căn đẹp lắm ạ!"
         lines = ["Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây:"]
+        landmark_hints = _matching_landmark_hints(rooms, grounding.get("constraints", {}))
         for idx, room in enumerate(rooms[:5], 1):
+            landmark_suffix = f", {landmark_hints.get(room.get('room_id'))}" if room.get("room_id") in landmark_hints else ""
             lines.append(
                 f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
                 f"chỉ {format_vnd(room.get('rent_price'))}/tháng, "
-                f"{room.get('district') or 'chưa rõ khu vực'}."
+                f"{room.get('district') or 'chưa rõ khu vực'}{landmark_suffix}."
             )
         lines.append("\nAnh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊")
         return "\n".join(lines)
@@ -641,15 +650,20 @@ def _compose_answer_template(
         lines = ["Dạ em gửi anh/chị bảng so sánh chi tiết:"]
         for row in rows:
             lines.append(
-                f"- **#{row.get('room_id')}**: {format_vnd(row.get('rent_price'))}/tháng, "
-                f"{row.get('area_m2') or 'chưa rõ'} m², {row.get('district') or 'chưa rõ khu vực'}."
+                f"- **{row.get('title') or ('#' + str(row.get('room_id')))}** "
+                f"(#{row.get('room_id')}): {format_vnd(row.get('rent_price'))}/tháng, "
+                f"{row.get('area_m2') or 'chưa rõ'} m², "
+                f"{row.get('district') or 'chưa rõ khu vực'}, "
+                f"{row.get('status_desc') or ('Còn phòng' if row.get('available') else 'chưa rõ trạng thái')}."
             )
+        for insight in _comparison_insights(rows):
+            lines.append(insight)
         best = _best_room_from_comparison(rows, grounding.get("constraints", {}))
         if best:
             area = f", diện tích {best.get('area_m2')} m²" if best.get("area_m2") else ""
             lines.append(
-                f"\n✨ **Gợi ý cực hợp lý:** Căn #{best.get('room_id')} "
-                f"với giá {format_vnd(best.get('rent_price'))}/tháng{area}."
+                f"\n✨ **Gợi ý cực hợp lý:** Căn **{best.get('title') or ('#' + str(best.get('room_id')))}** "
+                f"(#{best.get('room_id')}) với giá {format_vnd(best.get('rent_price'))}/tháng{area}."
             )
         missing = comparison.get("missing_room_ids") or []
         if missing:
@@ -663,6 +677,18 @@ def _compose_answer_template(
         if faq:
             return "\n".join(f"**[{item.get('topic')}]** {item.get('answer')}" for item in faq)
         return "Dạ anh/chị cần hỏi thêm về quy trình thuê, hợp đồng hay tiền cọc không ạ? Anh/chị cứ nhắn, em tư vấn kỹ cho nha."
+    if intent == "GENERAL_HELP" and _is_price_objection(question):
+        return (
+            "Dạ em hiểu mà ạ, tầm giá này với sinh viên thì mình phải cân lên đặt xuống dữ lắm. "
+            "Nếu mình ưu tiên tiết kiệm, em có thể lọc giúp các căn mềm hơn một chút hoặc tìm khu vực lân cận để giá dễ chịu hơn.\n"
+            "Mình nói em mức ngân sách dễ thở nhất với khu anh/chị muốn ở, em lọc lại ngay mấy căn hợp túi tiền cho mình nha 😊"
+        )
+    if intent == "GENERAL_HELP" and _is_off_topic_question(question):
+        return (
+            "Dạ em chỉ hỗ trợ tư vấn phòng trọ, giá thuê, chi phí, tiện ích và khu vực phù hợp thôi ạ. "
+            "Mấy việc như giải bài, viết code hay xử lý nội dung ngoài thuê phòng thì em chưa hỗ trợ được.\n"
+            "Nếu anh/chị đang cần tìm phòng, cứ nhắn khu vực, ngân sách hoặc tiện ích mong muốn, em lọc ngay cho mình nha 😊"
+        )
     return (
         "Dạ em có thể tìm phòng, so sánh giá, tư vấn chi phí và tiện ích chi tiết ạ. "
         "Anh/chị đang cần tìm phòng quanh khu vực nào để em hỗ trợ gửi phòng đẹp ngay nhé 😊"
@@ -683,15 +709,15 @@ async def _compose_answer_async(
         "COMPARE_ROOMS",
         "GENERAL_HELP",
     } or tool_results.get("error"):
-        return _compose_answer_template(parsed, grounding, tool_results)
+        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
         
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
-        return _compose_answer_template(parsed, grounding, tool_results)
+        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
-        return _compose_answer_template(parsed, grounding, tool_results)
+        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
     faq = tool_results.get("faq_results")
     if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
-        return _compose_answer_template(parsed, grounding, tool_results)
+        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
     verified_data = _build_llm_context(grounding, tool_results)
     answer = ""
     try:
@@ -705,16 +731,16 @@ async def _compose_answer_async(
     except Exception:
         pass
     if not answer or len(answer.strip()) < 20:
-        return _compose_answer_template(parsed, grounding, tool_results)
+        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
     try:
         from config import ENABLE_REVIEWER
         if not ENABLE_REVIEWER:
-            return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
+            return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
         from agents.reviewer import review_with_retry
         answer, _ = await review_with_retry(question=question, answer=answer, room_context=verified_data, max_retries=1)
     except Exception:
         pass
-    return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
+    return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
 
 
 def _extract_rooms(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
@@ -854,9 +880,33 @@ def _asks_to_compare_result_set(question: str) -> bool:
         return False
     return bool(
         re.search(r"\b(?:3|ba)\s*phong\b", text)
+        or re.search(r"\b(?:2|hai)\s*phong\b", text)
         or re.search(r"\b(?:cac|nhung|may)\s+phong\b", text)
         or re.search(r"\bphong\s+(?:nay|tren|vua|dau tien)\b", text)
     )
+
+
+def _requested_result_set_count(question: str, available_count: int) -> int:
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", question.lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
+    if match := re.search(r"\b(\d{1,2})\s*phong\b", text):
+        count = int(match.group(1))
+        return max(1, min(count, available_count, 3))
+    word_map = {
+        "mot": 1,
+        "một": 1,
+        "hai": 2,
+        "ba": 3,
+    }
+    if match := re.search(r"\b(mot|một|hai|ba)\s*phong\b", text):
+        count = word_map.get(match.group(1), available_count)
+        return max(1, min(count, available_count, 3))
+    if "dau tien" in text or "đầu tiên" in question.lower():
+        return max(1, min(available_count, 3))
+    return max(1, min(available_count, 3))
 
 
 def _preferred_source_score(item: dict[str, Any]) -> float:
@@ -897,6 +947,100 @@ def _best_room_from_comparison(rows: list[dict[str, Any]], constraints: dict[str
     return max(rows, key=score)
 
 
+def _comparison_insights(rows: list[dict[str, Any]]) -> list[str]:
+    if len(rows) < 2:
+        return []
+
+    insights: list[str] = []
+    first, second = rows[0], rows[1]
+
+    first_title = first.get("title") or f"#{first.get('room_id')}"
+    second_title = second.get("title") or f"#{second.get('room_id')}"
+
+    first_rent = first.get("rent_price")
+    second_rent = second.get("rent_price")
+    if isinstance(first_rent, (int, float)) and isinstance(second_rent, (int, float)) and first_rent != second_rent:
+        cheaper, pricier = (first, second) if first_rent < second_rent else (second, first)
+        diff = abs(int(first_rent) - int(second_rent))
+        insights.append(
+            f"- **Giá:** {cheaper.get('title') or ('#' + str(cheaper.get('room_id')))} rẻ hơn "
+            f"{pricier.get('title') or ('#' + str(pricier.get('room_id')))} khoảng {format_vnd(diff)}/tháng."
+        )
+
+    first_area = first.get("area_m2")
+    second_area = second.get("area_m2")
+    if isinstance(first_area, (int, float)) and isinstance(second_area, (int, float)) and first_area != second_area:
+        larger, smaller = (first, second) if first_area > second_area else (second, first)
+        diff_area = abs(float(first_area) - float(second_area))
+        diff_text = int(diff_area) if diff_area.is_integer() else diff_area
+        insights.append(
+            f"- **Diện tích:** {larger.get('title') or ('#' + str(larger.get('room_id')))} rộng hơn "
+            f"{smaller.get('title') or ('#' + str(smaller.get('room_id')))} khoảng {diff_text} m²."
+        )
+
+    first_features = set(_comparison_feature_labels(first))
+    second_features = set(_comparison_feature_labels(second))
+    first_only = sorted(first_features - second_features)
+    second_only = sorted(second_features - first_features)
+    if first_only:
+        insights.append(f"- **Ưu điểm {first_title}:** có thêm {', '.join(first_only[:5])}.")
+    if second_only:
+        insights.append(f"- **Ưu điểm {second_title}:** có thêm {', '.join(second_only[:5])}.")
+
+    if not insights:
+        insights.append("- Hai căn này khá ngang nhau về dữ liệu hiện có; nếu cần mình có thể đào sâu thêm vào phí, nội thất và tiện ích chi tiết.")
+    return insights
+
+
+def _comparison_feature_labels(room: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for fact in _room_feature_facts(room):
+        if ":" not in fact:
+            continue
+        name, value = fact.split(":", 1)
+        value_norm = str(value).strip().lower()
+        if value_norm in {"có", "free", "riêng", "tự do"}:
+            label = name.strip()
+            if label not in labels:
+                labels.append(label)
+
+    for amenity in room.get("amenities") or []:
+        label = AMENITY_LABELS.get(str(amenity).strip().lower(), str(amenity).strip())
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _matching_landmark_hints(rooms: list[dict[str, Any]], constraints: dict[str, Any]) -> dict[str, str]:
+    location = constraints.get("location") or {}
+    landmarks = [str(item).strip() for item in (location.get("near_landmarks") or []) if item]
+    if not landmarks:
+        return {}
+
+    hints: dict[str, str] = {}
+    for room in rooms:
+        room_id = str(room.get("room_id") or "").strip()
+        if not room_id:
+            continue
+        text = " ".join(
+            str(part or "")
+            for part in (
+                room.get("embedding_text"),
+                room.get("tien_ich_xq"),
+                room.get("address"),
+                room.get("title"),
+            )
+        ).lower()
+        matched = []
+        for landmark in landmarks:
+            token = str(landmark).strip().lower()
+            if token and token in text and token not in matched:
+                matched.append(token.upper())
+        if matched:
+            hints[room_id] = f"gần {' / '.join(matched)}"
+    return hints
+
+
 def _extract_rental_months(question: str) -> int | None:
     import re
     import unicodedata
@@ -917,6 +1061,79 @@ def _extract_rental_months(question: str) -> int | None:
         return None
     months = int(match.group(1))
     return months if months > 0 else None
+
+
+def _is_price_objection(question: str) -> bool:
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", str(question or "").lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
+    return any(
+        phrase in text
+        for phrase in (
+            "gia cao",
+            "dat qua",
+            "mac qua",
+            "qua tam tien",
+            "thue noi",
+            "thue khong noi",
+            "sinh vien",
+        )
+    )
+
+
+def _is_off_topic_question(question: str) -> bool:
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", str(question or "").lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
+    off_topic_phrases = (
+        "giai bai",
+        "giai bai tap",
+        "lam bai tap",
+        "lam ho bai",
+        "viet code",
+        "code giup",
+        "lap trinh giup",
+        "debug code",
+        "fix bug",
+        "viet bai van",
+        "viet essay",
+        "dich doan van",
+        "dich bai",
+        "lam slide",
+        "lam powerpoint",
+        "lam cv",
+        "viet cv",
+        "viet email",
+        "tom tat tai lieu",
+        "giai toan",
+        "giai ly",
+        "giai hoa",
+        "lam de thi",
+        "xem boi",
+        "coi tarot",
+        "tu van tinh cam",
+    )
+    domain_phrases = (
+        "phong",
+        "nha tro",
+        "phong tro",
+        "can ho",
+        "chdv",
+        "thue",
+        "gia phong",
+        "tien coc",
+        "tien ich",
+        "quan",
+        "phuong",
+        "dia chi",
+        "xem phong",
+        "dat lich",
+        "chu nha",
+        "hop dong",
+    )
+    return any(phrase in text for phrase in off_topic_phrases) and not any(phrase in text for phrase in domain_phrases)
 
 
 def _has_soft_preferences(constraints: dict[str, Any]) -> bool:

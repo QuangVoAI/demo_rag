@@ -327,7 +327,12 @@ def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[s
             "rent_price": room.get("rent_price"),
             "area_m2": room.get("area_m2"),
             "district": room.get("district"),
+            "address": room.get("address"),
             "available": room.get("available"),
+            "status_desc": room.get("status_desc"),
+            "amenities": list(room.get("amenities") or []),
+            "fees": dict(room.get("fees") or {}),
+            "embedding_text": room.get("embedding_text", ""),
             "unknown": _unknown_room_fields(room),
         })
     return {
