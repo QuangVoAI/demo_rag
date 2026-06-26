@@ -1,4 +1,4 @@
-﻿# Demo RAG Django + MongoDB Cho Website Cho Thuê Nhà Trọ
+# Demo RAG Django + MongoDB Cho Website Cho Thuê Nhà Trọ
 
 ## 1. Mục tiêu demo
 
@@ -25,14 +25,14 @@ graph TD
     User([Người dùng]) -->|Chat| DjangoAPI[Django API]
     DjangoAPI -->|Kafka/Direct| Graph[LangGraph Agent Workflow]
     
-    subgraph Agent Workflow [LangGraph Workflow (python/agents/graph.py)]
+    subgraph Agent Workflow ["LangGraph Workflow (python/agents/graph.py)"]
         Router[Router / Intent Parser] -->|Xác định ý định| Tool[RAG Tools]
         Tool -->|Tìm kiếm / Tính toán| Writer[Response Writer]
         Writer -->|Draft Answer| Reviewer[Safety Reviewer]
         Reviewer -->|Duyệt/Sửa| Output[Final Response]
     end
 
-    subgraph RAG Core [Retrieval Engine]
+    subgraph RAG Core ["Retrieval Engine"]
         Tool -->|Semantic Search| Qdrant[(Qdrant Vector DB)]
         Tool -->|Structured Filter| MongoDB[(MongoDB Atlas)]
     end
