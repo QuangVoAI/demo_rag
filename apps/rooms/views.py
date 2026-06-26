@@ -868,9 +868,6 @@ def book_viewing(request):
 
 @require_POST
 def api_chat(request):
-    import time
-
-    request_started = time.perf_counter()
     try:
         data = json.loads(request.body)
         message = data.get("message", "")
@@ -924,71 +921,35 @@ def _sanitize_history(history: Any, limit: int = 10) -> list[dict[str, str]]:
     else:
         history, resolved_conversation_id = _conversation_history(session_identity)
         if not session_identity:
-            return JsonResponse({"success": False, "message": "Thiếu thông tin người dùng để tiếp tục chat."})
+            return JsonResponse({"success": False, "message": GENERIC_REQUIRED_INFO_MESSAGE})
 
-    event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
-    first_token_sent_ms: int | None = None
+    try:
+        response_dict = async_to_sync(run_streaming)(
+            question=message,
+            history=history,
+            session_id=session_id,
+            stream_callback=None,
+        )
+        reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
+        _append_conversation_messages(resolved_conversation_id, message, reply)
+        if session_identity:
+            session_identity["conversation_id"] = resolved_conversation_id
+            request.session["chat_identity"] = session_identity
+        request.session.save()
 
-    def run_chat_worker() -> None:
-        async def stream_callback(token_chunk: str):
-            nonlocal first_token_sent_ms
-            if first_token_sent_ms is None:
-                first_token_sent_ms = int((time.perf_counter() - request_started) * 1000)
-            event_queue.put({"type": "token", "content": token_chunk})
-
-        try:
-            response_dict = async_to_sync(run_streaming)(
-                question=message,
-                history=history,
-                session_id=session_id,
-                stream_callback=stream_callback,
-            )
-
-            reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
-            _append_conversation_messages(resolved_conversation_id, message, reply)
-            if session_identity:
-                session_identity["conversation_id"] = resolved_conversation_id
-                request.session["chat_identity"] = session_identity
-            request.session.save()
-            response_payload = _build_chat_api_payload(
-                response_dict,
-                conversation_id=resolved_conversation_id,
-            )
-            response_payload["latency"] = {
-                "processing_time_ms": response_dict.get("processing_time_ms"),
-                "first_token_sent_ms": first_token_sent_ms,
-            }
-
-            event_queue.put({
-                "type": "final",
-                "payload": response_payload,
-            })
-        except Exception as exc:
-            event_queue.put({
-                "type": "error",
-                "message": _assistant_error_message(exc),
-            })
-        finally:
-            event_queue.put(None)
-
-    threading.Thread(target=run_chat_worker, daemon=True).start()
-
-    def event_stream():
-        yield ": stream-open\n\n"
-        while True:
-            try:
-                event = event_queue.get(timeout=8)
-            except queue.Empty:
-                yield _sse_heartbeat()
-                continue
-            if event is None:
-                break
-            yield _sse_data(event)
-
-    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
-    response["Cache-Control"] = "no-cache"
-    response["X-Accel-Buffering"] = "no"
-    return response
+        response_payload = _build_chat_api_payload(
+            response_dict,
+            conversation_id=resolved_conversation_id,
+        )
+        response_payload["latency"] = {
+            "processing_time_ms": response_dict.get("processing_time_ms"),
+        }
+        return JsonResponse(response_payload)
+    except Exception as exc:
+        return JsonResponse({
+            "success": False,
+            "message": _assistant_error_message(exc),
+        })
 
 
 def api_chat_history(request):

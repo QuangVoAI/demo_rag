@@ -211,7 +211,15 @@ async def run_room_assistant(
     save_session_state(next_state, store, ttl_seconds)
 
     grounding = _build_grounding_context(parsed, next_state, tool_results)
-    answer = await _compose_answer_async(question, parsed, grounding, tool_results, history, user_mood)
+    answer = await _compose_answer_async(
+        question,
+        parsed,
+        grounding,
+        tool_results,
+        history,
+        user_mood,
+        stream_callback=stream_callback,
+    )
     suggested_questions = _suggest_questions(parsed["intent"], rooms, current_room_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
@@ -626,6 +634,7 @@ def _compose_answer_template(
 async def _compose_answer_async(
     question: str, parsed: dict[str, Any], grounding: dict[str, Any],
     tool_results: dict[str, Any], history: list[dict[str, Any]], user_mood: str = "normal",
+    stream_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     intent = parsed["intent"]
     if intent in {
@@ -637,26 +646,52 @@ async def _compose_answer_async(
         "REFINE_SEARCH",
         "FIND_SIMILAR",
     } or tool_results.get("error"):
-        return _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results)
+        if stream_callback is not None:
+            await _stream_text_chunks(answer, stream_callback)
+        return answer
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
-        return _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results)
+        if stream_callback is not None:
+            await _stream_text_chunks(answer, stream_callback)
+        return answer
     rooms = grounding.get("rooms", [])
     faq = tool_results.get("faq_results")
     if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
-        return _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results)
+        if stream_callback is not None:
+            await _stream_text_chunks(answer, stream_callback)
+        return answer
     verified_data = _build_llm_context(grounding, tool_results)
     answer = ""
     try:
-        from agents.response_writer import write_response, write_no_result_response
+        from agents.response_writer import (
+            write_no_result_response,
+            write_response,
+            write_response_streaming,
+        )
         if not rooms and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
             constraints = grounding.get("constraints", {})
             answer = await write_no_result_response(question, constraints, user_mood)
+        elif stream_callback is not None:
+            answer = await write_response_streaming(
+                question=question,
+                verified_context=verified_data,
+                history=history,
+                mood=user_mood,
+                stream_callback=stream_callback,
+            )
         else:
             answer = await write_response(question=question, verified_context=verified_data, history=history, mood=user_mood)
     except Exception:
         pass
     if not answer or len(answer.strip()) < 20:
-        return _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results)
+        if stream_callback is not None:
+            await _stream_text_chunks(answer, stream_callback)
+        return answer
+    if stream_callback is not None:
+        return answer.strip()
     try:
         from config import ENABLE_REVIEWER
         if not ENABLE_REVIEWER:
@@ -666,6 +701,28 @@ async def _compose_answer_async(
     except Exception:
         pass
     return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
+
+
+async def _stream_text_chunks(
+    text: str,
+    stream_callback: Callable[[str], Awaitable[None]],
+    words_per_chunk: int = 4,
+) -> None:
+    """Emit deterministic answers in small chunks so SSE UX matches LLM replies."""
+    words = [word for word in str(text or "").split() if word]
+    if not words:
+        return
+
+    chunk_words: list[str] = []
+    for word in words:
+        chunk_words.append(word)
+        if len(chunk_words) >= words_per_chunk:
+            await stream_callback(" ".join(chunk_words) + " ")
+            chunk_words = []
+            await asyncio.sleep(0.02)
+
+    if chunk_words:
+        await stream_callback(" ".join(chunk_words))
 
 
 def _extract_rooms(tool_results: dict[str, Any]) -> list[dict[str, Any]]:

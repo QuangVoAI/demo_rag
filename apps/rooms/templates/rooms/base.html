@@ -697,40 +697,17 @@
           })
         });
 
-        if (!response.ok) {
-          let serverMessage = 'Không thể kết nối tới trợ lý.';
-          try {
-            const contentType = response.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-              const result = await response.json();
-              serverMessage = result.message || result.error || serverMessage;
-            } else {
-              const rawText = await response.text();
-              const titleMatch = rawText.match(/<title>(.*?)<\/title>/i);
-              if (titleMatch && titleMatch[1]) {
-                serverMessage = titleMatch[1].trim();
-              }
-            }
-          } catch (_) {}
-          throw new Error(serverMessage);
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || 'Hiện tại chưa thể xử lý yêu cầu. Vui lòng thử lại sau.');
         }
-        if (!response.body) {
-          throw new Error('Streaming response unavailable');
-        }
-
-        typingBubble.remove();
 
         const botBubble = document.createElement('div');
         botBubble.className = 'chat-bubble bot';
         botBubble.innerText = '';
         messagesWrap.appendChild(botBubble);
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let streamedText = '';
-        let firstTokenMs = null;
-        let finalResponseMs = null;
+        let finalResponseMs = performance.now() - requestStart;
         let backendProcessingMs = null;
         const latencyMeta = document.createElement('div');
         latencyMeta.style.marginTop = '8px';
@@ -743,7 +720,6 @@
         };
         const renderLatency = () => {
           const parts = [];
-          if (firstTokenMs !== null) parts.push(`Bắt đầu phản hồi: ${formatLatency(firstTokenMs)}`);
           if (finalResponseMs !== null) parts.push(`Hoàn tất: ${formatLatency(finalResponseMs)}`);
           if (backendProcessingMs !== null) parts.push(`Backend: ${formatLatency(backendProcessingMs)}`);
           latencyMeta.textContent = parts.join(' • ');
@@ -817,53 +793,17 @@
             botBubble.innerText = result.message || 'Đã xảy ra lỗi.';
           }
         };
-
-        const processSseEvent = (rawEvent) => {
-          const lines = rawEvent.split('\n');
-          const dataLines = lines.filter(line => line.startsWith('data:'));
-          if (!dataLines.length) return;
-          const dataText = dataLines.map(line => line.slice(5).trimStart()).join('\n');
-          if (!dataText) return;
-
-          const event = JSON.parse(dataText);
-          if (event.type === 'token') {
-            streamedText += event.content || '';
-            botBubble.innerText = streamedText;
-            if (firstTokenMs === null) {
-              firstTokenMs = performance.now() - requestStart;
-              renderLatency();
-            }
-            messagesWrap.scrollTop = messagesWrap.scrollHeight;
-            return;
-          }
-          if (event.type === 'final') {
-            renderFinalPayload(event.payload || {});
-            messagesWrap.scrollTop = messagesWrap.scrollHeight;
-            return;
-          }
-          if (event.type === 'error') {
-            botBubble.classList.add('error');
-            botBubble.innerText = event.message || 'Đã xảy ra lỗi.';
-          }
-        };
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) {
-            finalResponseMs = performance.now() - requestStart;
-            renderLatency();
-            break;
-          }
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split('\n\n');
-          buffer = parts.pop() || '';
-          parts.forEach(processSseEvent);
+        if (typingBubble.isConnected) {
+          typingBubble.remove();
         }
-        if (buffer.trim()) {
-          processSseEvent(buffer);
-        }
+        backendProcessingMs = result.latency?.processing_time_ms ?? null;
+        renderFinalPayload(result);
+        renderLatency();
+        messagesWrap.scrollTop = messagesWrap.scrollHeight;
       } catch (err) {
-        typingBubble.remove();
+        if (typingBubble.isConnected) {
+          typingBubble.remove();
+        }
         const botBubble = document.createElement('div');
         botBubble.className = 'chat-bubble bot error';
         botBubble.innerText = err?.message || 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
