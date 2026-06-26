@@ -121,7 +121,7 @@
             </label>
             <label class="chat-preauth-field">
               <span>Số điện thoại</span>
-              <input type="tel" id="chatIdentityPhone" placeholder="Ví dụ: 0909123456" required autocomplete="tel" inputmode="numeric" pattern="^0\\d{9}$" title="Nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0">
+              <input type="tel" id="chatIdentityPhone" placeholder="Ví dụ: 0909123456" required autocomplete="tel" inputmode="numeric" pattern="^0\d{9}$" title="Nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0">
             </label>
           </div>
           <div class="chat-role-toggle" id="chatRoleToggle" role="group" aria-label="Chọn vai trò demo">
@@ -543,7 +543,7 @@
       if (!name || !phone || !role) return;
       const normalizedPhone = normalizeVietnamPhone(phone);
       if (!isValidVietnamPhone(phone)) {
-        phoneInput.setCustomValidity('Vui lòng nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0.');
+        phoneInput.setCustomValidity('Thông tin chưa đúng định dạng. Vui lòng kiểm tra và thử lại.');
         phoneInput.reportValidity();
         return;
       }
@@ -582,7 +582,7 @@
         syncChatAccessState();
       } catch (err) {
         console.error(err);
-        alert('Không thể khởi tạo phiên chat. Vui lòng thử lại.');
+        alert(err?.message || 'Hiện tại chưa thể khởi tạo cuộc trò chuyện. Vui lòng thử lại sau.');
       }
     }
 

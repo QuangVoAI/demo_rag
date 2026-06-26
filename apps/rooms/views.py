@@ -11,6 +11,7 @@ import threading
 import uuid
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from django.http import Http404, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
@@ -47,6 +48,11 @@ FALLBACK_IMAGES: tuple[str, ...] = (
     "https://images.unsplash.com/photo-1484154218962-a197022b5858?auto=format&fit=crop&w=1200&q=80",
     "https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=1200&q=80",
 )
+
+GENERIC_REQUIRED_INFO_MESSAGE = "Vui lòng nhập đầy đủ thông tin để tiếp tục."
+GENERIC_INVALID_FORMAT_MESSAGE = "Thông tin chưa đúng định dạng. Vui lòng kiểm tra và thử lại."
+GENERIC_INVALID_INFO_MESSAGE = "Thông tin chưa hợp lệ. Vui lòng kiểm tra lại và thử lại."
+GENERIC_CHAT_INIT_ERROR_MESSAGE = "Hiện tại chưa thể khởi tạo cuộc trò chuyện. Vui lòng thử lại sau."
 
 
 def _safe_int(value: Any) -> int | None:
@@ -781,13 +787,18 @@ def api_chat_identity(request):
         demo_role = str(request.POST.get("demo_role", "")).strip()
 
     if not contact_name or not contact_phone or not demo_role:
-        return JsonResponse({"success": False, "message": "Thiếu thông tin người dùng."})
+        return JsonResponse({"success": False, "message": GENERIC_REQUIRED_INFO_MESSAGE})
 
     normalized_phone = _normalize_vietnam_phone(contact_phone)
     if not normalized_phone:
-        return JsonResponse({"success": False, "message": "Số điện thoại chưa đúng định dạng Việt Nam."})
+        return JsonResponse({"success": False, "message": GENERIC_INVALID_FORMAT_MESSAGE})
 
-    contact = _ensure_contact(contact_name, normalized_phone, demo_role)
+    try:
+        contact = _ensure_contact(contact_name, normalized_phone, demo_role)
+    except DuplicateKeyError:
+        return JsonResponse({"success": False, "message": GENERIC_INVALID_INFO_MESSAGE})
+    except Exception:
+        return JsonResponse({"success": False, "message": GENERIC_CHAT_INIT_ERROR_MESSAGE})
     session_identity = {
         "name": contact_name,
         "phone": normalized_phone,
@@ -824,7 +835,7 @@ def book_viewing(request):
         if not phone:
             return JsonResponse({
                 "success": False,
-                "message": "Số điện thoại phải gồm đúng 10 chữ số và bắt đầu bằng 0.",
+                "message": GENERIC_INVALID_FORMAT_MESSAGE,
             })
         
         room_object_id = ObjectId(room_id) if room_id and len(room_id) == 24 else None
@@ -870,11 +881,11 @@ def api_chat(request):
         conversation_id = str(request.POST.get("conversation_id", "")).strip()
 
     if not message:
-        return JsonResponse({"success": False, "message": "Vui lòng nhập tin nhắn."})
+        return JsonResponse({"success": False, "message": GENERIC_REQUIRED_INFO_MESSAGE})
 
     normalized_phone = _normalize_vietnam_phone(contact_phone) if contact_phone else ""
     if contact_phone and not normalized_phone:
-        return JsonResponse({"success": False, "message": "Số điện thoại chưa đúng định dạng Việt Nam."})
+        return JsonResponse({"success": False, "message": GENERIC_INVALID_FORMAT_MESSAGE})
 
     # Retrieve history and session ID from Django session
     session_id = request.session.session_key
