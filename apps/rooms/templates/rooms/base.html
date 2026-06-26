@@ -1,4 +1,4 @@
-﻿{% load static %}
+{% load static %}
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -82,6 +82,13 @@
   <div id="chatDrawer" class="chat-drawer">
     <div class="chat-drawer-header">
       <div class="chat-header-info">
+        <button class="chat-menu-btn" type="button" id="chatMenuBtn" onclick="toggleSidebar()" onmouseenter="openSidebar()" aria-label="Mở danh sách chat" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6h16"></path>
+            <path d="M4 12h16"></path>
+            <path d="M4 18h16"></path>
+          </svg>
+        </button>
         <span class="chat-header-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 12a8 8 0 0 1 16 0"></path>
@@ -91,7 +98,7 @@
           </svg>
         </span>
         <div>
-          <h3>CSKH nhatrovn</h3>
+          <h3>NhaTro AI</h3>
           <small>Hỗ trợ tìm phòng theo khu vực, giá và tiện ích</small>
         </div>
       </div>
@@ -114,7 +121,7 @@
             </label>
             <label class="chat-preauth-field">
               <span>Số điện thoại</span>
-              <input type="tel" id="chatIdentityPhone" placeholder="Ví dụ: 0909 123 456" required autocomplete="tel">
+              <input type="tel" id="chatIdentityPhone" placeholder="Ví dụ: 0909123456" required autocomplete="tel" inputmode="numeric" pattern="^0\\d{9}$" title="Nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0">
             </label>
           </div>
           <div class="chat-role-toggle" id="chatRoleToggle" role="group" aria-label="Chọn vai trò demo">
@@ -126,44 +133,73 @@
         </form>
       </div>
 
-      <div class="chat-thread-bar" id="chatThreadBar" hidden>
-        <span class="chat-thread-chip chat-thread-chip--role" id="chatRoleChip">Khách</span>
-        <button type="button" class="chat-thread-chip chat-thread-chip--action" id="chatNewThreadChip" onclick="resetChatConversation()" hidden>Đoạn chat mới</button>
-      </div>
+      <div class="chat-sidebar-backdrop" id="chatSidebarBackdrop" onclick="closeSidebar()"></div>
 
-      <div class="chat-messages-wrap" id="chatMessagesWrap">
-        <div class="chat-content-column">
-          <div class="chat-bubble bot chat-bubble--welcome">
-            Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+      <section class="chat-list-screen" id="chatListScreen" onmouseleave="closeSidebar()">
+        <div class="chat-list-header">
+          <h3 class="chat-list-title">Lịch sử trò chuyện</h3>
+          <button class="chat-list-create" type="button" onclick="startNewEmployeeThread()">+ Đoạn chat mới</button>
+        </div>
+        <div class="chat-list-items" id="chatConversationList"></div>
+      </section>
+
+      <!-- chat-thread-bar removed for sidebar navigation -->
+
+      <section class="chat-detail-screen" id="chatDetailScreen">
+        <div class="chat-session-heading" id="chatSessionHeading" hidden>
+          <span class="chat-session-title" id="chatSessionTitle">HÔM NAY</span>
+        </div>
+
+        <div class="chat-messages-wrap" id="chatMessagesWrap">
+          <div class="chat-content-column">
+            <div class="chat-bubble bot chat-bubble--welcome">
+              Chào bạn, mình là NhaTro AI của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+            </div>
           </div>
         </div>
-      </div>
 
-      <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
-        {% csrf_token %}
-        <div class="chat-input-shell">
-          <input type="text" id="chatMessageInput" placeholder="Nhập câu hỏi tìm phòng của bạn tại đây..." required autocomplete="off" disabled>
-          <button type="submit" id="chatSendBtn" disabled>Gửi</button>
-        </div>
-      </form>
+        <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
+          {% csrf_token %}
+          <div class="chat-input-shell">
+            <button type="button" class="chat-input-utility" aria-label="Đính kèm hoặc ghi âm" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 18a4 4 0 0 0 4-4V8a4 4 0 1 0-8 0v6a4 4 0 0 0 4 4Z"></path>
+                <path d="M19 11v2a7 7 0 0 1-14 0v-2"></path>
+                <path d="M12 20v3"></path>
+              </svg>
+            </button>
+            <input type="text" id="chatMessageInput" placeholder="Nhập yêu cầu tìm phòng của bạn..." autocomplete="off" disabled>
+            <button type="submit" id="chatSendBtn" disabled aria-label="Gửi tin nhắn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12h12"></path>
+                <path d="M13 6l6 6-6 6"></path>
+              </svg>
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   </div>
 
   <script>
     let chatIdentity = null;
+    let chatHistoryHydrated = false;
+    let chatConversations = [];
+    let chatView = 'detail';
 
     const CHAT_WELCOME_HTML = `
       <div class="chat-content-column">
         <div class="chat-bubble bot chat-bubble--welcome">
-          Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+          Chào bạn, mình là NhaTro AI của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
         </div>
       </div>
     `;
 
-    function openChatDrawer() {
+    async function openChatDrawer() {
       document.getElementById('chatDrawer').classList.add('open');
       document.getElementById('chatDrawerBackdrop').classList.add('open');
       document.body.style.overflow = 'hidden';
+      await hydrateChatFromSession();
       syncChatAccessState();
     }
 
@@ -177,6 +213,9 @@
       const inputEl = document.getElementById('chatMessageInput');
       const preauthForm = document.getElementById('chatPreauthForm');
       chatIdentity = null;
+      chatHistoryHydrated = false;
+      chatConversations = [];
+      chatView = 'detail';
       resetChatConversation();
       preauthForm.reset();
       document.getElementById('chatIdentityRole').value = 'customer';
@@ -194,13 +233,54 @@
       }
     }
 
+    function openSidebar() {
+      document.getElementById('chatListScreen').classList.add('open');
+      document.getElementById('chatSidebarBackdrop').classList.add('open');
+    }
+
+    function closeSidebar() {
+      document.getElementById('chatListScreen').classList.remove('open');
+      document.getElementById('chatSidebarBackdrop').classList.remove('open');
+    }
+
+    function toggleSidebar() {
+      const listScreen = document.getElementById('chatListScreen');
+      if (listScreen.classList.contains('open')) {
+        closeSidebar();
+      } else {
+        openSidebar();
+      }
+    }
+
+    function startNewEmployeeThread() {
+      if (chatIdentity && chatIdentity.role === 'landlord') {
+        chatIdentity.conversationId = '';
+        chatIdentity.conversationTitle = 'Đoạn chat mới';
+      }
+      resetChatConversation();
+      closeSidebar();
+      syncChatAccessState();
+    }
+
+    function normalizeVietnamPhone(value) {
+      const digits = String(value || '').replace(/\D/g, '');
+      if (digits.startsWith('0') && digits.length === 10) {
+        return digits;
+      }
+      return '';
+    }
+
+    function isValidVietnamPhone(value) {
+      return /^0\d{9}$/.test(normalizeVietnamPhone(value));
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       selectChatRole('customer');
       const chatbotTriggers = document.querySelectorAll('a[href="#chatbot"], a[href="#chatbot-preview"]');
       chatbotTriggers.forEach(el => {
-        el.addEventListener('click', function(e) {
+        el.addEventListener('click', async function(e) {
           e.preventDefault();
-          openChatDrawer();
+          await openChatDrawer();
         });
       });
     });
@@ -221,49 +301,289 @@
       document.getElementById('chatDrawerForm').dispatchEvent(new Event('submit'));
     }
 
+    function renderMessageBubble(role, content, timestamp) {
+      const bubble = document.createElement('div');
+      bubble.className = `chat-bubble ${role === 'user' ? 'user' : 'bot'}`;
+      
+      const isBot = role === 'assistant';
+      const contentHtml = isBot ? formatMarkdown(content) : escapeHtml(content);
+      
+      let timeStr = '';
+      const d = timestamp ? new Date(timestamp) : new Date();
+      timeStr = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+      
+      let actionsHtml = '';
+      if (isBot) {
+        actionsHtml = `
+          <div class="chat-bubble-actions">
+            <button type="button" class="bubble-action-btn" onclick="copyBubbleContent(this)" title="Sao chép">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
+            <button type="button" class="bubble-action-btn" title="Hữu ích" onclick="this.classList.toggle('active')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
+            </button>
+            <button type="button" class="bubble-action-btn" title="Không hữu ích" onclick="this.classList.toggle('active')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path></svg>
+            </button>
+          </div>
+        `;
+      }
+      
+      bubble.innerHTML = `
+        <div class="chat-bubble-content">${contentHtml}</div>
+        <div class="chat-bubble-footer">
+          ${actionsHtml}
+          <div class="chat-bubble-time">${timeStr}</div>
+        </div>
+      `;
+      return bubble;
+    }
+
+    function copyBubbleContent(btn) {
+      const bubble = btn.closest('.chat-bubble');
+      const content = bubble.querySelector('.chat-bubble-content').innerText;
+      navigator.clipboard.writeText(content).then(() => {
+        const icon = btn.querySelector('svg');
+        const originalSvg = icon.outerHTML;
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        setTimeout(() => {
+          btn.innerHTML = originalSvg;
+        }, 1500);
+      });
+    }
+
+    function renderChatHistory(history) {
+      const messagesWrap = document.getElementById('chatMessagesWrap');
+      messagesWrap.innerHTML = '';
+
+      if (!history || !history.length) {
+        messagesWrap.innerHTML = CHAT_WELCOME_HTML;
+        return;
+      }
+
+      history.forEach((item) => {
+        if (!item || !item.role || !item.content) return;
+        messagesWrap.appendChild(renderMessageBubble(item.role, item.content, item.created_at || item.timestamp));
+      });
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    function truncateThreadLabel(value) {
+      const text = String(value || '').trim();
+      if (!text) return 'Đoạn chat';
+      return text.length > 18 ? `${text.slice(0, 18)}...` : text;
+    }
+
+    function formatConversationTime(value) {
+      if (!value) return '';
+      const d = new Date(value);
+      const day = d.getDate().toString().padStart(2, '0');
+      const month = (d.getMonth() + 1).toString().padStart(2, '0');
+      const year = d.getFullYear();
+      const hours = d.getHours().toString().padStart(2, '0');
+      const mins = d.getMinutes().toString().padStart(2, '0');
+      return `${hours}:${mins} ${day}/${month}/${year}`;
+    }
+
+    function getConversationFallbackTitle() {
+      return 'HÔM NAY';
+    }
+
+    function formatConversationTitle(value) {
+      const text = String(value || '').trim();
+      if (!text) return 'Đoạn chat mới';
+      return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+
+    function renderConversationList() {
+      const listEl = document.getElementById('chatConversationList');
+      if (!listEl) return;
+      listEl.innerHTML = '';
+
+      if (!chatConversations.length) {
+        const empty = document.createElement('div');
+        empty.className = 'chat-list-empty';
+        empty.innerHTML = `
+          <strong>Chưa có đoạn chat nào</strong>
+          <p>Tạo một đoạn chat mới để bắt đầu tư vấn cho khách.</p>
+        `;
+        listEl.appendChild(empty);
+        return;
+      }
+
+      chatConversations.forEach((item) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        const isActive = !!chatIdentity?.conversationId && item.conversation_id === chatIdentity.conversationId;
+        const title = formatConversationTitle(item.title || 'Đoạn chat mới');
+        const avatarLabel = escapeHtml(String(title).trim().charAt(0) || 'C');
+        button.className = `chat-list-item${isActive ? ' active' : ''}`;
+        button.innerHTML = `
+          <span class="chat-list-avatar">${avatarLabel}</span>
+          <div class="chat-list-item-content">
+            <div class="chat-list-item-top">
+              <strong>${escapeHtml(title)}</strong>
+              <span>${escapeHtml(formatConversationTime(item.updated_at || ''))}</span>
+            </div>
+            <p>${escapeHtml(item.preview || 'Chưa có tin nhắn nào')}</p>
+          </div>
+        `;
+        button.onclick = () => switchConversation(item.conversation_id, title);
+        listEl.appendChild(button);
+      });
+    }
+
+    async function switchConversation(conversationId, title) {
+      if (!chatIdentity || chatIdentity.role !== 'landlord') return;
+      chatIdentity.conversationId = conversationId;
+      chatIdentity.conversationTitle = title || 'Đoạn chat hiện tại';
+      closeSidebar();
+      await hydrateChatFromSession(conversationId, true);
+      syncChatAccessState();
+    }
+
+    async function hydrateChatFromSession(conversationId = '', force = false) {
+      if (chatHistoryHydrated && !force && !conversationId) return;
+      try {
+        const url = new URL("{% url 'rooms:api_chat_history' %}", window.location.origin);
+        if (conversationId) {
+          url.searchParams.set('conversation_id', conversationId);
+        }
+
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        });
+        if (!response.ok) {
+          throw new Error('Cannot load chat history');
+        }
+        const result = await response.json();
+        if (!result.success) {
+          throw new Error(result.message || 'Cannot load chat history');
+        }
+
+        if (result.identity) {
+          chatIdentity = {
+            name: result.identity.name || '',
+            phone: result.identity.phone || '',
+            role: result.identity.role || 'customer',
+            contactId: result.identity.contact_id || '',
+            conversationId: result.identity.conversation_id || '',
+            conversationTitle: result.active_conversation?.title || '',
+          };
+          document.getElementById('chatIdentityName').value = chatIdentity.name;
+          document.getElementById('chatIdentityPhone').value = chatIdentity.phone;
+          document.getElementById('chatIdentityPhone').setCustomValidity('');
+          document.getElementById('chatIdentityRole').value = chatIdentity.role;
+          selectChatRole(chatIdentity.role);
+          if (chatIdentity.role === 'landlord' && !force) {
+            chatView = 'list';
+          }
+        }
+
+        chatConversations = result.conversations || [];
+        if (result.active_conversation?.title && chatIdentity) {
+          chatIdentity.conversationTitle = result.active_conversation.title;
+        }
+        renderChatHistory(result.history || []);
+        renderConversationList();
+      } catch (err) {
+        console.error(err);
+      } finally {
+        chatHistoryHydrated = true;
+      }
+    }
+
     function syncChatAccessState() {
       const overlay = document.getElementById('chatPreauthOverlay');
       const main = document.getElementById('chatMain');
       const inputEl = document.getElementById('chatMessageInput');
       const sendBtn = document.getElementById('chatSendBtn');
-      const threadBar = document.getElementById('chatThreadBar');
-      const roleChip = document.getElementById('chatRoleChip');
-      const newThreadChip = document.getElementById('chatNewThreadChip');
+      const menuBtn = document.getElementById('chatMenuBtn');
+      const detailScreen = document.getElementById('chatDetailScreen');
+      const sessionHeading = document.getElementById('chatSessionHeading');
+      const sessionTitle = document.getElementById('chatSessionTitle');
 
       if (chatIdentity) {
         overlay.classList.add('hidden');
         main.classList.remove('chat-main--locked');
+        const isEmployee = chatIdentity.role === 'landlord';
+        
+        detailScreen.hidden = false;
         inputEl.disabled = false;
         sendBtn.disabled = false;
-        threadBar.hidden = false;
-        const isEmployee = chatIdentity.role === 'landlord';
-        roleChip.textContent = isEmployee ? 'Nhân viên' : 'Khách';
-        roleChip.dataset.role = isEmployee ? 'employee' : 'customer';
-        newThreadChip.hidden = !isEmployee;
-        newThreadChip.style.display = isEmployee ? 'inline-flex' : 'none';
+        sessionHeading.hidden = !isEmployee;
+        menuBtn.hidden = !isEmployee;
+        if (isEmployee) {
+          sessionTitle.textContent = getConversationFallbackTitle();
+          renderConversationList();
+        }
         inputEl.focus();
         return;
       }
 
       overlay.classList.remove('hidden');
       main.classList.add('chat-main--locked');
+      detailScreen.hidden = false;
       inputEl.disabled = true;
       sendBtn.disabled = true;
-      threadBar.hidden = true;
-      newThreadChip.hidden = true;
-      newThreadChip.style.display = 'none';
+      menuBtn.hidden = true;
+      sessionHeading.hidden = true;
     }
 
-    function handleChatIdentitySubmit(e) {
+    async function handleChatIdentitySubmit(e) {
       e.preventDefault();
       const name = document.getElementById('chatIdentityName').value.trim();
-      const phone = document.getElementById('chatIdentityPhone').value.trim();
+      const phoneInput = document.getElementById('chatIdentityPhone');
+      const phone = phoneInput.value.trim();
       const role = document.getElementById('chatIdentityRole').value;
 
       if (!name || !phone || !role) return;
+      const normalizedPhone = normalizeVietnamPhone(phone);
+      if (!isValidVietnamPhone(phone)) {
+        phoneInput.setCustomValidity('Vui lòng nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0.');
+        phoneInput.reportValidity();
+        return;
+      }
+      phoneInput.setCustomValidity('');
+      phoneInput.value = normalizedPhone;
 
-      chatIdentity = { name, phone, role };
-      syncChatAccessState();
+      const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
+      try {
+        const response = await fetch("{% url 'rooms:api_chat_identity' %}", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken
+          },
+          body: JSON.stringify({
+            contact_name: name,
+            contact_phone: normalizedPhone,
+            demo_role: role
+          })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || 'Không thể khởi tạo phiên chat.');
+        }
+
+        chatIdentity = {
+          name: result.identity?.name || name,
+          phone: result.identity?.phone || normalizedPhone,
+          role: result.identity?.role || role,
+          contactId: result.identity?.contact_id || '',
+          conversationId: result.identity?.conversation_id || '',
+          conversationTitle: result.active_conversation?.title || (role === 'landlord' ? '' : 'Đoạn chat hiện tại'),
+        };
+        chatConversations = result.conversations || [];
+        chatView = role === 'landlord' ? 'list' : 'detail';
+        syncChatAccessState();
+      } catch (err) {
+        console.error(err);
+        alert('Không thể khởi tạo phiên chat. Vui lòng thử lại.');
+      }
     }
 
     function buildFollowUps(chips) {
@@ -309,6 +629,7 @@
       // 3. Post to backend
       const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
       try {
+        const requestStart = performance.now();
         const response = await fetch("{% url 'rooms:api_chat' %}", {
           method: 'POST',
           headers: {
@@ -319,11 +640,29 @@
             message: message,
             contact_name: chatIdentity.name,
             contact_phone: chatIdentity.phone,
-            demo_role: chatIdentity.role
+            demo_role: chatIdentity.role,
+            conversation_id: chatIdentity.conversationId || ''
           })
         });
 
-        if (!response.ok || !response.body) {
+        if (!response.ok) {
+          let serverMessage = 'Không thể kết nối tới trợ lý.';
+          try {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+              const result = await response.json();
+              serverMessage = result.message || result.error || serverMessage;
+            } else {
+              const rawText = await response.text();
+              const titleMatch = rawText.match(/<title>(.*?)<\/title>/i);
+              if (titleMatch && titleMatch[1]) {
+                serverMessage = titleMatch[1].trim();
+              }
+            }
+          } catch (_) {}
+          throw new Error(serverMessage);
+        }
+        if (!response.body) {
           throw new Error('Streaming response unavailable');
         }
 
@@ -338,9 +677,50 @@
         const decoder = new TextDecoder();
         let buffer = '';
         let streamedText = '';
+        let firstTokenMs = null;
+        let finalResponseMs = null;
+        let backendProcessingMs = null;
+        const latencyMeta = document.createElement('div');
+        latencyMeta.style.marginTop = '8px';
+        latencyMeta.style.fontSize = '12px';
+        latencyMeta.style.lineHeight = '1.4';
+        latencyMeta.style.color = '#6b7280';
+        const formatLatency = (value) => {
+          if (value === null || value === undefined) return null;
+          return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`;
+        };
+        const renderLatency = () => {
+          const parts = [];
+          if (firstTokenMs !== null) parts.push(`Bắt đầu phản hồi: ${formatLatency(firstTokenMs)}`);
+          if (finalResponseMs !== null) parts.push(`Hoàn tất: ${formatLatency(finalResponseMs)}`);
+          if (backendProcessingMs !== null) parts.push(`Backend: ${formatLatency(backendProcessingMs)}`);
+          latencyMeta.textContent = parts.join(' • ');
+        };
+        if (botBubble.parentElement) {
+          botBubble.parentElement.appendChild(latencyMeta);
+        }
 
         const renderFinalPayload = (result) => {
           if (result.success) {
+            if (chatIdentity && result.conversation_id) {
+              chatIdentity.conversationId = result.conversation_id;
+              if (!chatIdentity.conversationTitle || chatIdentity.conversationTitle === 'Đoạn chat mới') {
+                chatIdentity.conversationTitle = message;
+              }
+              if (chatIdentity.role === 'landlord') {
+                const nextItem = {
+                  conversation_id: result.conversation_id,
+                  title: chatIdentity.conversationTitle || message,
+                  preview: result.reply || '',
+                  updated_at: new Date().toISOString(),
+                };
+                chatConversations = [
+                  nextItem,
+                  ...chatConversations.filter((item) => item.conversation_id !== result.conversation_id),
+                ];
+              }
+              renderConversationList();
+            }
             botBubble.innerHTML = formatMarkdown(result.reply);
 
             if (result.rooms && result.rooms.length > 0) {
@@ -397,6 +777,10 @@
           if (event.type === 'token') {
             streamedText += event.content || '';
             botBubble.innerText = streamedText;
+            if (firstTokenMs === null) {
+              firstTokenMs = performance.now() - requestStart;
+              renderLatency();
+            }
             messagesWrap.scrollTop = messagesWrap.scrollHeight;
             return;
           }
@@ -413,7 +797,11 @@
 
         while (true) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done) {
+            finalResponseMs = performance.now() - requestStart;
+            renderLatency();
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
           const parts = buffer.split('\n\n');
           buffer = parts.pop() || '';
@@ -426,7 +814,7 @@
         typingBubble.remove();
         const botBubble = document.createElement('div');
         botBubble.className = 'chat-bubble bot error';
-        botBubble.innerText = 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
+        botBubble.innerText = err?.message || 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
         messagesWrap.appendChild(botBubble);
         console.error(err);
       }
@@ -435,10 +823,52 @@
 
     function formatMarkdown(text) {
       if (!text) return '';
-      return text
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br>');
+      
+      let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+      html = html.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      
+      const lines = html.split('\n');
+      let inList = false;
+      let parsedLines = [];
+      
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        const listMatch = line.match(/^(\s*)(?:-|\*)\s+(.*)/);
+        if (listMatch) {
+          if (!inList) {
+            parsedLines.push('<ul class="chat-markdown-list">');
+            inList = true;
+          }
+          parsedLines.push(`<li>${listMatch[2]}</li>`);
+        } else {
+          if (inList) {
+            parsedLines.push('</ul>');
+            inList = false;
+          }
+          parsedLines.push(line);
+        }
+      }
+      if (inList) {
+        parsedLines.push('</ul>');
+      }
+      
+      html = parsedLines.join('\n');
+      html = html.replace(/\n/g, '<br>');
+      html = html.replace(/<ul class="chat-markdown-list"><br>/g, '<ul class="chat-markdown-list">');
+      html = html.replace(/<\/li><br>/g, '</li>');
+      html = html.replace(/<\/ul><br>/g, '</ul>');
+      html = html.replace(/<br><\/ul>/g, '</ul>');
+      
+      return html;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.innerText = text || '';
+      return div.innerHTML;
     }
   </script>
 </body>
