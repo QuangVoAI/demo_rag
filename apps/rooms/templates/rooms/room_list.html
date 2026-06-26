@@ -7,6 +7,10 @@
   <form action="{% url 'rooms:room_list' %}" method="GET" id="unifiedFilterForm">
     <input type="hidden" name="quick_filter" value="{{ current_quick_filter|default:'' }}">
     <section class="listing-search-wrap">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;color:#5b6472;font-size:13px;">
+        <span>{{ result_count }} kết quả phù hợp</span>
+        <span>Backend render: {{ backend_render_ms }} ms</span>
+      </div>
       <div class="shell">
         <div class="listing-search-card">
           <div class="search-primary-row">

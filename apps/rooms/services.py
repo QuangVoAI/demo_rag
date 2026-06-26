@@ -102,6 +102,15 @@ def get_faqs_collection():
 def get_chat_logs_collection():
     return get_collection("chat_logs")
 
+def get_contacts_collection():
+    db = get_mongodb_db()
+    if "contacts" in db.list_collection_names():
+        return db["contacts"]
+    return db["contact"]
+
+def get_chat_history_collection():
+    return get_collection("chat_history")
+
 def get_media_assets_collection():
     return get_collection("media_assets")
 
@@ -224,4 +233,3 @@ def upsert_listing(listing_data, job_id=None):
         results.append(res)
         
     return results
-

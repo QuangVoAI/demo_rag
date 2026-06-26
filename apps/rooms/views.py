@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import hashlib
+from typing import Any
+from datetime import datetime
 import json
-import logging
 import os
 import queue
+import re
 import sys
 import threading
-import time
-from datetime import datetime
-from typing import Any
+import uuid
 
 from bson import ObjectId
-from django.core.cache import cache, caches
-from django.http import Http404, HttpResponseNotAllowed, JsonResponse, StreamingHttpResponse
+from pymongo.errors import DuplicateKeyError
+from django.http import Http404, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
@@ -27,7 +26,21 @@ if python_path not in sys.path:
 from agents.graph import run_streaming
 from asgiref.sync import async_to_sync
 
-from .services import get_bookings_collection, get_collection
+# Force the workflow to re-initialize its MongoDB repository singleton using
+# the environment variables that Django loaded (avoids Django's 'config' package
+# shadowing the python/config.py module during the first import).
+try:
+    import room_assistant.workflow as _wf
+    _wf._room_repository = None  # will be lazily re-created with correct env vars
+except Exception:
+    pass
+
+from .services import (
+    get_bookings_collection,
+    get_chat_history_collection,
+    get_collection,
+    get_contacts_collection,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +51,11 @@ FALLBACK_IMAGES: tuple[str, ...] = (
     "https://images.unsplash.com/photo-1484154218962-a197022b5858?auto=format&fit=crop&w=1200&q=80",
     "https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=1200&q=80",
 )
+
+GENERIC_REQUIRED_INFO_MESSAGE = "Vui lòng nhập đầy đủ thông tin để tiếp tục."
+GENERIC_INVALID_FORMAT_MESSAGE = "Thông tin chưa đúng định dạng. Vui lòng kiểm tra và thử lại."
+GENERIC_INVALID_INFO_MESSAGE = "Thông tin chưa hợp lệ. Vui lòng kiểm tra lại và thử lại."
+GENERIC_CHAT_INIT_ERROR_MESSAGE = "Hiện tại chưa thể khởi tạo cuộc trò chuyện. Vui lòng thử lại sau."
 
 
 def _safe_int(value: Any) -> int | None:
@@ -256,6 +274,9 @@ def _extract_fee_rows(text: str) -> list[dict[str, str]]:
 
 
 def room_list(request):
+    import time
+
+    render_started = time.perf_counter()
     city_slug = request.GET.get("city")
     district_slug = request.GET.get("district")
     category_slug = request.GET.get("category")
@@ -327,6 +348,7 @@ def room_list(request):
     context = {
         "rooms": rooms,
         "result_count": len(rooms),
+        "backend_render_ms": int((time.perf_counter() - render_started) * 1000),
         "categories": [
             "Phòng trọ",
             "Căn hộ",
@@ -471,6 +493,334 @@ def room_detail(request, room_id: str):
     return render(request, "rooms/room_detail.html", context)
 
 
+def _build_chat_api_payload(response_dict: dict[str, Any], conversation_id: str | None = None) -> dict[str, Any]:
+    reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
+
+    rooms_data = []
+    for r in response_dict.get("rooms", []):
+        room_id = r.get("room_id")
+        if not room_id:
+            continue
+
+        try:
+            rooms_col = _get_rooms_collection()
+            if len(room_id) == 24:
+                room_doc = rooms_col.find_one({"_id": ObjectId(room_id)})
+            else:
+                room_doc = None
+            if not room_doc:
+                room_doc = rooms_col.find_one({"room_id": room_id})
+            norm = _normalize_room_from_rooms_collection(room_doc) if room_doc else None
+        except Exception:
+            norm = None
+
+        if norm:
+            rooms_data.append({
+                "id": norm["id"],
+                "room_id": norm.get("room_id", norm["id"]),
+                "house_id": norm.get("house_id", ""),
+                "title": norm["title"],
+                "category": norm["category"],
+                "price_text": norm["price_text"],
+                "address": norm["address"],
+                "image": norm["image"],
+                "area_text": norm["area_text"],
+                "district": norm.get("district", ""),
+                "city": norm.get("city", ""),
+                "available_room_count": norm.get("available_room_count"),
+                "status_text": norm.get("status_text", ""),
+                "amenities": norm.get("amenities", [])[:4],
+            })
+
+    follow_up_chips = response_dict.get("suggested_questions") or [
+        "Tìm phòng dưới 5 triệu ở Bình Thạnh",
+        "Có gác lửng",
+        "Gần trung tâm",
+        "Cho nuôi thú cưng"
+    ]
+
+    state = response_dict.get("session_state", {}) or {}
+    constraints = state.get("constraints", {}) or {}
+    budget = constraints.get("budget", {}) or {}
+    location = constraints.get("location", {}) or {}
+
+    ui_filters = {
+        "category": None,
+        "district": location.get("districts", [""])[0] if location.get("districts") else "",
+        "price_max": budget.get("max"),
+        "amenities": constraints.get("amenities_required", []) + constraints.get("amenities_preferred", []),
+    }
+
+    return {
+        "success": True,
+        "reply": reply,
+        "rooms": rooms_data,
+        "follow_ups": follow_up_chips,
+        "filters": ui_filters,
+        "conversation_id": conversation_id,
+    }
+
+
+def _session_chat_identity(request) -> dict[str, str] | None:
+    identity = request.session.get("chat_identity")
+    if not isinstance(identity, dict):
+        return None
+    name = str(identity.get("name", "")).strip()
+    phone = str(identity.get("phone", "")).strip()
+    role = str(identity.get("role", "")).strip()
+    contact_id = str(identity.get("contact_id", "")).strip()
+    conversation_id = str(identity.get("conversation_id", "")).strip()
+    if not name or not phone or not role or not contact_id:
+        return None
+    payload = {
+        "name": name,
+        "phone": phone,
+        "role": role,
+        "contact_id": contact_id,
+    }
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+    return payload
+
+
+def _utcnow_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _normalize_chat_role(role: str) -> str:
+    value = str(role or "").strip().lower()
+    return "landlord" if value == "landlord" else "customer"
+
+
+def _normalize_vietnam_phone(phone: str) -> str:
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 10 and digits.startswith("0"):
+        return digits
+    return ""
+
+
+def _conversation_title(seed_text: str) -> str:
+    text = " ".join(str(seed_text or "").strip().split())
+    if not text:
+        return "Đoạn chat mới"
+    return text[:60] + ("..." if len(text) > 60 else "")
+
+
+def _ensure_contact(name: str, phone: str, role: str) -> dict[str, Any]:
+    contacts_col = get_contacts_collection()
+    role = _normalize_chat_role(role)
+    existing = contacts_col.find_one({"phone_number": phone, "role": role})
+    now = _utcnow_iso()
+    if existing:
+        contacts_col.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"name": name, "updated_at": now}},
+        )
+        existing["name"] = name
+        existing["updated_at"] = now
+        return existing
+
+    contact_id = f"contact_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "contact_id": contact_id,
+        "name": name,
+        "phone_number": phone,
+        "role": role,
+        "created_at": now,
+        "updated_at": now,
+    }
+    contacts_col.insert_one(doc)
+    return doc
+
+
+def _ensure_conversation(contact: dict[str, Any], message: str, conversation_id: str = "") -> tuple[str, list[dict[str, str]]]:
+    chat_history_col = get_chat_history_collection()
+    role = _normalize_chat_role(contact.get("role", "customer"))
+    contact_id = str(contact["contact_id"])
+
+    if role == "customer":
+        resolved_conversation_id = f"conversation_{contact_id}"
+    else:
+        resolved_conversation_id = conversation_id.strip() or f"conversation_{uuid.uuid4().hex[:12]}"
+
+    conversation = chat_history_col.find_one({"conversation_id": resolved_conversation_id})
+    if not conversation:
+        now = _utcnow_iso()
+        conversation = {
+            "contact_id": contact_id,
+            "conversation_id": resolved_conversation_id,
+            "title": _conversation_title(message),
+            "created_at": now,
+            "messages": [],
+        }
+        chat_history_col.insert_one(conversation)
+
+    history = []
+    for item in conversation.get("messages", [])[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role_value = str(item.get("role", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if role_value in {"user", "assistant"} and content:
+            history.append({"role": role_value, "content": content})
+    return resolved_conversation_id, history
+
+
+def _append_conversation_messages(conversation_id: str, user_message: str, assistant_message: str) -> None:
+    chat_history_col = get_chat_history_collection()
+    now = _utcnow_iso()
+    updates = [
+        {"role": "user", "content": user_message, "created_at": now},
+        {"role": "assistant", "content": assistant_message, "created_at": _utcnow_iso()},
+    ]
+    chat_history_col.update_one(
+        {"conversation_id": conversation_id},
+        {
+            "$push": {"messages": {"$each": updates}},
+            "$set": {"updated_at": _utcnow_iso()},
+        },
+    )
+
+
+def _conversation_history(identity: dict[str, str] | None) -> tuple[list[dict[str, str]], str]:
+    if not identity:
+        return [], ""
+
+    chat_history_col = get_chat_history_collection()
+    role = _normalize_chat_role(identity.get("role", "customer"))
+    contact_id = str(identity.get("contact_id", "")).strip()
+    if not contact_id:
+        return [], ""
+
+    conversation_id = str(identity.get("conversation_id", "")).strip()
+    if role == "customer":
+        conversation_id = f"conversation_{contact_id}"
+    if not conversation_id:
+        return [], ""
+
+    conversation = chat_history_col.find_one({"conversation_id": conversation_id})
+    if not conversation:
+        return [], conversation_id
+
+    history = []
+    for item in conversation.get("messages", [])[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role_value = str(item.get("role", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if role_value in {"user", "assistant"} and content:
+            history.append({"role": role_value, "content": content})
+    return history, conversation_id
+
+
+def _list_conversations(identity: dict[str, str] | None) -> list[dict[str, str]]:
+    if not identity:
+        return []
+
+    chat_history_col = get_chat_history_collection()
+    role = _normalize_chat_role(identity.get("role", "customer"))
+    contact_id = str(identity.get("contact_id", "")).strip()
+    if not contact_id:
+        return []
+
+    if role == "customer":
+        conversation_id = f"conversation_{contact_id}"
+        conversation = chat_history_col.find_one({"conversation_id": conversation_id})
+        if not conversation:
+            return []
+        messages = conversation.get("messages", [])
+        latest_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+        return [{
+            "conversation_id": conversation_id,
+            "title": str(conversation.get("title", "")).strip() or "Đoạn chat hiện tại",
+            "preview": str(latest_message.get("content", "")).strip(),
+            "updated_at": str(conversation.get("updated_at") or conversation.get("created_at") or ""),
+        }]
+
+    docs = list(
+        chat_history_col
+        .find({"contact_id": contact_id}, {"conversation_id": 1, "title": 1, "updated_at": 1, "created_at": 1, "messages": 1})
+        .sort([("updated_at", -1), ("created_at", -1)])
+        .limit(12)
+    )
+    conversations: list[dict[str, str]] = []
+    for item in docs:
+        conversation_id = str(item.get("conversation_id", "")).strip()
+        if not conversation_id:
+            continue
+        messages = item.get("messages", [])
+        latest_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+        conversations.append({
+            "conversation_id": conversation_id,
+            "title": str(item.get("title", "")).strip() or "Đoạn chat mới",
+            "preview": str(latest_message.get("content", "")).strip(),
+            "updated_at": str(item.get("updated_at") or item.get("created_at") or ""),
+        })
+    return conversations
+
+
+def _sse_data(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _sse_heartbeat() -> str:
+    return ": keep-alive\n\n"
+
+
+def _assistant_error_message(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    lowered = message.lower()
+    if (
+        "connection refused" in lowered
+        and ("6333" in lowered or "qdrant" in lowered or "localhost" in lowered or "127.0.0.1" in lowered)
+    ):
+        return "Qdrant chưa chạy hoặc không kết nối được tại localhost:6333."
+    return f"Lỗi hệ thống trợ lý ảo: {message}" if message else "Lỗi hệ thống trợ lý ảo."
+
+
+@require_POST
+def api_chat_identity(request):
+    try:
+        data = json.loads(request.body)
+        contact_name = str(data.get("contact_name", "")).strip()
+        contact_phone = str(data.get("contact_phone", "")).strip()
+        demo_role = str(data.get("demo_role", "")).strip()
+    except Exception:
+        contact_name = str(request.POST.get("contact_name", "")).strip()
+        contact_phone = str(request.POST.get("contact_phone", "")).strip()
+        demo_role = str(request.POST.get("demo_role", "")).strip()
+
+    if not contact_name or not contact_phone or not demo_role:
+        return JsonResponse({"success": False, "message": GENERIC_REQUIRED_INFO_MESSAGE})
+
+    normalized_phone = _normalize_vietnam_phone(contact_phone)
+    if not normalized_phone:
+        return JsonResponse({"success": False, "message": GENERIC_INVALID_FORMAT_MESSAGE})
+
+    try:
+        contact = _ensure_contact(contact_name, normalized_phone, demo_role)
+    except DuplicateKeyError:
+        return JsonResponse({"success": False, "message": GENERIC_INVALID_INFO_MESSAGE})
+    except Exception:
+        return JsonResponse({"success": False, "message": GENERIC_CHAT_INIT_ERROR_MESSAGE})
+    session_identity = {
+        "name": contact_name,
+        "phone": normalized_phone,
+        "role": _normalize_chat_role(demo_role),
+        "contact_id": str(contact["contact_id"]),
+    }
+    request.session["chat_identity"] = session_identity
+    request.session.save()
+
+    conversations = _list_conversations(session_identity)
+    return JsonResponse({
+        "success": True,
+        "identity": session_identity,
+        "conversations": conversations,
+    })
+
+
 @require_POST
 @csrf_protect
 def book_viewing(request):
@@ -479,13 +829,19 @@ def book_viewing(request):
         house_id = request.POST.get("house_id")
         room_id = request.POST.get("room_id")
         name = request.POST.get("name")
-        phone = request.POST.get("phone")
+        phone = _normalize_vietnam_phone(request.POST.get("phone"))
         number_people = request.POST.get("number_people")
         number_vehicles = request.POST.get("number_vehicles")
         have_pet = request.POST.get("have_pet")
         datetime_str = request.POST.get("datetime")
         estimated_time = request.POST.get("estimated_time")
         remark = request.POST.get("remark")
+
+        if not phone:
+            return JsonResponse({
+                "success": False,
+                "message": GENERIC_INVALID_FORMAT_MESSAGE,
+            })
         
         room_object_id = ObjectId(room_id) if room_id and len(room_id) == 24 else None
         booking_doc = {
@@ -510,33 +866,31 @@ def book_viewing(request):
         return JsonResponse({"success": False, "message": f"Có lỗi xảy ra: {str(e)}"})
 
 
-def _normalize_chat_role(raw_role: str | None) -> str:
-    value = str(raw_role or "").strip().lower()
-    if value in {"staff", "employee", "landlord", "nhan_vien", "nhanvien"}:
-        return "staff"
-    return "user"
+@require_POST
+def api_chat(request):
+    import time
 
-
-def _sender_role_for_chat(role: str) -> str:
-    return "user" if role == "user" else "nhan_vien"
-
-
-def _normalize_phone_number(phone: str | None) -> str:
-    return "".join(ch for ch in str(phone or "") if ch.isdigit())
-
-
-def _extract_request_payload(request) -> tuple[dict[str, Any], str]:
+    request_started = time.perf_counter()
     try:
         data = json.loads(request.body)
-        if not isinstance(data, dict):
-            data = {}
+        message = data.get("message", "")
+        contact_name = str(data.get("contact_name", "")).strip()
+        contact_phone = str(data.get("contact_phone", "")).strip()
+        demo_role = str(data.get("demo_role", "")).strip()
+        conversation_id = str(data.get("conversation_id", "")).strip()
     except Exception:
-        data = {}
-    if not data:
-        data = dict(request.POST.items())
-    message = str(data.get("message") or data.get("question") or "").strip()
-    return data, message
+        message = request.POST.get("message", "")
+        contact_name = str(request.POST.get("contact_name", "")).strip()
+        contact_phone = str(request.POST.get("contact_phone", "")).strip()
+        demo_role = str(request.POST.get("demo_role", "")).strip()
+        conversation_id = str(request.POST.get("conversation_id", "")).strip()
 
+    if not message:
+        return JsonResponse({"success": False, "message": GENERIC_REQUIRED_INFO_MESSAGE})
+
+    normalized_phone = _normalize_vietnam_phone(contact_phone) if contact_phone else ""
+    if contact_phone and not normalized_phone:
+        return JsonResponse({"success": False, "message": GENERIC_INVALID_FORMAT_MESSAGE})
 
 def _sanitize_history(history: Any, limit: int = 10) -> list[dict[str, str]]:
     if not isinstance(history, list):
@@ -554,773 +908,34 @@ def _sanitize_history(history: Any, limit: int = 10) -> list[dict[str, str]]:
         })
     return sanitized
 
-
-def _json_safe_value(value: Any) -> Any:
-    if isinstance(value, ObjectId):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _json_safe_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe_value(item) for item in value]
-    return value
-
-
-def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "") -> dict[str, Any]:
-    payload = {
-        "success": True,
-        "session_id": response_dict.get("session_id") or session_id,
-        "reply": response_dict.get("answer") or "",
-        "answer": response_dict.get("answer") or "",
-        "intent": response_dict.get("intent"),
-        "session_state": response_dict.get("session_state", {}),
-        "rooms": response_dict.get("rooms", []),
-        "cost_estimate": response_dict.get("cost_estimate"),
-        "comparison": response_dict.get("comparison"),
-        "follow_ups": response_dict.get("suggested_questions", []),
-        "suggested_questions": response_dict.get("suggested_questions", []),
-        "sources": response_dict.get("sources", []),
-        "retrieval_confidence": response_dict.get("retrieval_confidence"),
-        "retrieval_low_confidence": response_dict.get("retrieval_low_confidence"),
-        "retrieval_feedback_retry_count": response_dict.get("retrieval_feedback_retry_count", 0),
-        "retrieval_attempts": response_dict.get("retrieval_attempts", []),
-        "processing_time_ms": response_dict.get("processing_time_ms", 0),
-    }
-    return _json_safe_value(payload)
-
-
-def _rag_error_payload(
-    request,
-    *,
-    code: str,
-    message: str,
-    retryable: bool,
-    http_status: int,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "success": False,
-        "message": message,
-        "request_id": getattr(request, "request_id", None),
-        "correlation_id": getattr(request, "correlation_id", None),
-        "error": {
-            "code": code,
-            "message": message,
-            "retryable": retryable,
-            "http_status": http_status,
-        },
-    }
-    if extra:
-        payload.update(extra)
-        payload["error"].update(extra)
-    return _json_safe_value(payload)
-
-
-def _json_rag_error(
-    request,
-    *,
-    code: str,
-    message: str,
-    retryable: bool,
-    http_status: int,
-    extra: dict[str, Any] | None = None,
-) -> JsonResponse:
-    return JsonResponse(
-        _rag_error_payload(
-            request,
-            code=code,
-            message=message,
-            retryable=retryable,
-            http_status=http_status,
-            extra=extra,
-        ),
-        status=http_status,
-    )
-
-
-def _is_rag_api_authorized(request) -> bool:
-    required_key = str(getattr(settings, "RAG_API_KEY", "") or "").strip()
-    if not required_key:
-        return True
-    header_key = str(request.headers.get("X-API-Key", "") or "").strip()
-    auth_header = str(request.headers.get("Authorization", "") or "").strip()
-    bearer_key = ""
-    if auth_header.lower().startswith("bearer "):
-        bearer_key = auth_header[7:].strip()
-    return header_key == required_key or bearer_key == required_key
-
-
-def _request_log_context(request, **extra: Any) -> dict[str, Any]:
-    payload = {
-        "request_id": getattr(request, "request_id", None),
-        "correlation_id": getattr(request, "correlation_id", None),
-        "path": getattr(request, "path", ""),
-    }
-    payload.update(extra)
-    return payload
-
-
-def _get_rag_rate_limit_cache():
-    alias = str(getattr(settings, "RAG_RATE_LIMIT_CACHE_ALIAS", "default") or "default").strip() or "default"
-    try:
-        return caches[alias]
-    except Exception:
-        return cache
-
-
-def _attach_rate_limit_headers(response, rate_state: dict[str, int]) -> None:
-    response["X-RateLimit-Limit"] = str(rate_state["limit"])
-    response["X-RateLimit-Remaining"] = str(rate_state["remaining"])
-    response["X-RateLimit-Reset"] = str(rate_state["retry_after"])
-
-
-def _rag_rate_limit_identity(request, session_id: str) -> str:
-    header_key = str(request.headers.get("X-API-Key", "") or "").strip()
-    auth_header = str(request.headers.get("Authorization", "") or "").strip()
-    if auth_header.lower().startswith("bearer "):
-        header_key = auth_header[7:].strip() or header_key
-    if header_key:
-        return "api_key:" + hashlib.sha256(header_key.encode("utf-8")).hexdigest()[:16]
-    forwarded_for = str(request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
-    remote_addr = forwarded_for or str(request.META.get("REMOTE_ADDR", "") or "").strip() or "unknown"
-    if session_id:
-        return f"ip_session:{remote_addr}:{session_id[:64]}"
-    return f"ip:{remote_addr}"
-
-
-def _check_rag_rate_limit(request, session_id: str) -> tuple[bool, dict[str, int]]:
-    if not bool(getattr(settings, "RAG_RATE_LIMIT_ENABLED", True)):
-        return True, {"limit": 0, "remaining": 0, "retry_after": 0, "window_seconds": 0}
-
-    limit = max(1, int(getattr(settings, "RAG_RATE_LIMIT_MAX_REQUESTS", 30)))
-    window_seconds = max(1, int(getattr(settings, "RAG_RATE_LIMIT_WINDOW_SECONDS", 60)))
-    identity = _rag_rate_limit_identity(request, session_id)
-    cache_key = "rag_rate_limit:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    rate_limit_cache = _get_rag_rate_limit_cache()
-    now = int(time.time())
-    record = rate_limit_cache.get(cache_key) or {"count": 0, "window_started": now}
-    elapsed = max(0, now - int(record.get("window_started", now)))
-    if elapsed >= window_seconds:
-        record = {"count": 0, "window_started": now}
-        elapsed = 0
-
-    if int(record.get("count", 0)) >= limit:
-        retry_after = max(1, window_seconds - elapsed)
-        return False, {
-            "limit": limit,
-            "remaining": 0,
-            "retry_after": retry_after,
-            "window_seconds": window_seconds,
+    session_identity = _session_chat_identity(request)
+    if contact_name and normalized_phone and demo_role:
+        contact = _ensure_contact(contact_name, normalized_phone, demo_role)
+        resolved_conversation_id, history = _ensure_conversation(contact, message, conversation_id)
+        session_identity = {
+            "name": contact_name,
+            "phone": normalized_phone,
+            "role": _normalize_chat_role(demo_role),
+            "contact_id": str(contact["contact_id"]),
+            "conversation_id": resolved_conversation_id,
         }
-
-    record["count"] = int(record.get("count", 0)) + 1
-    rate_limit_cache.set(cache_key, record, timeout=window_seconds)
-    remaining = max(0, limit - record["count"])
-    return True, {
-        "limit": limit,
-        "remaining": remaining,
-        "retry_after": max(0, window_seconds - elapsed),
-        "window_seconds": window_seconds,
-    }
-
-
-def _build_contact_id(role: str, normalized_phone: str, name: str) -> str:
-    prefix = "c_staff_" if role == "staff" else "c_user_"
-    if normalized_phone:
-        suffix = normalized_phone[-10:]
+        request.session["chat_identity"] = session_identity
+        request.session.save()
     else:
-        suffix = hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
-    return f"{prefix}{suffix}"
+        history, resolved_conversation_id = _conversation_history(session_identity)
+        if not session_identity:
+            return JsonResponse({"success": False, "message": "Thiếu thông tin người dùng để tiếp tục chat."})
+
+    event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+    first_token_sent_ms: int | None = None
+
+    def run_chat_worker() -> None:
+        async def stream_callback(token_chunk: str):
+            nonlocal first_token_sent_ms
+            if first_token_sent_ms is None:
+                first_token_sent_ms = int((time.perf_counter() - request_started) * 1000)
+            event_queue.put({"type": "token", "content": token_chunk})
 
-
-def _serialize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    serialized: list[dict[str, Any]] = []
-    for msg in messages:
-        created_at = msg.get("created_at")
-        serialized.append({
-            "role": msg.get("role"),
-            "content": msg.get("content"),
-            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
-        })
-    return serialized
-
-
-def _list_chat_threads(contact_id: str, role: str, active_conversation_id: str | None = None) -> list[dict[str, Any]]:
-    chat_history_col = get_collection("chat_history")
-    try:
-        docs = list(
-            chat_history_col.find({"contact_id": contact_id})
-            .sort([("updated_at", -1), ("created_at", -1)])
-            .limit(25)
-        )
-    except Exception:
-        docs = []
-
-    threads: list[dict[str, Any]] = []
-    for doc in docs:
-        messages = doc.get("messages", [])
-        last_message = messages[-1] if messages else {}
-        last_timestamp = doc.get("updated_at") or last_message.get("created_at") or doc.get("created_at")
-        participants = {str(msg.get("role") or "") for msg in messages}
-        threads.append({
-            "conversation_id": doc.get("conversation_id"),
-            "title": doc.get("title") or "Đoạn chat chưa đặt tên",
-            "last_message": last_message.get("content", ""),
-            "last_sender_role": last_message.get("role", ""),
-            "message_count": len(messages),
-            "updated_at": last_timestamp.isoformat() if hasattr(last_timestamp, "isoformat") else last_timestamp,
-            "has_staff_messages": "staff" in participants or "nhan_vien" in participants,
-            "active": doc.get("conversation_id") == active_conversation_id,
-        })
-
-    if role == "user" and not threads and contact_id:
-        conversation_id = f"conv_{contact_id}"
-        threads.append({
-            "conversation_id": conversation_id,
-            "title": "Hỗ trợ tìm phòng",
-            "last_message": "",
-            "message_count": 0,
-            "updated_at": None,
-            "active": conversation_id == active_conversation_id,
-        })
-
-    return threads
-
-
-def _load_chat_messages(conversation_id: str | None) -> list[dict[str, Any]]:
-    if not conversation_id:
-        return []
-    try:
-        chat_doc = get_collection("chat_history").find_one({"conversation_id": conversation_id})
-    except Exception:
-        chat_doc = None
-    return list(chat_doc.get("messages", [])) if chat_doc else []
-
-
-def _ensure_contacts_phone_unique_index() -> None:
-    if getattr(_ensure_contacts_phone_unique_index, "_ready", False):
-        return
-
-    contacts_col = get_collection("contacts")
-    try:
-        for index in contacts_col.list_indexes():
-            key = index.get("key", {})
-            if key == {"phone_number": 1} and index.get("unique"):
-                _ensure_contacts_phone_unique_index._ready = True
-                return
-
-        contacts_col.create_index(
-            [("phone_number", 1)],
-            name="uniq_phone_number",
-            unique=True,
-            sparse=True,
-        )
-        _ensure_contacts_phone_unique_index._ready = True
-    except Exception:
-        logger.exception("Failed to ensure unique phone_number index for contacts")
-
-
-def _resolve_contact_identity(
-    *,
-    contact_id: str | None = None,
-    contact_phone: str | None = None,
-    contact_name: str | None = None,
-    demo_role: str | None = None,
-) -> dict[str, Any]:
-    contacts_col = get_collection("contacts")
-    _ensure_contacts_phone_unique_index()
-    normalized_phone = _normalize_phone_number(contact_phone)
-    normalized_role = _normalize_chat_role(demo_role)
-    cleaned_name = str(contact_name or "").strip()
-    contact_doc = None
-
-    if normalized_phone:
-        try:
-            contact_doc = contacts_col.find_one({"phone_number": normalized_phone})
-        except Exception:
-            contact_doc = None
-
-    if contact_doc is None and contact_id:
-        try:
-            contact_doc = contacts_col.find_one({"contact_id": contact_id})
-        except Exception:
-            contact_doc = None
-
-    if contact_doc:
-        resolved_contact_id = contact_doc.get("contact_id") or contact_id
-        resolved_role = _normalize_chat_role(contact_doc.get("role"))
-        update_fields: dict[str, Any] = {"updated_at": datetime.utcnow()}
-        if cleaned_name:
-            update_fields["name"] = cleaned_name
-        if normalized_phone:
-            update_fields["phone_number"] = normalized_phone
-        if resolved_role != _normalize_chat_role(contact_doc.get("role")):
-            update_fields["role"] = resolved_role
-        try:
-            contacts_col.update_one({"contact_id": resolved_contact_id}, {"$set": update_fields}, upsert=True)
-        except Exception:
-            pass
-        return {
-            "contact_id": resolved_contact_id,
-            "contact_name": cleaned_name or contact_doc.get("name", ""),
-            "contact_phone": normalized_phone or contact_doc.get("phone_number", ""),
-            "role": resolved_role,
-        }
-
-    resolved_contact_id = contact_id or _build_contact_id(normalized_role, normalized_phone, cleaned_name or "guest")
-    set_fields: dict[str, Any] = {
-        "name": cleaned_name,
-        "role": normalized_role,
-        "updated_at": datetime.utcnow(),
-    }
-    if normalized_phone:
-        set_fields["phone_number"] = normalized_phone
-    try:
-        contacts_col.update_one(
-            {"contact_id": resolved_contact_id},
-            {
-                "$set": set_fields,
-                "$setOnInsert": {
-                    "created_at": datetime.utcnow(),
-                },
-            },
-            upsert=True,
-        )
-    except Exception:
-        pass
-
-    return {
-        "contact_id": resolved_contact_id,
-        "contact_name": cleaned_name,
-        "contact_phone": normalized_phone,
-        "role": normalized_role,
-    }
-
-
-def _resolve_conversation_id(
-    *,
-    contact_id: str,
-    role: str,
-    requested_conversation_id: str | None,
-    session_conversation_id: str | None,
-    create_new: bool = False,
-) -> str | None:
-    if role == "user":
-        return f"conv_{contact_id}"
-
-    chat_history_col = get_collection("chat_history")
-    if create_new:
-        return f"conv_{contact_id}_{int(datetime.utcnow().timestamp())}"
-
-    candidates = [requested_conversation_id, session_conversation_id]
-
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            chat_doc = chat_history_col.find_one({"conversation_id": candidate})
-        except Exception:
-            chat_doc = None
-        if chat_doc and chat_doc.get("contact_id") == contact_id:
-            return candidate
-
-    try:
-        latest_doc = chat_history_col.find_one(
-            {"contact_id": contact_id},
-            sort=[("updated_at", -1), ("created_at", -1)],
-        )
-    except Exception:
-        latest_doc = None
-    return latest_doc.get("conversation_id") if latest_doc else None
-
-
-def _build_rooms_data(response_dict: dict[str, Any]) -> list[dict[str, Any]]:
-    rooms_data = []
-    for room in response_dict.get("rooms", []):
-        room_id = room.get("room_id")
-        if not room_id:
-            continue
-
-        try:
-            rooms_col = _get_rooms_collection()
-            room_doc = None
-            from bson.errors import InvalidId
-            try:
-                room_doc = rooms_col.find_one({"_id": ObjectId(str(room_id))})
-            except (InvalidId, TypeError, ValueError):
-                pass
-            
-            if not room_doc:
-                room_doc = rooms_col.find_one({"room_id": room_id})
-                
-            normalized = _normalize_room_from_rooms_collection(room_doc) if room_doc else None
-        except Exception:
-            normalized = None
-
-        if not normalized:
-            # Fallback to room data directly from the assistant's results
-            rent_price = room.get("rent_price") or 0
-            normalized = {
-                "id": room_id,
-                "room_id": room_id,
-                "house_id": room.get("house_id", ""),
-                "title": room.get("title", "Phòng trọ"),
-                "category": room.get("category", "Phòng Trọ"),
-                "price_text": f"{rent_price:,.0f}đ / tháng".replace(",", ".") if rent_price else "Liên hệ",
-                "address": room.get("address", ""),
-                "image": FALLBACK_IMAGES[int(hashlib.md5(str(room_id).encode("utf-8")).hexdigest(), 16) % len(FALLBACK_IMAGES)] if room_id else FALLBACK_IMAGES[0],
-                "area_text": f"{room.get('area_m2')}m2" if room.get("area_m2") else "",
-                "district": room.get("district", ""),
-                "city": room.get("province", ""),
-                "available_room_count": 1,
-                "status_text": room.get("status_desc", "Còn phòng"),
-                "amenities": room.get("amenities", [])[:4],
-            }
-
-        if not normalized:
-            continue
-
-        rooms_data.append({
-            "id": normalized["id"],
-            "room_id": normalized.get("room_id", normalized["id"]),
-            "house_id": normalized.get("house_id", ""),
-            "title": normalized["title"],
-            "category": normalized["category"],
-            "price_text": normalized["price_text"],
-            "address": normalized["address"],
-            "image": normalized["image"],
-            "area_text": normalized["area_text"],
-            "district": normalized.get("district", ""),
-            "city": normalized.get("city", ""),
-            "available_room_count": normalized.get("available_room_count"),
-            "status_text": normalized.get("status_text", ""),
-            "amenities": normalized.get("amenities", [])[:4],
-        })
-    return rooms_data
-
-
-def _build_ui_filters(response_dict: dict[str, Any]) -> dict[str, Any]:
-    state = response_dict.get("session_state", {}) or {}
-    constraints = state.get("constraints", {}) or {}
-    budget = constraints.get("budget", {}) or {}
-    location = constraints.get("location", {}) or {}
-    return {
-        "category": None,
-        "district": location.get("districts", [""])[0] if location.get("districts") else "",
-        "price_max": budget.get("max"),
-        "amenities": constraints.get("amenities_required", []) + constraints.get("amenities_preferred", []),
-    }
-
-
-def _build_chat_payload(
-    *,
-    response_dict: dict[str, Any] | None,
-    contact_id: str,
-    role: str,
-    conversation_id: str | None,
-) -> dict[str, Any]:
-    response_dict = response_dict or {}
-    reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
-    return {
-        "success": True,
-        "contact_id": contact_id,
-        "conversation_id": conversation_id,
-        "role": role,
-        "reply": reply,
-        "rooms": _build_rooms_data(response_dict),
-        "follow_ups": response_dict.get("suggested_questions") or [
-            "Tìm phòng dưới 5 triệu ở Bình Thạnh",
-            "Có gác lửng",
-            "Gần trung tâm",
-            "Cho nuôi thú cưng",
-        ],
-        "filters": _build_ui_filters(response_dict),
-        "threads": _list_chat_threads(contact_id, role, active_conversation_id=conversation_id),
-    }
-
-
-def _stream_chunk_to_event(chunk: str) -> dict[str, Any] | None:
-    if not chunk:
-        return None
-    if chunk.startswith("[status:"):
-        prefix, _, remainder = chunk.partition("]")
-        status_spec = prefix[len("[status:"):].strip()
-        stage, _, agent = status_spec.partition("|")
-        return {
-            "type": "status",
-            "stage": stage.strip() or "working",
-            "agent": agent.strip() or None,
-            "message": remainder.strip() or "Đang xử lý...",
-        }
-    return {"type": "token", "content": chunk}
-
-
-def _sse_event(event: dict[str, Any]) -> str:
-    return f"data: {json.dumps(_json_safe_value(event), ensure_ascii=False)}\n\n"
-
-
-def api_chat(request):
-    if request.method not in ["GET", "POST"]:
-        return HttpResponseNotAllowed(["GET", "POST"])
-
-    if request.method == "GET":
-        explicit_contact_id = request.GET.get("contact_id")
-        explicit_contact_phone = request.GET.get("contact_phone")
-        explicit_contact_name = request.GET.get("contact_name")
-        explicit_demo_role = request.GET.get("demo_role")
-
-        requested_contact_id = explicit_contact_id
-        if not requested_contact_id and not (explicit_contact_phone or explicit_contact_name):
-            requested_contact_id = request.session.get("contact_id")
-        if not requested_contact_id and not explicit_contact_phone:
-            requested_contact_id = "c_user_001"
-        identity = _resolve_contact_identity(
-            contact_id=requested_contact_id,
-            contact_phone=explicit_contact_phone,
-            contact_name=explicit_contact_name,
-            demo_role=explicit_demo_role,
-        )
-        contact_id = identity["contact_id"]
-        role = identity["role"]
-        conversation_id = _resolve_conversation_id(
-            contact_id=contact_id,
-            role=role,
-            requested_conversation_id=request.GET.get("conversation_id"),
-            session_conversation_id=request.session.get("conversation_id"),
-            create_new=request.GET.get("new_chat") == "1",
-        )
-        request.session["contact_id"] = contact_id
-        if conversation_id:
-            request.session["conversation_id"] = conversation_id
-        else:
-            request.session.pop("conversation_id", None)
-        return JsonResponse({
-            "success": True,
-            "contact_id": contact_id,
-            "conversation_id": conversation_id,
-            "role": role,
-            "contact_name": identity.get("contact_name", ""),
-            "contact_phone": identity.get("contact_phone", ""),
-            "threads": _list_chat_threads(contact_id, role, active_conversation_id=conversation_id),
-            "messages": _serialize_chat_messages(_load_chat_messages(conversation_id)),
-        })
-
-    data, message = _extract_request_payload(request)
-
-    if not message:
-        return JsonResponse({"success": False, "message": "Vui lòng nhập tin nhắn."})
-
-    explicit_contact_id = data.get("contact_id") or request.POST.get("contact_id")
-    explicit_contact_phone = data.get("contact_phone") or request.POST.get("contact_phone")
-    explicit_contact_name = data.get("contact_name") or request.POST.get("contact_name")
-    explicit_demo_role = data.get("demo_role") or request.POST.get("demo_role")
-
-    requested_contact_id = explicit_contact_id
-    if not requested_contact_id and not (explicit_contact_phone or explicit_contact_name):
-        requested_contact_id = request.session.get("contact_id")
-
-    identity = _resolve_contact_identity(
-        contact_id=requested_contact_id,
-        contact_phone=explicit_contact_phone,
-        contact_name=explicit_contact_name,
-        demo_role=explicit_demo_role,
-    )
-    contact_id = identity["contact_id"]
-    role = identity["role"]
-    sender_role = _sender_role_for_chat(role)
-    conversation_id = _resolve_conversation_id(
-        contact_id=contact_id,
-        role=role,
-        requested_conversation_id=data.get("conversation_id") or request.POST.get("conversation_id"),
-        session_conversation_id=request.session.get("conversation_id"),
-        create_new=(data.get("new_chat") == "1") or (request.POST.get("new_chat") == "1"),
-    )
-    if role == "staff" and not conversation_id:
-        conversation_id = f"conv_{contact_id}_{int(datetime.utcnow().timestamp())}"
-
-    request.session["contact_id"] = contact_id
-    if conversation_id:
-        request.session["conversation_id"] = conversation_id
-
-    history = []
-    chat_history_col = get_collection("chat_history")
-    try:
-        chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
-        if chat_doc:
-            msgs = chat_doc.get("messages", [])[-10:]
-            for msg in msgs:
-                history.append({
-                    "role": msg.get("role", "user"),
-                    "content": msg.get("content", "")
-                })
-    except Exception:
-        history = request.session.get("chat_history", [])
-
-    title = message[:30] + "..." if len(message) > 30 else message
-    try:
-        chat_doc = chat_history_col.find_one({"conversation_id": conversation_id})
-        if chat_doc and chat_doc.get("title"):
-            title = chat_doc["title"]
-    except Exception:
-        pass
-
-    now = datetime.utcnow()
-    try:
-        chat_history_col.update_one(
-            {"conversation_id": conversation_id},
-            {
-                "$setOnInsert": {
-                    "title": title,
-                    "created_at": now,
-                },
-                "$set": {
-                    "contact_id": contact_id,
-                    "sender_role": sender_role,
-                    "updated_at": now,
-                },
-                "$push": {
-                    "messages": {
-                        "role": "user" if role == "user" else "staff",
-                        "content": message,
-                        "created_at": now,
-                    }
-                }
-            },
-            upsert=True
-        )
-    except Exception:
-        logger.exception(
-            "Failed to persist inbound chat message",
-            extra={
-                "conversation_id": conversation_id,
-                "contact_id": contact_id,
-                "role": role,
-            },
-        )
-
-    event_queue: queue.Queue[str | None] = queue.Queue()
-
-    def enqueue_event(event: dict[str, Any]) -> None:
-        event_queue.put(_sse_event(event))
-
-    async def stream_callback(chunk: str) -> None:
-        event = _stream_chunk_to_event(chunk)
-        if event:
-            enqueue_event(event)
-
-    def worker() -> None:
-        try:
-            response_dict = async_to_sync(run_streaming)(
-                question=message,
-                history=history,
-                session_id=conversation_id,
-                stream_callback=stream_callback,
-            )
-            reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
-            finished_at = datetime.utcnow()
-            try:
-                chat_history_col.update_one(
-                    {"conversation_id": conversation_id},
-                    {
-                        "$set": {
-                            "updated_at": finished_at,
-                        },
-                        "$push": {
-                            "messages": {
-                                "role": "assistant",
-                                "content": reply,
-                                "created_at": finished_at,
-                            }
-                        },
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist assistant chat message",
-                    extra={
-                        "conversation_id": conversation_id,
-                        "contact_id": contact_id,
-                    },
-                )
-
-            history.append({"role": "user", "content": message})
-            history.append({"role": "assistant", "content": reply})
-            payload = _build_chat_payload(
-                response_dict=response_dict,
-                contact_id=contact_id,
-                role=role,
-                conversation_id=conversation_id,
-            )
-            enqueue_event({"type": "final", "payload": payload})
-        except Exception as exc:
-            enqueue_event({
-                "type": "error",
-                "message": f"Lỗi hệ thống trợ lý ảo: {str(exc)}",
-            })
-        finally:
-            event_queue.put(None)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-    def event_stream():
-        while True:
-            chunk = event_queue.get()
-            if chunk is None:
-                break
-            yield chunk
-
-    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
-    response["Cache-Control"] = "no-cache"
-    response["X-Accel-Buffering"] = "no"
-    return response
-
-
-@require_POST
-@csrf_protect
-def api_rag_stream(request):
-    data, message = _extract_request_payload(request)
-    if not message:
-        return _json_rag_error(
-            request,
-            code="validation_error",
-            message="Vui lòng nhập câu hỏi.",
-            retryable=False,
-            http_status=400,
-        )
-
-    session_id = str(data.get("session_id") or data.get("conversation_id") or "").strip()
-    history = _sanitize_history(data.get("history"))
-    allowed, rate_state = _check_rag_rate_limit(request, session_id=session_id)
-    if not allowed:
-        logger.warning(
-            "rag_stream_rate_limited",
-            extra=_request_log_context(request, session_id=session_id, rate_limit=rate_state),
-        )
-        response = _json_rag_error(
-            request,
-            code="rate_limited",
-            message="Too many requests. Please retry later.",
-            retryable=True,
-            http_status=200,
-            extra={
-                "rate_limited": True,
-                "retry_after_seconds": rate_state["retry_after"],
-            },
-        )
-        response["Retry-After"] = str(rate_state["retry_after"])
-        _attach_rate_limit_headers(response, rate_state)
-        return response
-
-    event_queue: queue.Queue[str | None] = queue.Queue()
-
-    def enqueue_event(event: dict[str, Any]) -> None:
-        event_queue.put(_sse_event(event))
-
-    async def stream_callback(chunk: str) -> None:
-        event = _stream_chunk_to_event(chunk)
-        if event:
-            enqueue_event(event)
-
-    def worker() -> None:
         try:
             response_dict = async_to_sync(run_streaming)(
                 question=message,
@@ -1328,139 +943,73 @@ def api_rag_stream(request):
                 session_id=session_id,
                 stream_callback=stream_callback,
             )
-            payload = _serialize_rag_response(response_dict, session_id=session_id)
-            payload["request_id"] = getattr(request, "request_id", None)
-            payload["correlation_id"] = getattr(request, "correlation_id", None)
-            enqueue_event({"type": "final", "payload": payload})
-        except Exception:
-            logger.exception("rag_stream_failed", extra=_request_log_context(request, session_id=session_id))
-            enqueue_event(
-                {
-                    "type": "error",
-                    "payload": _rag_error_payload(
-                        request,
-                        code="service_unavailable",
-                        message="RAG service unavailable.",
-                        retryable=True,
-                        http_status=503,
-                    ),
-                }
+
+            reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
+            _append_conversation_messages(resolved_conversation_id, message, reply)
+            if session_identity:
+                session_identity["conversation_id"] = resolved_conversation_id
+                request.session["chat_identity"] = session_identity
+            request.session.save()
+            response_payload = _build_chat_api_payload(
+                response_dict,
+                conversation_id=resolved_conversation_id,
             )
+            response_payload["latency"] = {
+                "processing_time_ms": response_dict.get("processing_time_ms"),
+                "first_token_sent_ms": first_token_sent_ms,
+            }
+
+            event_queue.put({
+                "type": "final",
+                "payload": response_payload,
+            })
+        except Exception as exc:
+            event_queue.put({
+                "type": "error",
+                "message": _assistant_error_message(exc),
+            })
         finally:
             event_queue.put(None)
 
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=run_chat_worker, daemon=True).start()
 
     def event_stream():
+        yield ": stream-open\n\n"
         while True:
-            chunk = event_queue.get()
-            if chunk is None:
+            try:
+                event = event_queue.get(timeout=8)
+            except queue.Empty:
+                yield _sse_heartbeat()
+                continue
+            if event is None:
                 break
-            yield chunk
+            yield _sse_data(event)
 
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
-    _attach_rate_limit_headers(response, rate_state)
     return response
 
 
-@require_POST
-@csrf_exempt
-def api_rag_query(request):
-    if not _is_rag_api_authorized(request):
-        logger.warning("rag_query_unauthorized", extra=_request_log_context(request))
-        return _json_rag_error(
-            request,
-            code="unauthorized",
-            message="Unauthorized.",
-            retryable=False,
-            http_status=401,
-        )
+def api_chat_history(request):
+    identity = _session_chat_identity(request)
+    requested_conversation_id = str(request.GET.get("conversation_id", "")).strip()
+    if identity and requested_conversation_id and identity.get("role") == "landlord":
+        identity = {**identity, "conversation_id": requested_conversation_id}
 
-    data, message = _extract_request_payload(request)
-    if not message:
-        return _json_rag_error(
-            request,
-            code="validation_error",
-            message="Vui lòng nhập câu hỏi.",
-            retryable=False,
-            http_status=400,
-        )
-
-    session_id = str(data.get("session_id") or data.get("conversation_id") or "").strip()
-    history = _sanitize_history(data.get("history"))
-    allowed, rate_state = _check_rag_rate_limit(request, session_id=session_id)
-    if not allowed:
-        logger.warning(
-            "rag_query_rate_limited",
-            extra=_request_log_context(request, session_id=session_id, rate_limit=rate_state),
-        )
-        response = _json_rag_error(
-            request,
-            code="rate_limited",
-            message="Too many requests. Please retry later.",
-            retryable=True,
-            http_status=200,
-            extra={
-                "rate_limited": True,
-                "retry_after_seconds": rate_state["retry_after"],
-            },
-        )
-        response["Retry-After"] = str(rate_state["retry_after"])
-        _attach_rate_limit_headers(response, rate_state)
-        return response
-
-    try:
-        response_dict = async_to_sync(run_streaming)(
-            question=message,
-            history=history,
-            session_id=session_id,
-        )
-    except Exception:
-        logger.exception("rag_query_failed", extra=_request_log_context(request, session_id=session_id))
-        response = _json_rag_error(
-            request,
-            code="service_unavailable",
-            message="RAG service unavailable.",
-            retryable=True,
-            http_status=503,
-        )
-        _attach_rate_limit_headers(response, rate_state)
-        return response
-
-    payload = _serialize_rag_response(response_dict, session_id=session_id)
-    payload["request_id"] = getattr(request, "request_id", None)
-    payload["correlation_id"] = getattr(request, "correlation_id", None)
-    logger.info(
-        "rag_query_ok",
-        extra=_request_log_context(
-            request,
-            session_id=payload.get("session_id"),
-            intent=payload.get("intent"),
-            processing_time_ms=payload.get("processing_time_ms"),
-        ),
+    normalized_history, conversation_id = _conversation_history(identity)
+    if identity and conversation_id:
+        identity["conversation_id"] = conversation_id
+    conversations = _list_conversations(identity)
+    active_conversation = next(
+        (item for item in conversations if item.get("conversation_id") == conversation_id),
+        None,
     )
-    response = JsonResponse(payload)
-    _attach_rate_limit_headers(response, rate_state)
-    return response
 
-
-def api_health(request):
     return JsonResponse({
         "success": True,
-        "status": "ok",
-        "service": "nhatrovn-rag",
-        "api": {
-            "rag_query_path": "/api/rag/query/",
-            "rag_stream_path": "/api/rag/stream/",
-        },
-        "security": {
-            "https_redirect": bool(getattr(settings, "SECURE_SSL_REDIRECT", False)),
-            "rag_api_key_required": bool(getattr(settings, "RAG_API_KEY", "")),
-        },
-        "cache": {
-            "rate_limit_cache_alias": str(getattr(settings, "RAG_RATE_LIMIT_CACHE_ALIAS", "default")),
-            "default_backend": settings.CACHES["default"]["BACKEND"],
-        },
+        "history": normalized_history,
+        "identity": identity,
+        "conversations": conversations,
+        "active_conversation": active_conversation,
     })
