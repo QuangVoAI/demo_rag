@@ -20,6 +20,7 @@ from typing import Any, Iterable
 _ROOM_ID_RE = re.compile(r"#\s*([A-Za-z0-9_\-]{1,32})")
 # Mã phòng không có dấu "#": A101, B202 ở đầu câu hoặc sau khoảng trắng.
 _BARE_ID_RE = re.compile(r"\b([A-Z]{1,3}\d{2,5})\b")
+_ROOM_CODE_RE = re.compile(r"\b([A-Z]{1,3}\.?\d{2,5})\b")
 
 # Quận/huyện/thành phố phổ biến (lowercase, accent-insensitive).
 _LOCATION_KEYWORDS: tuple[str, ...] = (
@@ -67,6 +68,7 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
     q_norm = _norm(q)
 
     room_ids: list[str] = []
+    room_codes: list[str] = []
     for m in _ROOM_ID_RE.findall(q):
         room_ids.append(m.upper())
     for m in _BARE_ID_RE.findall(q):
@@ -74,6 +76,10 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
         # Bỏ qua nếu trùng room_id đã bắt được.
         if upper not in room_ids:
             room_ids.append(upper)
+    for m in _ROOM_CODE_RE.findall(q):
+        upper = m.upper()
+        if upper not in room_codes:
+            room_codes.append(upper)
 
     districts: list[str] = []
     for needle in _SOFT_LOCATIONS:
@@ -86,6 +92,7 @@ def extract_metadata_signals(query: str) -> dict[str, list[str]]:
 
     return {
         "room_id": room_ids,
+        "room_code": room_codes,
         "district": districts,
         "query": [q] if q else [],
     }
@@ -95,6 +102,7 @@ def metadata_signal_present(signals: dict[str, list[str]]) -> bool:
     """Return true when the query has explicit metadata-like hints."""
     return bool(
         signals.get("room_id")
+        or signals.get("room_code")
         or signals.get("district")
     )
 
@@ -137,6 +145,7 @@ def score_metadata_hit(
 
     score = 0.0
     payload_room_id = str(payload.get("room_id") or payload.get("id") or "").upper()
+    payload_room_code = str(payload.get("room_code") or "").upper()
     searchable_values = []
     for field in fields:
         value = _get_field(payload, field)
@@ -151,6 +160,11 @@ def score_metadata_hit(
     for rid in signals.get("room_id", []) or []:
         if rid and rid.upper() == payload_room_id:
             score = max(score, 1.0)
+    for room_code in signals.get("room_code", []) or []:
+        normalized_code = str(room_code).upper().replace(".", "")
+        payload_code = payload_room_code.replace(".", "")
+        if normalized_code and normalized_code == payload_code:
+            score = max(score, 0.95)
     for snippet in signals.get("district", []) or []:
         if not snippet:
             continue

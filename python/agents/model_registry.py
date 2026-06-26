@@ -5,11 +5,33 @@ Tránh load model nhiều lần (BGE-M3 ~2.3GB fp32 / ~1.15GB fp16, Reranker ~1G
 Trên Q/P1000 4GB VRAM: fp16 tổng ~1.65GB → an toàn, fp32 ~3.3GB → OOM.
 Device selection: GPU fp16 nếu đủ VRAM, fallback CPU fp32.
 """
-import torch
+from __future__ import annotations
+
+import os
+import warnings
+
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("USE_TF", "0")
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"You are using a Python version \(3\.10\.\d+\) which Google will stop supporting in new releases of google\.api_core once it reaches its end of life \(\d{4}-\d{2}-\d{2}\)\. Please upgrade to the latest Python version, or at least Python 3\.11, to continue receiving updates for google\.api_core past that date\.",
+    category=FutureWarning,
+    module=r"google\.api_core\._python_version_support",
+)
+
 from utils.console import console
 
 _embed_model = None
 _reranker_model = None
+
+
+def _get_torch():
+    try:
+        import torch
+    except Exception as exc:
+        raise RuntimeError("PyTorch is not available for embedding/reranker models.") from exc
+    return torch
 
 
 def _select_device(min_free_gb: float = 1.3) -> str:
@@ -17,6 +39,7 @@ def _select_device(min_free_gb: float = 1.3) -> str:
     Chọn device: CUDA nếu còn đủ VRAM, ngược lại CPU.
     min_free_gb: VRAM tối thiểu cần có trước khi load model tiếp theo.
     """
+    torch = _get_torch()
     if torch.cuda.is_available():
         free_bytes, total_bytes = torch.cuda.mem_get_info()
         free_gb = free_bytes / 1024 ** 3
@@ -44,6 +67,7 @@ def get_embed_model():
         from sentence_transformers import SentenceTransformer
         from config import EMBEDDING_DTYPE, EMBEDDING_MODEL
 
+        torch = _get_torch()
         device = _select_device(min_free_gb=1.3)
         if EMBEDDING_DTYPE == "fp16" and device == "cuda":
             dtype = torch.float16
@@ -80,6 +104,7 @@ def get_reranker_model():
         from sentence_transformers import CrossEncoder
         from config import RERANKER_MODEL
 
+        torch = _get_torch()
         device = _select_device(min_free_gb=0.6)
         dtype = torch.float16 if device == "cuda" else torch.float32
         precision = "fp16" if dtype == torch.float16 else "fp32"
@@ -100,6 +125,7 @@ def get_reranker_model():
 
 def warmup():
     """Pre-load tất cả models lúc startup thay vì lúc query đầu tiên."""
+    torch = None
     console.print("[bold cyan]🔥 Warming up models...[/]")
     get_embed_model()
     try:
@@ -110,7 +136,11 @@ def warmup():
         get_reranker_model()
     else:
         console.print("[dim]  Reranker warmup skipped (USE_RERANKER=false)[/]")
-    if torch.cuda.is_available():
+    try:
+        torch = _get_torch()
+    except RuntimeError:
+        torch = None
+    if torch is not None and torch.cuda.is_available():
         used_bytes = torch.cuda.memory_allocated()
         total_bytes = torch.cuda.get_device_properties(0).total_memory
         console.print(

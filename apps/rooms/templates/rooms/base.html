@@ -204,8 +204,9 @@
     }
 
     function closeChatDrawer() {
-      document.getElementById('chatDrawer').classList.remove('open');
-      document.getElementById('chatDrawerBackdrop').classList.remove('open');
+      const { drawer, backdrop } = getChatElements();
+      drawer.classList.remove('open');
+      backdrop.classList.remove('open');
       document.body.style.overflow = '';
     }
 
@@ -598,6 +599,65 @@
       return wrapper;
     }
 
+    function renderRagPayload(result, targetBubble) {
+      const { messagesWrap } = getChatElements();
+      if (result.success) {
+        const answerText = result.reply || result.answer || '';
+        targetBubble.innerHTML = formatMarkdown(answerText);
+        rememberChatMessage('assistant', answerText);
+
+        if (result.rooms && result.rooms.length > 0) {
+          const cardsContainer = document.createElement('div');
+          cardsContainer.className = 'chat-cards-grid';
+
+          result.rooms.forEach(room => {
+            const roomRef = room.id || room.room_id;
+            const card = document.createElement('a');
+            card.className = 'chat-card-inline';
+            card.href = roomRef ? `/tim-phong/${roomRef}/` : '#';
+            const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
+            const idLines = [
+              room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
+              room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
+            ].filter(Boolean).join('');
+            card.innerHTML = `
+              ${room.image ? `<img src="${room.image}" alt="${room.title || room.room_id || 'room'}">` : ''}
+              <div class="chat-card-body">
+                <div class="chat-card-topline">
+                  <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
+                </div>
+                <h4>${room.title || room.room_id || 'Phòng phù hợp'}</h4>
+                ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
+                <p class="price">${room.price_text || ''}</p>
+                <p class="meta">${metaParts.join(' • ')}</p>
+                <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
+                <p class="address">${room.address || ''}</p>
+                <span class="chat-card-cta">Xem chi tiết</span>
+              </div>
+            `;
+            cardsContainer.appendChild(card);
+          });
+
+          messagesWrap.appendChild(cardsContainer);
+        }
+
+        const followUps = result.follow_ups || result.suggested_questions || [];
+        if (followUps.length) {
+          messagesWrap.appendChild(buildFollowUps(followUps));
+        }
+      } else {
+        targetBubble.classList.add('error');
+        targetBubble.textContent = result.message || 'Đã xảy ra lỗi.';
+      }
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    async function selectChatThread(conversationId) {
+      if (!chatIdentity || !conversationId) return;
+      chatIdentity.conversationId = conversationId;
+      renderThreadList();
+    }
+
     async function handleChatSubmit(e) {
       e.preventDefault();
       if (!chatIdentity) return;
@@ -605,36 +665,28 @@
       const message = inputEl.value.trim();
       if (!message) return;
 
-      inputEl.value = '';
-      
-      const messagesWrap = document.getElementById('chatMessagesWrap');
-      
-      // 1. Add User Bubble
-      const userBubble = document.createElement('div');
-      userBubble.className = 'chat-bubble user';
-      userBubble.innerText = message;
-      messagesWrap.appendChild(userBubble);
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+      input.value = '';
+      input.disabled = true;
+      sendBtn.disabled = true;
+      appendChatBubble('user', message);
+      rememberChatMessage('user', message);
 
       const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
       existingSuggestions.forEach(el => el.remove());
 
-      // 2. Add Typing Indicator Bubble
       const typingBubble = document.createElement('div');
       typingBubble.className = 'chat-bubble bot typing';
       typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
       messagesWrap.appendChild(typingBubble);
       messagesWrap.scrollTop = messagesWrap.scrollHeight;
 
-      // 3. Post to backend
-      const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
       try {
         const requestStart = performance.now();
         const response = await fetch("{% url 'rooms:api_chat' %}", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-CSRFToken': csrfToken
+            'X-CSRFToken': csrfToken,
           },
           body: JSON.stringify({
             message: message,
@@ -817,6 +869,12 @@
         botBubble.innerText = err?.message || 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
         messagesWrap.appendChild(botBubble);
         console.error(err);
+      } finally {
+        if (!chatCooldownTimer) {
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+        }
       }
       messagesWrap.scrollTop = messagesWrap.scrollHeight;
     }

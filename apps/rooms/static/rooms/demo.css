@@ -2338,6 +2338,29 @@ input:focus, select:focus, textarea:focus {
     padding: 0 11px;
     font-size: 11px;
   }
+  .chat-preauth-overlay {
+    padding: 36px 20px 20px;
+  }
+  .chat-preauth-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .chat-role-toggle {
+    width: 100%;
+    max-width: none;
+  }
+  .chat-preauth-submit {
+    width: 100%;
+    max-width: none;
+  }
+  .chat-header-actions {
+    gap: 6px;
+  }
+  .chat-role-pill {
+    min-height: 34px;
+    padding: 0 11px;
+    font-size: 11px;
+  }
   .chat-fab {
     right: 14px;
     bottom: 14px;
@@ -2351,5 +2374,48 @@ input:focus, select:focus, textarea:focus {
   }
   .chat-fab-copy small {
     font-size: 12px;
+  }
+}
+.chat-status-card {
+  display: grid;
+  gap: 6px;
+  animation: chatStatusFadeIn 180ms ease-out;
+}
+
+.chat-status-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(19, 36, 51, 0.72);
+}
+
+.chat-status-stage {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(9, 97, 193, 0.12);
+  color: #0b5cad;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chat-status-message {
+  color: #132433;
+  line-height: 1.5;
+  min-height: 24px;
+}
+
+@keyframes chatStatusFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

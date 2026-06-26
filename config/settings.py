@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+import sys
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -19,17 +20,64 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if not raw:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _default_cache_config() -> dict[str, object]:
+    redis_url = (
+        os.getenv("DJANGO_CACHE_REDIS_URL", "").strip()
+        or os.getenv("REDIS_URL", "").strip()
+    )
+    if redis_url:
+        return {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": redis_url,
+            "KEY_PREFIX": os.getenv("DJANGO_CACHE_KEY_PREFIX", "nhatrovn"),
+            "TIMEOUT": int(os.getenv("DJANGO_CACHE_DEFAULT_TIMEOUT", "300")),
+        }
+    return {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "nhatrovn-default-cache",
+        "TIMEOUT": int(os.getenv("DJANGO_CACHE_DEFAULT_TIMEOUT", "300")),
+    }
+
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-j#5!*ndpgz3!1h6b=+#2(p-1*w50al83en+))a)-6fqh3a!qkv'
+DEBUG = _env_bool("DJANGO_DEBUG", False)
+TESTING = "test" in sys.argv
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY") or os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = "django-insecure-local-dev-only"
+    else:
+        raise RuntimeError("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is false.")
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS", ["127.0.0.1", "localhost", "testserver"])
+
+_secure_defaults = not DEBUG and not TESTING
+
+SECURE_SSL_REDIRECT = _env_bool("DJANGO_SECURE_SSL_REDIRECT", _secure_defaults)
+SESSION_COOKIE_SECURE = _env_bool("DJANGO_SESSION_COOKIE_SECURE", _secure_defaults)
+CSRF_COOKIE_SECURE = _env_bool("DJANGO_CSRF_COOKIE_SECURE", _secure_defaults)
+SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "3600" if _secure_defaults else "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", _secure_defaults)
+SECURE_HSTS_PRELOAD = _env_bool("DJANGO_SECURE_HSTS_PRELOAD", _secure_defaults)
 
 
 # Application definition
@@ -50,6 +98,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'apps.rooms.middleware.RequestContextMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -128,7 +177,19 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+CACHES = {
+    "default": _default_cache_config(),
+}
+
 # MongoDB configuration
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-MONGODB_DB_NAME = 'demo_rag'
+MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME', os.getenv('MONGODB_DATABASE', 'demo_rag'))
+MONGODB_SERVER_SELECTION_TIMEOUT_MS = int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "3000"))
+MONGODB_CONNECT_TIMEOUT_MS = int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "3000"))
+
+RAG_API_KEY = os.getenv("RAG_API_KEY", "").strip()
+RAG_RATE_LIMIT_CACHE_ALIAS = os.getenv("RAG_RATE_LIMIT_CACHE_ALIAS", "default").strip() or "default"
+RAG_RATE_LIMIT_ENABLED = _env_bool("RAG_RATE_LIMIT_ENABLED", True)
+RAG_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RAG_RATE_LIMIT_WINDOW_SECONDS", "60"))
+RAG_RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RAG_RATE_LIMIT_MAX_REQUESTS", "30"))
 

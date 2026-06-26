@@ -1,4 +1,6 @@
 """Query worker for the Nhatrovn read-only room assistant."""
+from __future__ import annotations
+
 import asyncio
 import signal
 import json
@@ -6,6 +8,7 @@ import sys
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 # Fix Windows console encoding for Unicode emoji
 if sys.platform == "win32":
@@ -17,8 +20,6 @@ if sys.platform == "win32":
         pass
 
 sys.path.append(str(Path(__file__).parent.parent))
-
-from confluent_kafka import Consumer, Producer, KafkaError
 from rich.console import Console
 
 from kafka_workers.kafka_config import (
@@ -28,10 +29,25 @@ from kafka_workers.kafka_config import (
 )
 from agents.graph import run_streaming
 
-PIPELINE_TIMEOUT_SECONDS = 120  # Max 2 phút cho một request
+PIPELINE_TIMEOUT_SECONDS = 60  # Hard cap 60s cho một request
 
 console = Console(force_terminal=True, safe_box=True)
 running = True
+
+
+def _kafka_module():
+    try:
+        from confluent_kafka import Consumer, Producer, KafkaError
+    except Exception as exc:
+        raise RuntimeError("confluent_kafka is required to run the query worker.") from exc
+    return Consumer, Producer, KafkaError
+
+
+def _safe_commit(consumer: Any, msg) -> None:
+    try:
+        consumer.commit(message=msg, asynchronous=False)
+    except Exception as exc:
+        console.print(f"[yellow]Offset commit failed: {exc}[/]")
 
 
 def room_refs(rooms):
@@ -59,16 +75,18 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
-def create_consumer() -> Consumer:
+def create_consumer():
+    Consumer, _, _ = _kafka_module()
     return Consumer({
         "bootstrap.servers": BROKERS,
         "group.id": GROUP_QUERY,
         "auto.offset.reset": "latest",
-        "enable.auto.commit": True,
+        "enable.auto.commit": False,
     })
 
 
-def create_producer() -> Producer:
+def create_producer():
+    _, Producer, _ = _kafka_module()
     return Producer({
         "bootstrap.servers": BROKERS,
         "acks": "all",
@@ -77,14 +95,18 @@ def create_producer() -> Producer:
 
 def run_worker():
     """Main loop for Nhatrovn read-only query processing."""
+    _, _, KafkaError = _kafka_module()
     console.print("[bold cyan]Starting Nhatrovn Query Worker (read-only room assistant)...[/]")
     console.print(f"[dim]  Listening on: {TOPIC_QUERY_REQUEST}[/]")
     console.print(f"[dim]  Publishing to: {TOPIC_QUERY_RESPONSE}[/]")
     console.print("[dim]  Pipeline: parse -> state -> read-only tools -> grounding -> final response[/]")
 
     # Pre-load models trước khi nhận query (tránh cold start timeout)
-    from agents.model_registry import warmup
-    warmup()
+    try:
+        from agents.model_registry import warmup
+        warmup()
+    except Exception as exc:
+        console.print(f"[yellow]Model warmup skipped: {exc}[/]")
 
     consumer = create_consumer()
     producer = create_producer()
@@ -108,6 +130,7 @@ def run_worker():
             continue
 
         try:
+            query_event = {}
             query_event = deserialize(msg.value())
             session_id = query_event.get("session_id", "unknown")
             question = query_event.get("question", "")
@@ -118,17 +141,21 @@ def run_worker():
             )
 
             # Create stream callback that publishes tokens to Kafka
-            def make_stream_callback(sid: str, prod: Producer):
+            def make_stream_callback(sid: str, prod: Any):
                 async def stream_callback(token_chunk: str):
                     """Push streaming tokens vào Kafka."""
+                    chunk_text = str(token_chunk or "")
+                    chunk_type = "token"
+                    if chunk_text.startswith("[status:"):
+                        chunk_type = "status"
                     stream_event = {
                         "session_id": sid,
-                        "answer": token_chunk,
+                        "answer": chunk_text,
                         "sources": [],
                         "agent_trace": {},
                         "processing_time_ms": 0,
                         "is_final": False,
-                        "chunk_type": "token",
+                        "chunk_type": chunk_type,
                     }
                     prod.produce(
                         TOPIC_QUERY_RESPONSE,
@@ -181,6 +208,7 @@ def run_worker():
                 value=serialize(final_response),
             )
             producer.flush()
+            _safe_commit(consumer, msg)
 
             # ── Flush Langfuse immediately for real-time dashboard ──
             try:
@@ -222,6 +250,7 @@ def run_worker():
                     value=serialize(error_response),
                 )
                 producer.flush()
+                _safe_commit(consumer, msg)
             except Exception:
                 pass
 

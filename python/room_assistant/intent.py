@@ -168,20 +168,32 @@ ROOM_TYPE_ALIASES: dict[str, str] = {
     "mat bang": "mat_bang",
 }
 
-KNOWN_DISTRICT_ALIASES: tuple[str, ...] = (
-    "binh thanh",
-    "go vap",
-    "tan binh",
-    "tan phu",
-    "phu nhuan",
-    "binh tan",
-    "thu duc",
-    "nha be",
-    "hoc mon",
-    "binh chanh",
-    "can gio",
-    "cu chi",
-)
+DISTRICT_ALIASES: dict[str, str] = {
+    "binh thanh": "binh thanh", "b.thanh": "binh thanh", "bình thạnh": "binh thanh",
+    "tan binh": "tan binh", "tân bình": "tan binh",
+    "binh tan": "binh tan", "bình tân": "binh tan",
+    "q1": "quan 1", "q.1": "quan 1", "quận 1": "quan 1", "quan 1": "quan 1",
+    "q2": "quan 2", "q.2": "quan 2", "quận 2": "quan 2", "quan 2": "quan 2",
+    "q3": "quan 3", "q.3": "quan 3", "quận 3": "quan 3", "quan 3": "quan 3",
+    "q4": "quan 4", "q.4": "quan 4", "quận 4": "quan 4", "quan 4": "quan 4",
+    "q5": "quan 5", "q.5": "quan 5", "quận 5": "quan 5", "quan 5": "quan 5",
+    "q6": "quan 6", "q.6": "quan 6", "quận 6": "quan 6", "quan 6": "quan 6",
+    "q7": "quan 7", "q.7": "quan 7", "quận 7": "quan 7", "quan 7": "quan 7",
+    "q8": "quan 8", "q.8": "quan 8", "quận 8": "quan 8", "quan 8": "quan 8",
+    "q9": "quan 9", "q.9": "quan 9", "quận 9": "quan 9", "quan 9": "quan 9",
+    "q10": "quan 10", "q.10": "quan 10", "quận 10": "quan 10", "quan 10": "quan 10",
+    "q11": "quan 11", "q.11": "quan 11", "quận 11": "quan 11", "quan 11": "quan 11",
+    "q12": "quan 12", "q.12": "quan 12", "quận 12": "quan 12", "quan 12": "quan 12",
+    "go vap": "go vap", "gò vấp": "go vap", "gv": "go vap",
+    "phu nhuan": "phu nhuan", "phú nhuận": "phu nhuan", "pn": "phu nhuan",
+    "tan phu": "tan phu", "tân phú": "tan phu",
+    "thu duc": "thu duc", "thủ đức": "thu duc",
+    "nha be": "nha be", "nhà bè": "nha be",
+    "hoc mon": "hoc mon", "hóc môn": "hoc mon",
+    "binh chanh": "binh chanh", "bình chánh": "binh chanh",
+    "can gio": "can gio", "cần giờ": "can gio",
+    "cu chi": "cu chi", "củ chi": "cu chi"
+}
 
 # Tùy chọn mềm — không loại phòng nhưng dùng để ranking
 SOFT_PREFERENCE_ALIASES: dict[str, str] = {
@@ -447,9 +459,9 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     for district in districts:
         _append_unique(ops, "append", "location.districts", district)
 
-    for alias in KNOWN_DISTRICT_ALIASES:
+    for alias, standard_name in DISTRICT_ALIASES.items():
         if _contains_phrase(normalized, alias):
-            _append_unique(ops, "append", "location.districts", alias)
+            _append_unique(ops, "append", "location.districts", standard_name)
 
     wards = []
     for match in re.finditer(
@@ -733,27 +745,11 @@ def _regex_classify(
 # Tầng 2: LLM fallback khi regex không chắc chắn
 # ---------------------------------------------------------------------------
 
-_LLM_SYSTEM_PROMPT = """Bạn là bộ phân loại intent cho chatbot tìm phòng trọ tại Việt Nam (nhatrovn).
-Nhiệm vụ: Phân loại đúng intent từ câu hỏi tiếng Việt của người dùng.
-
-Danh sách intent hợp lệ:
-- SEARCH_ROOM: Tìm / lọc phòng theo tiêu chí
-- REFINE_SEARCH: Điều chỉnh tiêu chí tìm kiếm đang có
-- ASK_ABOUT_ROOM: Hỏi chi tiết về một phòng cụ thể (giá, diện tích, tiện ích, còn phòng, địa chỉ)
-- CALCULATE_COST: Tính chi phí thuê (tiền cọc, phí phát sinh)
-- COMPARE_ROOMS: So sánh nhiều phòng với nhau
-- FIND_SIMILAR: Tìm phòng tương tự phòng đang xem
-- SUMMARIZE_ROOM: Tóm tắt ưu / nhược điểm hoặc đánh giá tổng quan phòng
-- REQUEST_FAQ: Hỏi về quy trình thuê, hợp đồng, thủ tục
-- REQUEST_ACTION: Yêu cầu hành động nghiệp vụ (đặt lịch, nhắn chủ, thanh toán...)
-- GENERAL_HELP: Câu hỏi chung hoặc không xác định được
-
-Trả về JSON duy nhất, không giải thích thêm:
-{"intent": "<INTENT>", "confidence": <0.0-1.0>}"""
+from agents.prompts import INTENT_CLASSIFIER_PROMPT as _LLM_SYSTEM_PROMPT
 
 
-async def _llm_classify_intent(question: str, current_state: dict[str, Any] | None) -> tuple[str, float]:
-    """Gọi LLM để phân loại intent khi regex không chắc chắn."""
+async def _llm_classify_intent(question: str, current_state: dict[str, Any] | None) -> dict[str, Any]:
+    """Gọi LLM để phân tích intent và extract constraints."""
     try:
         from agents.llm_client import groq_complete, GROQ_MODEL_FAST
 
@@ -766,20 +762,18 @@ async def _llm_classify_intent(question: str, current_state: dict[str, Any] | No
             prompt=prompt,
             system_prompt=_LLM_SYSTEM_PROMPT,
             model=GROQ_MODEL_FAST,
-            max_tokens=60,
+            max_tokens=300,
             temperature=0.0,
         )
-        # Trích xuất JSON từ phản hồi
-        match = re.search(r'\{[^}]+\}', raw)
-        if match:
-            data = json.loads(match.group(0))
-            intent = data.get("intent", "GENERAL_HELP")
-            confidence = float(data.get("confidence", 0.7))
-            if intent in INTENTS:
-                return intent, confidence
+        
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            data = __import__('json').loads(raw[start:end])
+            return data
     except Exception:
         pass
-    return "GENERAL_HELP", 0.5
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -845,73 +839,32 @@ async def parse_intent_async(
     current_state: dict[str, Any] | None = None,
 ) -> ParsedRequest:
     """
-    Phân tích bất đồng bộ với LLM fallback.
-
-    Quy trình:
-      1. Regex phân loại nhanh → trả về ngay nếu confidence >= 0.9.
-      2. Nếu confidence < 0.9 → gọi LLM để xác nhận / đính chính.
-      3. Kết hợp kết quả: ưu tiên LLM nếu confidence LLM > regex.
+    Phân tích một lượt người dùng bằng LLM, hạn chế tối đa Regex.
     """
     text = question or ""
-    normalized = _norm(text)
-    operations: list[dict[str, Any]] = []
-
-    _extract_budget(text, normalized, operations)
-    _extract_location(normalized, operations)
-    _extract_move_in_date(normalized, operations)
-    _extract_people_and_pets(normalized, operations)
-    _extract_amenities(text, normalized, operations)
-    _extract_categories(text, normalized, operations)
-
-    referenced_room_ids = _extract_room_ids(text)
-    selected_room_id = _selected_room_id_from_ordinal(normalized, current_state)
-    if selected_room_id and selected_room_id not in referenced_room_ids:
-        referenced_room_ids = [selected_room_id]
-    action = _requested_action(normalized)
-
-    regex_intent, regex_conf = _regex_classify(normalized, action, referenced_room_ids, current_state)
-    if operations and regex_intent == "GENERAL_HELP":
-        regex_intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
-        regex_conf = max(regex_conf, 0.85)
-    if (
-        operations and regex_intent == "ASK_ABOUT_ROOM"
-        and not referenced_room_ids
-        and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS)
-        and (
-            _has_keyword(normalized, _INTENT_KEYWORDS["SEARCH_ROOM"])
-            or not _is_room_detail_question(normalized, referenced_room_ids, current_state)
-        )
-    ):
-        regex_intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
-        regex_conf = max(regex_conf, 0.85)
-
-    # Nếu câu dài hơn 5 từ, ép giảm confidence của regex để bắt LLM phải check lại
-    # Tránh trường hợp "Hôm trước mình thuê phòng, giờ muốn lấy cọc" bị regex "thuê phòng" bắt nhầm
-    word_count = len(question.strip().split())
-    if word_count > 5 and not action and regex_intent not in {"ASK_ABOUT_ROOM", "COMPARE_ROOMS"}:
-        regex_conf = min(regex_conf, 0.8)
-
-    # Nếu regex đã chắc → không cần LLM
-    if regex_conf >= 0.9 or action:
-        final_intent = regex_intent
-    else:
-        # Gọi LLM để phân loại chính xác hơn
-        llm_intent, llm_conf = await _llm_classify_intent(question, current_state)
-        # Chọn kết quả có độ tin cậy cao hơn
-        final_intent = llm_intent if llm_conf >= regex_conf else regex_intent
-
-    if final_intent == "SUMMARIZE_ROOM" and _is_room_detail_question(normalized, referenced_room_ids, current_state):
-        final_intent = "ASK_ABOUT_ROOM"
-
-    if final_intent not in INTENTS:
-        final_intent = "GENERAL_HELP"
-
+    
+    data = await _llm_classify_intent(text, current_state)
+    
+    intent = data.get("intent", "GENERAL_HELP")
+    if intent not in INTENTS:
+        intent = "GENERAL_HELP"
+        
+    operations = data.get("operations", [])
+    referenced_room_ids = data.get("referenced_room_ids", [])
+    requested_action = data.get("requested_action", None)
+    
+    if not referenced_room_ids:
+        referenced_room_ids = _extract_room_ids(text)
+    
     current_room_id = referenced_room_ids[0] if referenced_room_ids else None
-
+    
     return {
-        "intent": final_intent,
+        "intent": intent,
         "operations": operations,
         "current_room_id": current_room_id,
         "referenced_room_ids": referenced_room_ids,
-        "requested_action": action,
+        "requested_action": requested_action,
     }
+
+
+

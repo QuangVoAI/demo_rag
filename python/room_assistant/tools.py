@@ -54,13 +54,21 @@ class ReadOnlyToolRegistry:
         return self._tools[name](args, context)
 
 
+def _bounded_top_k(value: Any, default: int = 5, maximum: int = 20) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(parsed, maximum))
+
+
 def search_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
     return search_rooms_with_hard_filters(
         query_text=args.get("query_text", ""),
         constraints=args.get("constraints", {}),
         repository=context.repository,
         semantic_index=context.semantic_index,
-        top_k=int(args.get("top_k", 5)),
+        top_k=_bounded_top_k(args.get("top_k", 5)),
         trace=context.retrieval_trace,
     )
 
@@ -69,7 +77,7 @@ def get_room_detail(args: dict[str, Any], context: ToolExecutionContext) -> dict
     room_id = args.get("room_id")
     if not room_id:
         return None
-    return context.repository.get_by_id(str(room_id))
+    return _resolve_room_reference(str(room_id), context)
 
 
 def retrieve_room_context(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
@@ -134,95 +142,181 @@ def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[di
     return []
 
 
+def _extract_rate(value: Any) -> int | None:
+    if not isinstance(value, str):
+        return None
+    import re
+    match = re.search(r"(\d+k|\d{3,}(?:\.\d{3})*)", value.lower())
+    if not match:
+        return None
+    raw = match.group(1).replace(".", "")
+    if raw.endswith("k"):
+        return int(raw[:-1]) * 1000
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+def _extract_unit(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    val_lower = value.lower()
+    if "kwh" in val_lower or "ký" in val_lower or "số" in val_lower:
+        return "kWh"
+    if "khối" in val_lower or "m3" in val_lower:
+        return "m³"
+    if "người" in val_lower:
+        return "người"
+    if "xe" in val_lower or "chiếc" in val_lower:
+        return "xe"
+    return None
+
 def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
     room = args.get("room")
     if not room and args.get("room_id"):
         room = context.repository.get_by_id(str(args["room_id"]))
     if not room:
-        return {"available": False, "unknown": ["room_not_found"], "items": [], "total_initial_cost": None}
+        return {"available": False, "unknown_inputs": ["room_not_found"]}
 
-    rental_months = _positive_int(args.get("rental_months"))
     rent = room.get("rent_price")
     deposit = room.get("deposit")
+    deposit_options = room.get("deposit_options")
     fees = room.get("fees") or {}
-    items: list[dict[str, Any]] = []
-    period_items: list[dict[str, Any]] = []
-    unknown: list[str] = []
-    not_calculated: list[dict[str, Any]] = []
-    total = 0
-    period_total = 0
-    recurring_fees_total = 0
+    
+    fixed_items: list[dict[str, Any]] = []
+    variable_items: list[dict[str, Any]] = []
+    unknown_inputs: list[str] = []
+    
+    display_parts = []
 
     if rent is None:
-        unknown.append("rent_price")
+        unknown_inputs.append("rent_price")
     else:
         rent_amount = _money_value_or_none(rent)
         if rent_amount is None:
-            unknown.append("rent_price")
+            unknown_inputs.append("rent_price")
         else:
-            items.append({"name": "rent_first_month", "amount": rent_amount, "confirmed": True})
-            total += rent_amount
-            if rental_months:
-                rent_for_period = rent_amount * rental_months
-                period_items.append({
-                    "name": f"rent_{rental_months}_months",
-                    "amount": rent_for_period,
-                    "confirmed": True,
+            fixed_items.append({"field": "monthly_rent", "amount": rent_amount, "period": "month"})
+            display_parts.append(f"{rent_amount:,}".replace(",", "."))
+
+    for name, value in fees.items():
+        if value is None:
+            unknown_inputs.append(f"fees.{name}")
+            continue
+        amount = _money_amount_or_none(value, name, args)
+        if amount is not None:
+            fixed_items.append({"field": name, "amount": amount, "period": "month"})
+            display_parts.append(f"{amount:,}".replace(",", "."))
+        else:
+            rate = _extract_rate(value)
+            if rate is not None:
+                unit = _extract_unit(value) or "đơn vị"
+                variable_items.append({
+                    "field": name,
+                    "rate": rate,
+                    "unit": unit,
+                    "quantity_key": f"{name}_qty",
+                    "quantity": args.get(f"{name}_qty")
                 })
-                period_total += rent_for_period
+                display_parts.append(f"{rate:,}".replace(",", ".") + f" × số {unit}")
+            else:
+                unknown_inputs.append(f"fees.{name}")
 
-    if deposit is None:
-        unknown.append("deposit")
+    display_formula = " + ".join(display_parts) if display_parts else None
+    base_subtotal = sum(item["amount"] for item in fixed_items)
+    
+    initial_payment_options = []
+    if deposit_options:
+        for opt in deposit_options:
+            dep_amt = _money_value_or_none(opt.get("deposit"))
+            if dep_amt is not None:
+                initial_payment_options.append({
+                    "deposit": dep_amt,
+                    "hold_days": opt.get("hold_days"),
+                    "refundability": opt.get("refundability", "unknown"),
+                    "known_initial_subtotal": base_subtotal + dep_amt
+                })
+    elif deposit is not None:
+        dep_amt = _money_value_or_none(deposit)
+        if dep_amt is not None:
+            initial_payment_options.append({
+                "deposit": dep_amt,
+                "hold_days": None,
+                "refundability": "unknown",
+                "known_initial_subtotal": base_subtotal + dep_amt
+            })
     else:
-        deposit_amount = _money_value_or_none(deposit)
-        if deposit_amount is None:
-            unknown.append("deposit")
+        unknown_inputs.append("deposit")
+
+    # Compute legacy compatibility fields
+    rental_months = args.get("rental_months") or 1
+    monthly_rent_val = 0
+    monthly_fees_val = 0
+    for item in fixed_items:
+        if item["field"] == "monthly_rent":
+            monthly_rent_val = item["amount"]
         else:
-            items.append({"name": "deposit", "amount": deposit_amount, "confirmed": True})
-            total += deposit_amount
-            if rental_months:
-                period_total += deposit_amount
+            monthly_fees_val += item["amount"]
 
-    for name, amount in fees.items():
-        if amount is None:
-            unknown.append(f"fees.{name}")
-            continue
-        fee_amount = _money_amount_or_none(amount, name, args)
-        if fee_amount is None:
-            not_calculated.append({"name": f"fees.{name}", "value": amount})
-            continue
-        items.append({"name": f"fee_{name}", "amount": fee_amount, "confirmed": True})
-        total += fee_amount
-        if rental_months:
-            recurring_fees_total += fee_amount * rental_months
+    recurring_fees_for_period = monthly_fees_val * rental_months
+    dep_amt_val = 0
+    if initial_payment_options:
+        dep_amt_val = initial_payment_options[0]["deposit"]
+    total_period_cost = (monthly_rent_val * rental_months) + recurring_fees_for_period + dep_amt_val
+    total_initial_cost = monthly_rent_val + monthly_fees_val + dep_amt_val
 
-    if rental_months:
-        period_total += recurring_fees_total
+    legacy_unknown = []
+    not_calculated_list = []
+    for item in unknown_inputs:
+        if item.startswith("fees."):
+            field_name = item.split(".", 1)[1]
+            if field_name in fees:
+                not_calculated_list.append({
+                    "name": item,
+                    "value": fees[field_name]
+                })
+        else:
+            legacy_unknown.append(item)
 
-    result = {
+    for var_item in variable_items:
+        if var_item.get("quantity") is None:
+            field_name = var_item["field"]
+            if not any(x["name"] == f"fees.{field_name}" for x in not_calculated_list):
+                not_calculated_list.append({
+                    "name": f"fees.{field_name}",
+                    "value": fees.get(field_name)
+                })
+
+    return {
         "available": True,
         "room_id": room.get("room_id"),
         "house_id": room.get("house_id"),
         "currency": "VND",
-        "items": items,
-        "total_initial_cost": total if items else None,
-        "unknown": unknown,
-        "not_calculated": not_calculated,
-        "note": "Ước tính deterministic từ giá, cọc và phí đã xác nhận trong dữ liệu phòng.",
+        "fixed_items": fixed_items,
+        "variable_items": variable_items,
+        "exact_monthly_total": base_subtotal if not variable_items else None,
+        "display_formula": display_formula,
+        "initial_payment_options": initial_payment_options,
+        "unknown_inputs": unknown_inputs,
+        "note": "Ước tính deterministic. known_initial_subtotal có thể chưa bao gồm các khoản phí biến đổi.",
+        # Legacy compatibility fields
+        "rental_months": rental_months,
+        "total_initial_cost": total_initial_cost,
+        "total_period_cost": total_period_cost,
+        "recurring_fees_for_period": recurring_fees_for_period,
+        "unknown": legacy_unknown,
+        "not_calculated": not_calculated_list,
     }
-    if rental_months:
-        result.update({
-            "rental_months": rental_months,
-            "period_items": period_items,
-            "recurring_fees_for_period": recurring_fees_total,
-            "total_period_cost": period_total if period_total else None,
-        })
-    return result
+
 
 
 def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
     room_ids = [str(item) for item in (args.get("room_ids") or [])][:3]
-    rooms = context.repository.get_many_by_ids(room_ids)
+    rooms = []
+    for room_ref in room_ids:
+        room = _resolve_room_reference(room_ref, context)
+        if room:
+            rooms.append(room)
     rows = []
     for room in rooms:
         rows.append({
@@ -245,9 +339,13 @@ def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[s
 
 def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
     room_id = args.get("room_id")
-    source = context.repository.get_by_id(str(room_id)) if room_id else None
+    try:
+        source = context.repository.get_by_id(str(room_id)) if room_id else None
+    except Exception:
+        source = None
     if not source:
         return []
+    top_k = _bounded_top_k(args.get("top_k", 5))
     constraints = {
         "location": {"districts": [source.get("district")] if source.get("district") else []},
         "budget": {
@@ -263,14 +361,36 @@ def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> l
         constraints=constraints,
         repository=context.repository,
         semantic_index=context.semantic_index,
-        top_k=int(args.get("top_k", 5)) + 1,
+        top_k=top_k + 1,
         trace=context.retrieval_trace,
     )
-    return [item for item in results if item.get("room_id") != room_id][:int(args.get("top_k", 5))]
+    return [item for item in results if item.get("room_id") != room_id][:top_k]
 
 
 def _unknown_room_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
+
+
+def _resolve_room_reference(room_ref: str, context: ToolExecutionContext) -> dict[str, Any] | None:
+    try:
+        room = context.repository.get_by_id(str(room_ref))
+    except Exception:
+        room = None
+    if room:
+        return room
+    try:
+        candidates = context.repository.search_by_metadata(str(room_ref), limit=3)
+    except Exception:
+        candidates = []
+    if not candidates:
+        return None
+    normalized_ref = str(room_ref).strip().upper().replace(".", "")
+    for candidate in candidates:
+        candidate_room_id = str(candidate.get("room_id") or "").strip().upper().replace(".", "")
+        candidate_room_code = str(candidate.get("room_code") or "").strip().upper().replace(".", "")
+        if normalized_ref and normalized_ref in {candidate_room_id, candidate_room_code}:
+            return candidate
+    return candidates[0]
 
 
 def _positive_int(value: Any) -> int | None:
@@ -335,3 +455,54 @@ def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[st
     if number < 1000 and fee_name:
         return int(number * 1_000)
     return int(number)
+
+from enum import Enum
+
+class SufficiencyStatus(str, Enum):
+    SUFFICIENT = "SUFFICIENT"
+    PARTIAL_SAFE = "PARTIAL_SAFE"
+    INSUFFICIENT = "INSUFFICIENT"
+
+REQUIRED_FIELDS = {
+    "price_query": {"monthly_rent"},
+    "deposit_query": {"deposit", "hold_days"},
+    "room_detail": {"monthly_rent", "status", "location"}
+}
+
+def check_sufficiency(room: dict[str, Any], answer_type: str) -> tuple[SufficiencyStatus, set[str]]:
+    required = REQUIRED_FIELDS.get(answer_type)
+    if not required:
+        return SufficiencyStatus.SUFFICIENT, set()
+        
+    missing = set()
+    for field in required:
+        if field == "monthly_rent" and room.get("rent_price") is None:
+            missing.add(field)
+        elif field == "deposit" and room.get("deposit") is None and not room.get("deposit_options"):
+            missing.add(field)
+        elif field == "hold_days":
+            has_hold = False
+            if room.get("deposit_options"):
+                has_hold = any(opt.get("hold_days") is not None for opt in room.get("deposit_options", []))
+            if not has_hold:
+                missing.add(field)
+        elif field == "status" and room.get("available") is None:
+            missing.add(field)
+        elif field == "location" and not room.get("address") and not room.get("district"):
+            missing.add(field)
+            
+    if not missing:
+        return SufficiencyStatus.SUFFICIENT, set()
+    if "monthly_rent" in missing and answer_type in {"price_query", "room_detail"}:
+        return SufficiencyStatus.INSUFFICIENT, missing
+    return SufficiencyStatus.PARTIAL_SAFE, missing
+
+MAX_TARGETED_FETCH_ATTEMPTS = 1
+
+def targeted_fetch(
+    repository: RoomRepository, 
+    candidate_ids: list[str], 
+    missing_fields: set[str]
+) -> list[dict[str, Any]]:
+    """Bounded Targeted Fetch loop (`MAX_TARGETED_FETCH_ATTEMPTS = 1`, batch projection)"""
+    return repository.get_many_by_ids(candidate_ids)

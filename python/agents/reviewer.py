@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from agents.llm_client import groq_complete, GROQ_MODEL_FAST
 from utils.console import console
 
 # Các cụm từ bị cấm — assistant không được hứa hẹn thao tác mình không làm được
@@ -37,24 +36,34 @@ _REVIEW_TRIGGERS = [
     "bao gồm", "tổng cộng", "cam kết", "đảm bảo", "chắc chắn",
 ]
 
-_REVIEWER_SYSTEM_PROMPT = """\
-Bạn là người kiểm duyệt câu trả lời cho chatbot tìm phòng trọ nhatrovn.
+from agents.prompts import REVIEWER_SYSTEM_PROMPT as _REVIEWER_SYSTEM_PROMPT
 
-Kiểm tra câu trả lời theo 4 tiêu chí:
-1. KHÔNG hứa hẹn thao tác bot không làm được (đặt lịch, nhắn chủ, giữ phòng, thanh toán)
-2. KHÔNG đưa số tiền/thông tin không có trong dữ liệu đã xác minh
-3. Ngôn ngữ tự nhiên, thân thiện, không máy móc
-4. Nếu không có dữ liệu thì thành thật nói "chưa có dữ liệu"
 
-Trả về JSON (không giải thích thêm):
-{"is_approved": true/false, "issues": ["lỗi 1", "lỗi 2"], "suggestion": "gợi ý sửa ngắn gọn"}
-"""
+def _get_llm_client():
+    from agents.llm_client import GROQ_MODEL_FAST, groq_complete
+
+    return {
+        "fast_model": GROQ_MODEL_FAST,
+        "complete": groq_complete,
+    }
 
 
 def _check_banned_phrases(answer: str) -> list[str]:
     """Kiểm tra nhanh các cụm từ bị cấm, không cần LLM."""
     answer_lower = answer.lower()
     return [phrase for phrase in _BANNED_PHRASES if phrase in answer_lower]
+
+
+def review_rules_only(answer: str) -> dict:
+    """Kiểm tra deterministic, không gọi LLM."""
+    banned = _check_banned_phrases(answer)
+    if banned:
+        return {
+            "is_approved": False,
+            "issues": [f"Vi phạm: '{phrase}'" for phrase in banned],
+            "suggestion": "Bỏ lời hứa thao tác; chỉ tư vấn và đọc dữ liệu.",
+        }
+    return {"is_approved": True, "issues": [], "suggestion": ""}
 
 
 def needs_review(question: str, answer: str) -> bool:
@@ -71,13 +80,9 @@ async def review(question: str, answer: str, room_context: str = "") -> dict:
         dict với is_approved, issues, suggestion.
     """
     # Tầng 1: Rule-based check
-    banned = _check_banned_phrases(answer)
-    if banned:
-        return {
-            "is_approved": False,
-            "issues": [f"Vi phạm: '{phrase}'" for phrase in banned],
-            "suggestion": "Bỏ lời hứa thao tác; chỉ tư vấn và đọc dữ liệu.",
-        }
+    rule_result = review_rules_only(answer)
+    if not rule_result["is_approved"]:
+        return rule_result
 
     # Nếu không trigger → approve ngay (tiết kiệm token)
     if not needs_review(question, answer):
@@ -90,11 +95,12 @@ async def review(question: str, answer: str, room_context: str = "") -> dict:
         f"Dữ liệu đã xác minh (nếu có):\n{room_context[:1500]}\n\n"
         f"Kiểm tra và trả về JSON:"
     )
+    llm = _get_llm_client()
     try:
-        raw = await groq_complete(
+        raw = await llm["complete"](
             prompt=prompt,
             system_prompt=_REVIEWER_SYSTEM_PROMPT,
-            model=GROQ_MODEL_FAST,
+            model=llm["fast_model"],
             max_tokens=200,
             temperature=0.0,
         )
@@ -150,11 +156,12 @@ async def review_with_retry(
             f"Dữ liệu xác minh: {room_context[:1500]}\n\n"
             f"Viết lại câu trả lời tự nhiên, đúng sự thật, không vi phạm:"
         )
+        llm = _get_llm_client()
         try:
-            current_answer = await groq_complete(
+            current_answer = await llm["complete"](
                 prompt=retry_prompt,
                 system_prompt="Bạn là trợ lý tìm phòng nhatrovn. Trả lời ngắn gọn, trung thực.",
-                model=GROQ_MODEL_FAST,
+                model=llm["fast_model"],
                 max_tokens=400,
                 temperature=0.2,
             )
@@ -163,3 +170,64 @@ async def review_with_retry(
 
     result["retry_count"] = max_retries
     return current_answer, result
+
+import re
+from typing import Any
+
+SAFE_NUMBER_PATTERNS = [
+    r"\b\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|k|nghìn|nghin|đ|d|vnd|vnđ)\b",
+]
+
+def deterministic_claim_validator(answer: str, claims: dict[str, Any]) -> list[str]:
+    """
+    Xác minh claims bằng Regex thay vì LLM.
+    Nếu answer đề cập đến một con số có vẻ là giá/cọc mà không khớp với claims đã duyệt, trả về lỗi.
+    """
+    issues = []
+    
+    # Tìm tất cả số tiền được nhắc đến trong answer
+    found_money = []
+    for pattern in SAFE_NUMBER_PATTERNS:
+        for match in re.finditer(pattern, answer.lower()):
+            found_money.append(match.group(0))
+            
+    # Lấy danh sách số tiền hợp lệ từ claims (fixed_items, deposit)
+    valid_amounts = set()
+    for item in claims.get("fixed_items", []):
+        amt = item.get("amount")
+        if amt:
+            valid_amounts.add(str(amt))
+            # Cũng thêm dạng format, vd: 4.5
+            if amt >= 1000000:
+                valid_amounts.add(str(round(amt / 1000000.0, 2)).rstrip('0').rstrip('.'))
+            
+    for opt in claims.get("initial_payment_options", []):
+        dep = opt.get("deposit")
+        if dep:
+            valid_amounts.add(str(dep))
+            if dep >= 1000000:
+                valid_amounts.add(str(round(dep / 1000000.0, 2)).rstrip('0').rstrip('.'))
+                
+    # Logic kiểm tra: Đảm bảo answer không nhắc đến số tiền lạ (rất đơn giản)
+    # Tuy nhiên vì ngôn ngữ tự nhiên rất đa dạng, ta chỉ flag cảnh báo nếu thấy số lạ hoàn toàn
+    for money_text in found_money:
+        # Nếu có số liệu, ta extract digits
+        digits = re.sub(r"\D", "", money_text)
+        if not digits:
+            continue
+        # Simplistic check
+        is_safe = False
+        for valid in valid_amounts:
+            if valid in digits or digits in valid:
+                is_safe = True
+                break
+            # Nếu valid là '45' (4.5tr) và digits chứa '45'
+            if valid.replace('.', '') in digits:
+                is_safe = True
+                break
+                
+        if not is_safe:
+            issues.append(f"Số tiền '{money_text}' có thể không chính xác so với dữ liệu xác minh.")
+            
+    return issues
+

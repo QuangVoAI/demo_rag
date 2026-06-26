@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from urllib.parse import parse_qsl, urlsplit
 from typing import Any, Iterable, Protocol
 
 from .schemas import normalize_room
@@ -126,7 +128,11 @@ class MongoRoomRepository:
     ) -> None:
         from pymongo import MongoClient
 
-        self._client = MongoClient(uri, serverSelectionTimeoutMS=server_selection_timeout_ms)
+        self._client = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=server_selection_timeout_ms,
+            **_mongo_tls_options(uri),
+        )
         self._database = self._client[database]
         self._collection = self._database[collection]
 
@@ -152,6 +158,12 @@ class MongoRoomRepository:
         clauses: list[dict[str, Any]] = []
         for room_id in signals.get("room_id", []) or []:
             clauses.extend(_mongo_id_or_clauses(str(room_id)))
+        for room_code in signals.get("room_code", []) or []:
+            for pattern in _room_code_regex_variants(str(room_code)):
+                clauses.extend([
+                    {"metadata.room_code": {"$regex": pattern, "$options": "i"}},
+                    {"embedding_text": {"$regex": pattern, "$options": "i"}},
+                ])
         for snippet in signals.get("district", []) or []:
             escaped = re.escape(str(snippet))
             clauses.extend([
@@ -233,7 +245,7 @@ def create_room_repository() -> RoomRepository:
     except Exception:
         # Fallback: read directly from environment (covers Django deployment)
         MONGODB_URI = _os.getenv("MONGODB_URI", "")
-        MONGODB_DATABASE = _os.getenv("MONGODB_DATABASE", "demo_rag")
+        MONGODB_DATABASE = _os.getenv("MONGODB_DATABASE", _os.getenv("MONGODB_DB_NAME", "demo_rag"))
         MONGODB_ROOMS_COLLECTION = _os.getenv("MONGODB_ROOMS_COLLECTION", "rooms")
 
     if MONGODB_URI and MONGODB_DATABASE and MONGODB_ROOMS_COLLECTION:
@@ -246,6 +258,31 @@ def create_room_repository() -> RoomRepository:
         except Exception:
             return EmptyRoomRepository()
     return EmptyRoomRepository()
+
+
+def _mongo_tls_options(uri: str) -> dict[str, Any]:
+    tls_ca_file = os.getenv("MONGODB_TLS_CA_FILE", "").strip()
+    if tls_ca_file:
+        return {"tlsCAFile": tls_ca_file}
+    if not _mongo_uri_uses_tls(uri):
+        return {}
+    try:
+        import certifi
+
+        return {"tlsCAFile": certifi.where()}
+    except Exception:
+        return {}
+
+
+def _mongo_uri_uses_tls(uri: str) -> bool:
+    normalized = str(uri or "").strip().lower()
+    if normalized.startswith("mongodb+srv://"):
+        return True
+    try:
+        query = dict(parse_qsl(urlsplit(normalized).query, keep_blank_values=True))
+    except Exception:
+        query = {}
+    return query.get("tls") == "true" or query.get("ssl") == "true"
 
 
 def _mongo_id_or_clauses(room_id: str) -> list[dict[str, Any]]:
@@ -266,6 +303,23 @@ def _mongo_many_id_or_clauses(room_ids: list[str]) -> list[dict[str, Any]]:
     if object_ids:
         clauses.append({"_id": {"$in": object_ids}})
     return clauses
+
+
+def _room_code_regex_variants(room_code: str) -> list[str]:
+    import re
+
+    raw = str(room_code or "").strip()
+    if not raw:
+        return []
+    compact = raw.replace(".", "").upper()
+    match = re.fullmatch(r"([A-Z]{1,3})\.?(\d{2,5})", compact)
+    if not match:
+        escaped = re.escape(raw)
+        return [escaped]
+    prefix, digits = match.groups()
+    return [
+        rf"{re.escape(prefix)}\.?{re.escape(digits)}",
+    ]
 
 
 def _to_object_id(value: str) -> Any | None:
