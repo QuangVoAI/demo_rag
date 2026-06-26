@@ -1361,6 +1361,12 @@ def parse_intent_and_constraint_patch(
     intent, _ = _regex_classify(normalized, action, referenced_room_ids, current_state)
     if len(compare_room_ids) >= 2:
         intent = "COMPARE_ROOMS"
+    try:
+        from room_assistant.staff_knowledge import is_policy_question
+        if is_policy_question(text, current_state) and not action:
+            intent = "REQUEST_FAQ"
+    except Exception:
+        pass
     if _is_action_capability_question(normalized) and any(_norm(keyword) in normalized for keywords in ACTION_KEYWORDS.values() for keyword in keywords):
         intent = "REQUEST_FAQ"
     if not action and (_has_keyword(normalized, COST_FIELD_KEYWORDS) or _is_action_capability_question(normalized)):

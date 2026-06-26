@@ -100,6 +100,12 @@ def retrieve_room_context(args: dict[str, Any], context: ToolExecutionContext) -
 
 def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, str]]:
     question = (args.get("question") or "").lower()
+    from room_assistant.staff_knowledge import match_staff_faq
+
+    matches = match_staff_faq(question)
+    if matches:
+        return matches[:3]
+
     faq = [
         {
             "topic": "booking",

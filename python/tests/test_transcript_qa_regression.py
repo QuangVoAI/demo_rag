@@ -154,6 +154,95 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         answer = empathy["answer"].lower()
         self.assertTrue("hiểu" in answer or "ngân sách" in answer)
 
+    def test_budget_cap_not_relaxed_to_expensive_rooms(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "q1-expensive",
+                "metadata": {
+                    "house_name": "Q1-VIP",
+                    "price": 8_800_000,
+                    "status_code": "0",
+                    "district_name": "Quận 1",
+                },
+                "embedding_text": "Quận 1 trung tâm",
+                "available": True,
+                "status": "active",
+            },
+            {
+                "room_id": "q1-ok",
+                "metadata": {
+                    "house_name": "Q1-Budget",
+                    "price": 5_500_000,
+                    "status_code": "0",
+                    "district_name": "Quận 1",
+                },
+                "embedding_text": "Quận 1 giá mềm",
+                "available": True,
+                "status": "active",
+            },
+        ])
+        result = asyncio.run(run_room_assistant(
+            "Tìm phòng quận 1 dưới 6 triệu",
+            session_id="budget-cap",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=None,
+        ))
+        prices = [room.get("rent_price") for room in (result.get("rooms") or []) if room.get("rent_price")]
+        if prices:
+            self.assertTrue(all(price <= 6_000_000 for price in prices))
+        else:
+            answer = (result.get("answer") or "").lower()
+            self.assertTrue("6" in answer or "ngân sách" in answer or "triệu" in answer)
+
+    def test_compare_keeps_list_after_single_room_refine(self):
+        repo = InMemoryRoomRepository(_q7_rooms())
+        store = InMemorySessionStore()
+        session_id = "compare-preserve"
+        first = asyncio.run(run_room_assistant(
+            "Tìm phòng quận 7 dưới 5 triệu",
+            session_id=session_id,
+            repository=repo,
+            session_store=store,
+            semantic_index=None,
+        ))
+        self.assertGreaterEqual(len(first.get("rooms") or []), 2)
+
+        asyncio.run(run_room_assistant(
+            "dưới 3 triệu",
+            session_id=session_id,
+            repository=repo,
+            session_store=store,
+            semantic_index=None,
+        ))
+
+        compare = asyncio.run(run_room_assistant(
+            "So sánh 2 phòng đầu tiên",
+            session_id=session_id,
+            repository=repo,
+            session_store=store,
+            semantic_index=None,
+        ))
+        rows = (compare.get("comparison") or {}).get("rows") or []
+        self.assertGreaterEqual(len(rows), 2, msg=compare.get("answer"))
+
+    def test_pet_and_deposit_route_to_staff_faq(self):
+        for question, marker in (
+            ("Nuôi mèo được không?", "chủ nhà"),
+            ("Tiền cọc bao nhiêu?", "1 tháng"),
+        ):
+            parsed = parse_intent_and_constraint_patch(question)
+            self.assertEqual(parsed["intent"], "REQUEST_FAQ", msg=question)
+            result = asyncio.run(run_room_assistant(
+                question,
+                session_id=f"faq-{marker}",
+                repository=InMemoryRoomRepository(_q7_rooms()),
+                session_store=InMemorySessionStore(),
+                semantic_index=None,
+            ))
+            answer = (result.get("answer") or "").lower()
+            self.assertIn(marker, answer, msg=f"{question} -> {answer[:160]}")
+
 
 if __name__ == "__main__":
     unittest.main()

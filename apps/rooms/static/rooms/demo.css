@@ -1854,6 +1854,29 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 18px 34px rgba(148, 163, 184, 0.14);
   border-color: rgba(37, 99, 235, 0.28);
 }
+.chat-card-inline--active {
+  border-color: rgba(37, 99, 235, 0.55);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18), 0 18px 34px rgba(148, 163, 184, 0.14);
+}
+.chat-card-selectable {
+  cursor: pointer;
+}
+.chat-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 2px;
+}
+.chat-card-detail-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  text-decoration: none;
+}
+.chat-card-detail-link:hover {
+  text-decoration: underline;
+}
 .chat-card-inline img {
   height: 100%;
   min-height: 154px;

@@ -325,9 +325,12 @@ def _execute_workflow(
             context,
         )
         if rooms:
-            return {"rooms": rooms}
+            rooms = _filter_rooms_by_budget(rooms, constraints)
+            if rooms:
+                return {"rooms": rooms}
 
         has_district = bool((constraints.get("location") or {}).get("districts"))
+        has_budget = bool((constraints.get("budget") or {}).get("max") or (constraints.get("budget") or {}).get("min"))
 
         # Bước 1 — nới lỏng các bộ lọc địa lý "mờ" (mốc gần, phường) + tiện ích ưu tiên.
         # Giữ nguyên quận + ngân sách để vẫn đúng khu vực và túi tiền của khách.
@@ -338,13 +341,13 @@ def _execute_workflow(
                 {"query_text": question, "constraints": soft_constraints, "top_k": 5},
                 context,
             )
+            rooms = _filter_rooms_by_budget(rooms, constraints)
             if rooms:
                 return {"rooms": rooms, "relaxed_search": True, "relaxed_fields": soft_dropped}
         else:
             soft_constraints = dict(constraints)
 
-        # Bước 2 — nới thêm tiện ích bắt buộc + ngân sách. Nếu vẫn còn quận thì coi là
-        # kết quả cùng khu vực; nếu không có quận thì trả về như gợi ý lân cận.
+        # Bước 2 — nới tiện ích bắt buộc. Giữ ngân sách + quận.
         hard_constraints, hard_dropped = _relax_hard_filters(soft_constraints)
         all_dropped = soft_dropped + hard_dropped
         if hard_dropped and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
@@ -353,18 +356,33 @@ def _execute_workflow(
                 {"query_text": question, "constraints": hard_constraints, "top_k": 5},
                 context,
             )
+            alt_rooms = _filter_rooms_by_budget(alt_rooms, constraints)
             if alt_rooms:
                 if has_district:
                     return {"rooms": alt_rooms, "relaxed_search": True, "relaxed_fields": all_dropped}
                 return {"rooms": [], "alternative_rooms": alt_rooms, "relaxed_fields": all_dropped}
 
+        if has_budget or has_district:
+            return {"rooms": [], "budget_or_district_miss": True}
         return {"rooms": []}
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         detail = _tool_registry.execute(
             "retrieve_room_context", {"room_id": current_room_id}, context,
         )
-        return {"room_context": detail, "rooms": [detail["room"]] if detail.get("room") else []}
+        payload: dict[str, Any] = {
+            "room_context": detail,
+            "rooms": [detail["room"]] if detail.get("room") else [],
+        }
+        try:
+            from room_assistant.staff_knowledge import match_staff_faq
+            if match_staff_faq(question):
+                payload["faq_results"] = _tool_registry.execute(
+                    "retrieve_faq", {"question": question}, context,
+                )
+        except Exception:
+            pass
+        return payload
 
     if intent == "CALCULATE_COST":
         room = _tool_registry.execute("get_room_detail", {"room_id": current_room_id}, context)
@@ -559,7 +577,37 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
         return context[:3500]
 
 
-def _search_no_result_message(user_mood: str = "normal") -> str:
+def _search_no_result_message(
+    user_mood: str = "normal",
+    constraints: dict[str, Any] | None = None,
+) -> str:
+    budget = (constraints or {}).get("budget") or {}
+    districts = ((constraints or {}).get("location") or {}).get("districts") or []
+    max_price = budget.get("max")
+    district_label = districts[0] if districts else ""
+
+    if max_price and district_label:
+        area = district_label.replace("_", " ")
+        budget_line = (
+            f"Dạ em tìm trong **{area}** với ngân sách **{format_vnd(max_price)}/tháng** "
+            f"mà chưa thấy căn trống khớp ạ. "
+            f"Anh/chị thử nới thêm khoảng 500k–1 triệu hoặc xem khu lân cận, em lọc lại ngay nha."
+        )
+        if user_mood == "urgent":
+            return f"Dạ em hiểu mình cần gấp ạ. {budget_line}"
+        if user_mood == "frustrated":
+            return f"Dạ em hiểu mình tìm mãi cũng mệt ạ. {budget_line}"
+        return budget_line
+
+    if max_price:
+        budget_only = (
+            f"Dạ em chưa thấy căn nào trong tầm **{format_vnd(max_price)}/tháng** ạ. "
+            "Anh/chị cho em biết khu vực ưu tiên hoặc nới ngân sách thêm chút, em lọc lại liền nha."
+        )
+        if user_mood in {"urgent", "frustrated"}:
+            return f"Dạ em hiểu mà ạ. {budget_only}"
+        return budget_only
+
     if user_mood == "urgent":
         return (
             "Dạ em hiểu mình đang cần gấp ạ. Em chưa thấy căn khớp 100% ngay, "
@@ -614,6 +662,7 @@ def _compose_answer_template(
             "Nhưng nếu ưng phòng rồi, chiều nay ghé xem thực tế luôn cho tiện anh/chị nhỉ?"
         )
     rooms = grounding["rooms"]
+    constraints = grounding.get("constraints", {})
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
         if not rooms:
             alternative_rooms = [item for item in (tool_results.get("alternative_rooms") or []) if item]
@@ -627,7 +676,7 @@ def _compose_answer_template(
                     )
                 alt_lines.append("\nNếu mình nới ngân sách hoặc bỏ bớt 1–2 tiêu chí, em sẽ tìm được nhiều căn ưng hơn ạ 😊")
                 return "\n".join(alt_lines)
-            return _search_no_result_message(user_mood)
+            return _search_no_result_message(user_mood, constraints)
         if tool_results.get("relaxed_search"):
             lines = [f"Dạ {_relaxed_note(tool_results.get('relaxed_fields') or [])} Mấy căn cùng khu vực vẫn ngon mà hợp lý nè:"]
         else:
@@ -656,6 +705,9 @@ def _compose_answer_template(
             parts.append(f"Dạ tiện ích có đủ: {', '.join(feature_facts)}. Mình dọn vào là ở thoải mái luôn ạ.")
         if unknown:
             parts.append(f"_Dữ liệu chưa xác nhận: {', '.join(unknown)}._")
+        faq = tool_results.get("faq_results") or []
+        if faq:
+            parts.append(faq[0].get("answer", ""))
         return "\n".join(parts)
     if intent == "CALCULATE_COST":
         estimate = tool_results.get("cost_estimate") or {}
@@ -741,7 +793,13 @@ def _compose_answer_template(
     if intent == "REQUEST_FAQ":
         faq = tool_results.get("faq_results") or []
         if faq:
-            return "\n".join(f"**[{item.get('topic')}]** {item.get('answer')}" for item in faq)
+            answers = [item.get("answer", "").strip() for item in faq if item.get("answer")]
+            body = "\n\n".join(answers[:2])
+            try:
+                from room_assistant.staff_knowledge import staff_cta_line
+                return f"{body}\n\n{staff_cta_line()}"
+            except Exception:
+                return body
         return "Dạ anh/chị cần hỏi thêm về quy trình thuê, hợp đồng hay tiền cọc không ạ? Anh/chị cứ nhắn, em tư vấn kỹ cho nha."
     if intent == "GENERAL_HELP" and _is_price_objection(question):
         return (
@@ -777,6 +835,7 @@ async def _compose_answer_async(
         "REQUEST_ACTION",
         "CALCULATE_COST",
         "COMPARE_ROOMS",
+        "REQUEST_FAQ",
         "GENERAL_HELP",
     } or tool_results.get("error"):
         answer = _template_answer()
@@ -1326,10 +1385,7 @@ def _relax_soft_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], li
 
 
 def _relax_hard_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """Nới các điều kiện "cứng" còn lại: tiện ích bắt buộc và ngân sách.
-
-    Quận được giữ nguyên để kết quả vẫn nằm trong khu vực khách yêu cầu.
-    """
+    """Nới tiện ích bắt buộc / loại trừ. Giữ ngân sách và quận để không gợi ý phòng lệch giá."""
     relaxed = dict(constraints)
     dropped: list[str] = []
     if relaxed.get("amenities_required"):
@@ -1338,10 +1394,38 @@ def _relax_hard_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], li
     if relaxed.get("excluded_features"):
         relaxed["excluded_features"] = []
         dropped.append("excluded_features")
-    if relaxed.get("budget"):
-        relaxed["budget"] = {}
-        dropped.append("budget")
     return relaxed, dropped
+
+
+def _room_matches_budget(room: dict[str, Any], constraints: dict[str, Any]) -> bool:
+    budget = constraints.get("budget") or {}
+    rent = room.get("rent_price")
+    if rent is None:
+        return True
+    max_price = budget.get("max")
+    min_price = budget.get("min")
+    if max_price is not None:
+        if budget.get("max_operator") == "lt":
+            if rent >= max_price:
+                return False
+        elif rent > max_price:
+            return False
+    if min_price is not None:
+        if budget.get("min_operator") == "gt":
+            if rent <= min_price:
+                return False
+        elif rent < min_price:
+            return False
+    return True
+
+
+def _filter_rooms_by_budget(
+    rooms: list[dict[str, Any]] | None,
+    constraints: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not rooms:
+        return []
+    return [room for room in rooms if _room_matches_budget(room, constraints)]
 
 
 _RELAX_FIELD_LABELS: dict[str, str] = {

@@ -539,6 +539,19 @@
       document.getElementById('chatDrawerForm').dispatchEvent(new Event('submit'));
     }
 
+    function selectRoomCard(room, cardEl) {
+      if (!chatIdentity || !room) return;
+      const roomId = room.room_id || room.id;
+      if (!roomId) return;
+      document.querySelectorAll('.chat-card-inline--active').forEach((el) => {
+        el.classList.remove('chat-card-inline--active');
+      });
+      if (cardEl) {
+        cardEl.classList.add('chat-card-inline--active');
+      }
+      sendSuggestion(`Phòng #${roomId} — cho em hỏi thêm chi tiết ạ`);
+    }
+
     function syncChatAccessState() {
       const { overlay, main, input, sendBtn, threadBar, roleChip, newThreadChip, threadPanel, bodyLayout } = getChatElements();
 
@@ -636,9 +649,10 @@
       cardsContainer.className = 'chat-cards-grid';
       (rooms || []).forEach(room => {
         const detailUrl = room.detail_url || (room.id || room.room_id ? `/tim-phong/${room.id || room.room_id}/` : '#');
-        const card = document.createElement('a');
-        card.className = 'chat-card-inline';
-        card.href = detailUrl;
+        const card = document.createElement('div');
+        card.className = 'chat-card-inline chat-card-selectable';
+        card.setAttribute('role', 'button');
+        card.tabIndex = 0;
         const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
         const relaxedBadge = room.relaxed_search
           ? '<span class="chat-card-badge">Gợi ý gần đúng</span>'
@@ -655,9 +669,25 @@
             <p class="meta">${escapeHtml(metaParts.join(' • '))}</p>
             <div class="chat-card-amenities">${(room.amenities || []).slice(0, 4).map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>
             <p class="address">${escapeHtml(room.address || '')}</p>
-            <span class="chat-card-cta">Xem chi tiết</span>
+            <div class="chat-card-actions">
+              <span class="chat-card-cta">Chọn để hỏi thêm</span>
+              <a class="chat-card-detail-link" href="${escapeHtml(detailUrl)}" target="_blank" rel="noopener">Xem chi tiết</a>
+            </div>
           </div>
         `;
+        card.addEventListener('click', (event) => {
+          if (event.target.closest('.chat-card-detail-link')) {
+            return;
+          }
+          event.preventDefault();
+          selectRoomCard(room, card);
+        });
+        card.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectRoomCard(room, card);
+          }
+        });
         cardsContainer.appendChild(card);
       });
       return cardsContainer;
