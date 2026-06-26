@@ -4,11 +4,7 @@
 trong luồng xử lý mỗi lượt hội thoại.
 """
 from typing import Any
-
-try:
-    from typing import TypedDict
-except ImportError:
-    from typing_extensions import TypedDict
+from typing_extensions import TypedDict
 
 
 class NhatrovnAgentState(TypedDict, total=False):

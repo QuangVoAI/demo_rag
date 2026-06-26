@@ -284,36 +284,12 @@ def _execute_workflow(
         or _first_or_none(state.get("last_result_ids", []))
     )
 
-    # 1. Direct Fast Path (disambiguate room_id vs room_code)
-    # Check if exact room reference is found
-    exact_ref = parsed.get("exact_room_reference")
-    if exact_ref and getattr(exact_ref, "room_id", None):
-        current_room_id = exact_ref.room_id
-        detail = _tool_registry.execute(
-            "retrieve_room_context", {"room_id": current_room_id}, context,
-        )
-        return {"room_context": detail, "rooms": [detail["room"]] if detail.get("room") else [], "fast_path": True}
-    elif exact_ref and getattr(exact_ref, "room_code", None):
-        # Ambiguous room_code -> need simple search for exact room
-        constraints["room_code"] = exact_ref.room_code
-        intent = "SEARCH_ROOM"
-
-    # 2. Simple Search vs Complex Planner routing
-    # If the user asks a simple question or planner is disabled
-    is_complex = parsed.get("complex_planning", False)
-    
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH"}:
-        if is_complex:
-            # Route to planner (simulated here by standard search but indicating complex branch)
-            context.planner_invoked = True
-        
         rooms = _tool_registry.execute(
             "search_rooms",
             {"query_text": question, "constraints": constraints, "top_k": 5},
             context,
         )
-        
-        # Implement cache hit assertion / reserve pool refill logic
         if not rooms and _has_soft_preferences(constraints) and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
             retry_constraints = dict(constraints)
             retry_constraints["amenities_preferred"] = []
@@ -533,26 +509,26 @@ def _compose_answer_template(
     if intent == "REQUEST_ACTION":
         action = parsed.get("requested_action") or "thao tác nghiệp vụ"
         return (
-            "Dạ tính năng thao tác tự động em chưa được học ạ. "
-            f"Với yêu cầu '{action}', anh/chị thao tác trực tiếp trên giao diện giúp em nha! "
-            "Nhưng nếu ưng phòng rồi, chiều nay ghé xem thực tế luôn cho tiện anh/chị nhỉ?"
+            "Mình chỉ có thể tư vấn và đọc dữ liệu — không thể tự thực hiện: đặt lịch, "
+            "nhắn chủ nhà, lưu phòng, giữ chỗ hay thanh toán. "
+            f"Với yêu cầu '{action}', bạn vui lòng thao tác trực tiếp trên giao diện nhatrovn."
         )
     rooms = grounding["rooms"]
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
         if not rooms:
-            return "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ. Anh/chị thử nới ngân sách hoặc mở rộng khu vực giúp em nhé, đảm bảo sẽ có nhiều căn đẹp lắm ạ!"
-        lines = ["Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây:"]
+            return "Mình chưa tìm thấy phòng phù hợp với điều kiện hiện tại. Bạn thử nới ngân sách, đổi khu vực hoặc bỏ bớt tiện ích bắt buộc nhé."
+        lines = ["Dưới đây là các phòng phù hợp nhất theo dữ liệu đã xác nhận trên nhatrovn:"]
         for idx, room in enumerate(rooms[:5], 1):
             lines.append(
                 f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
-                f"chỉ {format_vnd(room.get('rent_price'))}/tháng, "
+                f"{format_vnd(room.get('rent_price'))}/tháng, "
                 f"{room.get('district') or 'chưa rõ khu vực'}."
             )
-        lines.append("\nAnh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊")
+        lines.append("\n_Giá và trạng thái còn phòng được lấy trực tiếp từ dữ liệu phòng._")
         return "\n".join(lines)
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         if not rooms:
-            return "Dạ em chưa rõ anh/chị đang quan tâm căn nào. Anh/chị gửi mã phòng cho em nha!"
+            return "Mình chưa xác định được phòng đang xem. Bạn gửi mã phòng hoặc chọn phòng từ kết quả tìm kiếm nhé."
         room = rooms[0]
         unknown = _unknown_fields(room)
         parts = [
@@ -561,15 +537,15 @@ def _compose_answer_template(
         ]
         feature_facts = _room_feature_facts(room)
         if feature_facts:
-            parts.append(f"Dạ tiện ích có đủ: {', '.join(feature_facts)}. Mình dọn vào là ở thoải mái luôn ạ.")
+            parts.append(f"Tiện ích và thông tin phòng đã xác minh: {', '.join(feature_facts)}.")
         if unknown:
             parts.append(f"_Dữ liệu chưa xác nhận: {', '.join(unknown)}._")
         return "\n".join(parts)
     if intent == "CALCULATE_COST":
         estimate = tool_results.get("cost_estimate") or {}
         if not estimate.get("available"):
-            return "Dạ em chưa đủ thông tin tính chi phí căn này. Anh/chị cho em xin mã phòng nhé!"
-        lines = ["Dạ em tính sương sương chi phí dự kiến cho anh/chị nhé:"]
+            return "Mình chưa có đủ dữ liệu phòng để tính chi phí. Bạn gửi mã phòng cụ thể hơn nhé."
+        lines = ["**Ước tính chi phí** (calculator deterministic từ dữ liệu đã xác nhận):"]
         if estimate.get("rental_months"):
             lines.append(f"- Thời gian thuê: {estimate['rental_months']} tháng")
             for item in estimate.get("period_items", []):
@@ -598,9 +574,9 @@ def _compose_answer_template(
         if not rows:
             missing = comparison.get("missing_room_ids") or []
             if missing:
-                return f"Dạ em chưa tìm thấy dữ liệu phòng: {', '.join('#' + item for item in missing)} ạ. Anh/chị kiểm tra lại mã giúp em nha."
-            return "Dạ để em so sánh chuẩn xác, anh/chị gửi giúp em tối đa 3 mã phòng nha (ví dụ: `so sánh #A #B`)."
-        lines = ["Dạ em gửi anh/chị bảng so sánh chi tiết:"]
+                return f"Mình chưa tìm thấy dữ liệu cho: {', '.join('#' + item for item in missing)}. Bạn kiểm tra lại mã phòng hoặc chọn phòng từ danh sách kết quả nhé."
+            return "Mình cần tối đa 3 mã phòng để so sánh. Bạn gửi dạng `so sánh #A #B #C` nhé."
+        lines = ["**So sánh phòng** theo dữ liệu đã xác nhận:"]
         for row in rows:
             lines.append(
                 f"- **#{row.get('room_id')}**: {format_vnd(row.get('rent_price'))}/tháng, "
@@ -610,7 +586,7 @@ def _compose_answer_template(
         if best:
             area = f", diện tích {best.get('area_m2')} m²" if best.get("area_m2") else ""
             lines.append(
-                f"\n✨ **Gợi ý cực hợp lý:** Căn #{best.get('room_id')} "
+                f"\n**Gợi ý phù hợp nhất:** #{best.get('room_id')} "
                 f"với giá {format_vnd(best.get('rent_price'))}/tháng{area}."
             )
         missing = comparison.get("missing_room_ids") or []
@@ -624,10 +600,11 @@ def _compose_answer_template(
         faq = tool_results.get("faq_results") or []
         if faq:
             return "\n".join(f"**[{item.get('topic')}]** {item.get('answer')}" for item in faq)
-        return "Dạ anh/chị cần hỏi thêm về quy trình thuê, hợp đồng hay tiền cọc không ạ? Anh/chị cứ nhắn, em tư vấn kỹ cho nha."
+        return "Mình có thể hỗ trợ thông tin về: quy trình thuê phòng, hợp đồng thuê nhà, tiền cọc tiêu chuẩn, và các thủ tục liên quan. Bạn hỏi cụ thể hơn nhé."
     return (
-        "Dạ em có thể tìm phòng, so sánh giá, tư vấn chi phí và tiện ích chi tiết ạ. "
-        "Anh/chị đang cần tìm phòng quanh khu vực nào để em hỗ trợ gửi phòng đẹp ngay nhé 😊"
+        "Mình có thể giúp tìm phòng, lọc điều kiện, hỏi đáp về phòng đang xem, "
+        "tính chi phí, so sánh tối đa 3 phòng và gợi ý phòng tương tự trên nhatrovn. "
+        "Mình không thực hiện: đặt lịch, nhắn chủ nhà, giữ chỗ hoặc thanh toán."
     )
 
 
@@ -995,10 +972,8 @@ def _update_langfuse_turn_span(
     if not kwargs:
         return
     try:
-        from langfuse.decorators import langfuse_context
-        langfuse_context.update_current_observation(**kwargs)
-        if metadata and "session_hash" in metadata:
-            langfuse_context.update_current_trace(session_id=metadata["session_hash"])
+        from langfuse import get_client
+        get_client().update_current_span(**kwargs)
     except Exception as exc:
         _logger.debug("langfuse_turn_span_update_failed %s", exc)
 

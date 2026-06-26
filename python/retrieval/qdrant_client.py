@@ -17,13 +17,7 @@ from qdrant_client.models import (
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from config import (
-    QDRANT_URL,
-    QDRANT_API_KEY,
-    QDRANT_COLLECTION,
-    EMBEDDING_DIM,
-    QDRANT_SKIP_COMPAT_CHECK,
-)
+from config import QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION, EMBEDDING_DIM
 
 from utils.console import console
 
@@ -64,11 +58,7 @@ class QdrantWrapper:
     ):
         self.collection_name = collection_name
 
-        kwargs = {
-            "url": url,
-            "timeout": 60,
-            "check_compatibility": not QDRANT_SKIP_COMPAT_CHECK,
-        }
+        kwargs = {"url": url, "timeout": 60}
         if api_key:
             kwargs["api_key"] = api_key
 
