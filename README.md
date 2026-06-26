@@ -16,90 +16,66 @@ hệ thống sẽ:
 4. Trả về danh sách nhà trọ phù hợp nhất
 5. Sinh câu trả lời tự nhiên qua chatbot
 
-## 2. Kiến trúc tổng thể
+## 2. Kiến trúc hệ thống hiện tại (Multi-Agent RAG System)
 
-```text
-Frontend Chat UI
-    ->
-Django API
-    ->
-Intent + Filter Extractor
-    ->
-Hybrid Retrieval
-    |- MongoDB structured filter
-    |- Vector DB semantic search
-    ->
-Rerank / merge results
-    ->
-LLM response generation
-    ->
-Frontend trả câu trả lời cho người dùng
+Hệ thống được thiết kế theo kiến trúc **Multi-Agent** kết hợp **RAG (Retrieval-Augmented Generation)**, sử dụng LangGraph để quản lý luồng hội thoại.
+
+```mermaid
+graph TD
+    User([Người dùng]) -->|Chat| DjangoAPI[Django API]
+    DjangoAPI -->|Kafka/Direct| Graph[LangGraph Agent Workflow]
+    
+    subgraph Agent Workflow [LangGraph Workflow (python/agents/graph.py)]
+        Router[Router / Intent Parser] -->|Xác định ý định| Tool[RAG Tools]
+        Tool -->|Tìm kiếm / Tính toán| Writer[Response Writer]
+        Writer -->|Draft Answer| Reviewer[Safety Reviewer]
+        Reviewer -->|Duyệt/Sửa| Output[Final Response]
+    end
+
+    subgraph RAG Core [Retrieval Engine]
+        Tool -->|Semantic Search| Qdrant[(Qdrant Vector DB)]
+        Tool -->|Structured Filter| MongoDB[(MongoDB Atlas)]
+    end
+    
+    Output --> DjangoAPI
+    DjangoAPI --> User
 ```
 
-## 3. Thành phần chính
+## 3. Cấu trúc Source Code & Chức năng từng file
 
-### A. Frontend chatbot
+### 3.1. `python/agents/` (Các Node/Agent trong LangGraph)
+Thư mục này chứa não bộ của hệ thống, quản lý luồng chạy của Multi-Agent:
+- **`graph.py`**: Cốt lõi của hệ thống, định nghĩa luồng state machine (LangGraph) liên kết các Agents lại với nhau.
+- **`state.py`**: Định nghĩa cấu trúc `AgentState` lưu trữ toàn bộ ngữ cảnh trong suốt một phiên chat.
+- **`prompts.py`**: Nơi tập trung toàn bộ System Prompts của các Agent (Giúp dễ tinh chỉnh persona của Bot).
+- **`router.py`**: Quyết định bước tiếp theo dựa vào intent (Ví dụ: Chạy RAG, Tính chi phí, hay trả lời trực tiếp).
+- **`response_writer.py`**: Agent đóng vai trò Sales, sinh câu trả lời tự nhiên, thấu cảm từ dữ liệu RAG và gọi Call-to-action.
+- **`reviewer.py`**: Agent kiểm duyệt an toàn, đảm bảo bot không bịa giá (hallucination) và không hứa lèo với khách.
+- **`rewriter.py`**: Agent viết lại câu truy vấn (Query Rewriter) để hệ thống RAG tìm kiếm chính xác hơn.
+- **`extractor.py`**: Trích xuất thông tin tài chính tĩnh từ text (Air-gapped extraction) an toàn.
+- **`sentiment_analyzer.py`**: Phân tích cảm xúc người dùng (Bực dọc, Gấp gáp, Bình thường) để đổi giọng điệu cho `response_writer`.
+- **`llm_client.py`**: Wrapper kết nối API LLM (Groq) với cơ chế Role-based API Keys (phân chia tải), Streaming SSE an toàn.
+- **`model_registry.py`**: Đăng ký các model LLM (Phân loại `SMART` cho tác vụ tạo text, `FAST` cho tác vụ phân tích ngầm).
 
-- Ô chat cho người dùng nhập câu hỏi
-- Gọi API Django, ví dụ `POST /api/chat/ask`
-- Hiển thị danh sách nhà trọ gợi ý
+### 3.2. `python/room_assistant/` (Công cụ và Nghiệp vụ RAG)
+Xử lý các logic nghiệp vụ trước khi đưa vào Agent sinh câu trả lời:
+- **`intent.py`**: Phân tích ý định người dùng (SEARCH_ROOM, COMPARE_ROOMS, CALCULATE_COST, v.v) và trích xuất tham số (giá, quận) thông qua LLM.
+- **`workflow.py`**: Quản lý các công cụ, thực thi nghiệp vụ (ví dụ: Lấy so sánh phòng, tính chi phí thuê).
+- **`tools.py`**: Định nghĩa các Function Calling / Tools cho RAG để Agent tương tác.
 
-### B. Django backend
+### 3.3. `python/retrieval/` (Truy xuất Dữ liệu - RAG Engine)
+Chịu trách nhiệm tìm kiếm ngữ nghĩa và lọc dữ liệu:
+- **`search.py`**: Điểm truy cập chính cho tìm kiếm (Hybrid Search).
+- **`hybrid.py`**: Thuật toán gộp kết quả từ Vector và MongoDB bằng Reciprocal Rank Fusion (RRF).
+- **`vector.py` / `qdrant_client.py`**: Giao tiếp trực tiếp với Qdrant Vector DB.
+- **`embeddings.py`**: Khởi tạo và gọi Embedding Model (ví dụ: BGE-M3) để chuyển text thành vector.
 
-Đóng vai trò trung tâm điều phối:
+### 3.4. `python/indexing/` & `python/kafka_workers/` (Đồng bộ Realtime)
+- **`room_indexer.py`**: Kafka Consumer lắng nghe sự thay đổi (Thêm, Sửa, Xóa phòng) từ MongoDB Change Streams để cập nhật Qdrant.
+- **`pipeline.py`**: Luồng vectorize và chuẩn hóa dữ liệu phòng trọ trước khi index vào Qdrant.
 
-- Nhận tin nhắn từ frontend
-- Tách ý định tìm kiếm
-- Query MongoDB
-- Gọi embedding model
-- Search vector DB
-- Tạo prompt cho LLM
-- Trả response về frontend
-
-### C. MongoDB
-
-Lưu dữ liệu gốc của các bài đăng nhà trọ:
-
-- tiêu đề
-- mô tả
-- địa chỉ
-- quận/huyện
-- thành phố
-- giá
-- số phòng
-- diện tích
-- tiện ích
-- liên hệ
-
-### D. Vector DB
-
-Lưu vector embedding của mỗi bài đăng nhà trọ để semantic search.
-
-Trong phạm vi demo này, lựa chọn phù hợp nhất là `Chroma` vì:
-
-- miễn phí
-- chạy local nhanh
-- dễ tích hợp với Python/Django
-- đủ tốt cho bài toán demo chatbot tìm nhà trọ
-
-Nếu sau này muốn mở rộng gần hơn với production, có thể chuyển sang Qdrant hoặc MongoDB Atlas Vector Search.
-
-### E. Embedding model
-
-Dùng để biến:
-
-- mô tả nhà trọ
-- yêu cầu chat của người dùng
-
-thành vector để so sánh độ tương đồng ngữ nghĩa.
-
-### F. LLM
-
-Dùng để:
-
-- tạo câu trả lời tự nhiên
-- tóm tắt kết quả truy xuất
-- hỏi lại người dùng nếu thiếu điều kiện
+### 3.5. Hệ thống chung
+- **`python/config.py`**: File cấu hình tập trung (Đọc từ `.env`, Load thông số kết nối DB, LLM, Timeout).
 
 ## 4. Luồng dữ liệu indexing
 
