@@ -1,10 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$pythonPath = Join-Path $repoRoot ".venv\bin\python.exe"
+$pythonPath = "python"
 
-if (-not (Test-Path $pythonPath)) {
-    Write-Error "Khong tim thay Python venv tai $pythonPath"
+# Verify python is available
+& $pythonPath -c "import sys; sys.exit(0)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Khong tim thay Python"
 }
 
 Set-Location $repoRoot

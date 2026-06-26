@@ -566,6 +566,24 @@ def _json_safe_value(value: Any) -> Any:
 
 
 def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "") -> dict[str, Any]:
+    rooms = response_dict.get("rooms", [])
+    for room in rooms:
+        if "rent_price" in room and "price_text" not in room:
+            try:
+                room["price_text"] = f"{int(room['rent_price']):,} VND"
+            except (ValueError, TypeError):
+                room["price_text"] = str(room.get("rent_price", ""))
+        if "area_m2" in room and "area_text" not in room:
+            room["area_text"] = f"{room['area_m2']} m²" if room["area_m2"] else ""
+        if "status_desc" in room and "status_text" not in room:
+            room["status_text"] = room["status_desc"]
+        if "province_name" in room and "city" not in room:
+            room["city"] = room["province_name"]
+        if "category" not in room:
+            room["category"] = "Phòng trọ"
+        if "image" not in room:
+            room["image"] = room.get("thumbnail") or room.get("featured_image_url") or "https://placehold.co/400x300?text=No+Image"
+            
     payload = {
         "success": True,
         "session_id": response_dict.get("session_id") or session_id,
@@ -573,7 +591,7 @@ def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "")
         "answer": response_dict.get("answer") or "",
         "intent": response_dict.get("intent"),
         "session_state": response_dict.get("session_state", {}),
-        "rooms": response_dict.get("rooms", []),
+        "rooms": rooms,
         "cost_estimate": response_dict.get("cost_estimate"),
         "comparison": response_dict.get("comparison"),
         "follow_ups": response_dict.get("suggested_questions", []),

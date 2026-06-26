@@ -173,6 +173,9 @@ async def run_room_assistant(
         _log_turn_summary(result, question_hash=question_hash)
         return result
 
+    if stream_callback:
+        await stream_callback("[status:Phân tích|Hệ thống] Đang phân tích yêu cầu...\n")
+
     semantic_index = semantic_index if semantic_index is not None else _get_semantic_index()
     parsed = await parse_intent_async(question, state_before)
     merged_state, applied_operations = apply_operations(state_before, parsed["operations"])
@@ -183,6 +186,9 @@ async def run_room_assistant(
         user_mood, _ = analyze_mood(question)
     except Exception:
         pass
+
+    if stream_callback:
+        await stream_callback("[status:Truy vấn|Cơ sở dữ liệu] Đang tìm kiếm các phòng phù hợp...\n")
 
     context = ToolExecutionContext(repository=repo, semantic_index=semantic_index)
     tool_results: dict[str, Any] = {}
@@ -195,6 +201,9 @@ async def run_room_assistant(
     except ToolBudgetExceeded:
         error_category = "tool_budget_exceeded"
         tool_results = {"error": "tool_budget_exceeded"}
+
+    if stream_callback:
+        await stream_callback("[status:Tổng hợp|Trợ lý AI] Đang tổng hợp câu trả lời...\n")
 
     rooms = _extract_rooms(tool_results)
     result_ids = [item["room_id"] for item in rooms if item.get("room_id")]
@@ -211,7 +220,7 @@ async def run_room_assistant(
     save_session_state(next_state, store, ttl_seconds)
 
     grounding = _build_grounding_context(parsed, next_state, tool_results)
-    answer = await _compose_answer_async(question, parsed, grounding, tool_results, history, user_mood)
+    answer = await _compose_answer_async(question, parsed, grounding, tool_results, history, user_mood, stream_callback)
     suggested_questions = _suggest_questions(parsed["intent"], rooms, current_room_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
@@ -314,7 +323,23 @@ def _execute_workflow(
                 {"query_text": question, "constraints": retry_constraints, "top_k": 5},
                 context,
             )
-            return {"rooms": rooms, "retrieval_retry": True}
+            if rooms:
+                return {"rooms": rooms, "retrieval_retry": True}
+        
+        if not rooms and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
+            relaxed_constraints = dict(constraints)
+            if "budget" in relaxed_constraints:
+                relaxed_constraints["budget"] = {}
+            if "amenities_required" in relaxed_constraints:
+                relaxed_constraints["amenities_required"] = []
+            
+            alt_rooms = _tool_registry.execute(
+                "search_rooms",
+                {"query_text": question, "constraints": relaxed_constraints, "top_k": 3},
+                context,
+            )
+            return {"rooms": [], "alternative_rooms": alt_rooms}
+
         return {"rooms": rooms}
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
@@ -626,21 +651,23 @@ def _compose_answer_template(
 async def _compose_answer_async(
     question: str, parsed: dict[str, Any], grounding: dict[str, Any],
     tool_results: dict[str, Any], history: list[dict[str, Any]], user_mood: str = "normal",
+    stream_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     intent = parsed["intent"]
+    rooms = grounding.get("rooms", [])
+    
     if intent in {
         "REQUEST_ACTION",
         "CALCULATE_COST",
         "COMPARE_ROOMS",
         "GENERAL_HELP",
-        "SEARCH_ROOM",
-        "REFINE_SEARCH",
-        "FIND_SIMILAR",
     } or tool_results.get("error"):
+        return _compose_answer_template(parsed, grounding, tool_results)
+        
+    if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
         return _compose_answer_template(parsed, grounding, tool_results)
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
         return _compose_answer_template(parsed, grounding, tool_results)
-    rooms = grounding.get("rooms", [])
     faq = tool_results.get("faq_results")
     if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
         return _compose_answer_template(parsed, grounding, tool_results)
@@ -650,9 +677,10 @@ async def _compose_answer_async(
         from agents.response_writer import write_response, write_no_result_response
         if not rooms and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
             constraints = grounding.get("constraints", {})
-            answer = await write_no_result_response(question, constraints, user_mood)
+            alt_rooms = tool_results.get("alternative_rooms", [])
+            answer = await write_no_result_response(question, constraints, user_mood, alt_rooms, stream_callback=stream_callback)
         else:
-            answer = await write_response(question=question, verified_context=verified_data, history=history, mood=user_mood)
+            answer = await write_response(question=question, verified_context=verified_data, history=history, mood=user_mood, stream_callback=stream_callback)
     except Exception:
         pass
     if not answer or len(answer.strip()) < 20:

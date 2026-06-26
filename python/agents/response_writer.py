@@ -154,10 +154,12 @@ async def write_no_result_response(
     question: str,
     constraints: dict,
     mood: str = "normal",
+    alt_rooms: list[dict] | None = None,
+    stream_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     """
     Sinh câu trả lời khi không tìm được phòng nào phù hợp.
-    Gợi ý người dùng điều chỉnh điều kiện cụ thể.
+    Gợi ý người dùng điều chỉnh điều kiện cụ thể hoặc đề xuất phòng lân cận.
     """
     llm = _get_llm_client()
     budget = constraints.get("budget") or {}
@@ -177,21 +179,42 @@ async def write_no_result_response(
 
     prompt = (
         f"Người dùng tìm phòng với điều kiện: {question}\n"
-        f"Kết quả: Không tìm được phòng phù hợp.\n"
-        f"Gợi ý điều chỉnh:\n" + "\n".join(f"- {s}" for s in suggestions) + "\n\n"
-        f"Viết câu trả lời thân thiện, đồng cảm và gợi ý cụ thể:"
+        f"Kết quả: KHÔNG TÌM ĐƯỢC PHÒNG PHÙ HỢP với các điều kiện khắt khe (ví dụ: mức giá thấp hơn thị trường).\n"
     )
-    system = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
-    try:
-        answer = await llm["chat_complete"](
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            model=llm["fast_model"],
-            max_tokens=min(300, ANSWER_MAX_TOKENS),
-            temperature=0.3,
+    
+    if alt_rooms:
+        prompt += "\nDANH SÁCH CÁC PHÒNG LÂN CẬN (Mức giá / Tiện ích khác một chút) ĐỂ ĐỀ XUẤT:\n"
+        for i, r in enumerate(alt_rooms):
+            price_str = f"{r.get('rent_price'):,} VND" if isinstance(r.get("rent_price"), (int, float)) else str(r.get("rent_price", ""))
+            addr = r.get("address", "")
+            title = r.get("title", "")
+            prompt += f"{i+1}. {title} - {price_str} ({addr})\n"
+        prompt += "\nLệnh: Hãy viết một câu trả lời ĐỒNG CẢM, xin lỗi vì hết phòng/không có phòng theo yêu cầu. Sau đó khéo léo ĐỀ XUẤT các phòng lân cận ở trên. Phải format markdown danh sách các phòng rõ ràng. (KHÔNG tạo thêm phòng giả, chỉ dùng các phòng trong danh sách trên)"
+    else:
+        prompt += (
+            f"Gợi ý điều chỉnh:\n" + "\n".join(f"- {s}" for s in suggestions) + "\n\n"
+            f"Viết câu trả lời thân thiện, ĐỒNG CẢM (thấu cảm với khó khăn của khách khi tìm phòng khó), xin lỗi vì không có phòng phù hợp và gợi ý cụ thể để khách thay đổi điều kiện:"
         )
+
+    system = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+
+    collected = []
+    try:
+        async for token in llm["stream_chat_complete"](
+            messages=messages,
+            model=llm["fast_model"],
+            max_tokens=min(400, ANSWER_MAX_TOKENS),
+            temperature=0.3,
+        ):
+            if token:
+                collected.append(token)
+                if stream_callback is not None:
+                    await stream_callback(token)
+        answer = "".join(collected)
         if answer and len(answer.strip()) > 20:
             return answer.strip()
     except Exception:

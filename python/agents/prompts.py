@@ -62,15 +62,15 @@ Output BẮT BUỘC phải là JSON hợp lệ theo định dạng sau (không g
   "confidence": <0.0-1.0>,
   "operations": [
     // Nếu có giá tối đa (budget max)
-    {"type": "set", "path": "budget.max", "value": 5000000},
+    {"op": "set", "path": "budget.max", "value": 5000000},
     // Nếu có giá tối thiểu (budget min)
-    {"type": "set", "path": "budget.min", "value": 3000000},
+    {"op": "set", "path": "budget.min", "value": 3000000},
     // Nếu có quận/huyện
-    {"type": "append", "path": "location.districts", "value": "binh thanh"},
+    {"op": "append", "path": "location.districts", "value": "binh thanh"},
     // Nếu có tiện ích (máy lạnh, máy giặt, ban công...)
-    {"type": "append", "path": "amenities_required", "value": "air_conditioner"},
+    {"op": "append", "path": "amenities_required", "value": "air_conditioner"},
     // Nếu có số người ở
-    {"type": "set", "path": "occupants.adults", "value": 2}
+    {"op": "set", "path": "occupants.adults", "value": 2}
   ],
   "referenced_room_ids": ["Mã phòng nếu người dùng nhắc đến, ví dụ: 62849aeb00eff17936fdf5c2"],
   "requested_action": "Hành động khách muốn nếu intent là REQUEST_ACTION, ví dụ: đặt lịch"
