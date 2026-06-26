@@ -74,10 +74,10 @@ def search_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[di
 
 
 def get_room_detail(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any] | None:
-    room_id = args.get("room_id")
+    room_id = _normalize_room_reference(args.get("room_id"))
     if not room_id:
         return None
-    return _resolve_room_reference(str(room_id), context)
+    return _resolve_room_reference(room_id, context)
 
 
 def retrieve_room_context(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
@@ -173,8 +173,9 @@ def _extract_unit(value: Any) -> str | None:
 
 def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
     room = args.get("room")
-    if not room and args.get("room_id"):
-        room = context.repository.get_by_id(str(args["room_id"]))
+    room_id = _normalize_room_reference(args.get("room_id"))
+    if not room and room_id:
+        room = _resolve_room_reference(room_id, context)
     if not room:
         return {"available": False, "unknown_inputs": ["room_not_found"]}
 
@@ -372,6 +373,7 @@ def _unknown_room_fields(room: dict[str, Any]) -> list[str]:
 
 
 def _resolve_room_reference(room_ref: str, context: ToolExecutionContext) -> dict[str, Any] | None:
+    room_ref = _normalize_room_reference(room_ref)
     try:
         room = context.repository.get_by_id(str(room_ref))
     except Exception:
@@ -391,6 +393,10 @@ def _resolve_room_reference(room_ref: str, context: ToolExecutionContext) -> dic
         if normalized_ref and normalized_ref in {candidate_room_id, candidate_room_code}:
             return candidate
     return candidates[0]
+
+
+def _normalize_room_reference(value: Any) -> str:
+    return str(value or "").strip().lstrip("#").strip()
 
 
 def _positive_int(value: Any) -> int | None:

@@ -51,11 +51,76 @@ def _get_rooms_collection():
     return get_collection("rooms")
 
 
+def _available_status_query() -> dict[str, Any]:
+    return {
+        "$or": [
+            {"metadata.status_code": "0"},
+            {"metadata.status_code": ""},
+        ]
+    }
+
+
+def _extract_primary_image(doc: dict[str, Any] | None) -> str | None:
+    if not isinstance(doc, dict):
+        return None
+
+    candidates: list[Any] = [
+        doc.get("image"),
+        doc.get("thumbnail"),
+        doc.get("featured_image_url"),
+        doc.get("cover_image"),
+    ]
+    media = doc.get("media") if isinstance(doc.get("media"), dict) else {}
+    candidates.extend([
+        media.get("cover_image"),
+        (media.get("images") or [None])[0] if isinstance(media.get("images"), list) else None,
+    ])
+    candidates.extend([
+        (doc.get("images") or [None])[0] if isinstance(doc.get("images"), list) else None,
+        (doc.get("image_urls") or [None])[0] if isinstance(doc.get("image_urls"), list) else None,
+    ])
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _lookup_property_image(doc: dict[str, Any] | None) -> str | None:
+    if not isinstance(doc, dict):
+        return None
+
+    property_ref = doc.get("property_id") or doc.get("house_id")
+    if not property_ref:
+        return None
+
+    try:
+        properties_col = get_collection("properties")
+        query: dict[str, Any] = {"_id": property_ref}
+        if isinstance(property_ref, str) and len(property_ref) == 24:
+            try:
+                query = {"_id": ObjectId(property_ref)}
+            except Exception:
+                query = {"_id": property_ref}
+        property_doc = properties_col.find_one(query)
+        return _extract_primary_image(property_doc)
+    except Exception:
+        return None
+
+
+def _resolve_room_image(doc: dict[str, Any] | None, room_id: str) -> str:
+    primary_image = _extract_primary_image(doc) or _lookup_property_image(doc)
+    if primary_image:
+        return primary_image
+    img_idx = int(hashlib.md5(room_id.encode("utf-8")).hexdigest(), 16) % len(FALLBACK_IMAGES)
+    return FALLBACK_IMAGES[img_idx]
+
+
 def _load_rooms() -> list[dict[str, Any]]:
     try:
         docs = list(
             _get_rooms_collection()
-            .find({"metadata.status_code": "0"})
+            .find(_available_status_query())
             .sort("metadata.price", 1)
             .limit(24)
         )
@@ -149,13 +214,13 @@ def _load_filtered_rooms(
     quick_filter: str | None = None,
     search_query: str | None = None
 ) -> list[dict[str, Any]]:
-    query: dict[str, Any] = {"metadata.status_code": "0"}
+    query: dict[str, Any] = {"$and": [_available_status_query()]}
     
     if category_slug:
         cat_map = _get_category_slug_map()
         db_cat = cat_map.get(category_slug)
         if db_cat:
-            query["embedding_text"] = {"$regex": db_cat.replace("_", " "), "$options": "i"}
+            query["$and"].append({"embedding_text": {"$regex": db_cat.replace("_", " "), "$options": "i"}})
             
     if price_range:
         parts = price_range.split("-")
@@ -163,30 +228,32 @@ def _load_filtered_rooms(
             try:
                 min_price = float(parts[0]) * 1_000_000
                 max_price = float(parts[1]) * 1_000_000
-                query["metadata.price"] = {"$gte": min_price, "$lte": max_price}
+                query["$and"].append({"metadata.price": {"$gte": min_price, "$lte": max_price}})
             except ValueError:
                 pass
 
     if search_query:
         import re
         escaped_query = re.escape(search_query)
-        query["$or"] = [
-            {"metadata.house_name": {"$regex": escaped_query, "$options": "i"}},
-            {"metadata.room_code": {"$regex": escaped_query, "$options": "i"}},
-            {"embedding_text": {"$regex": escaped_query, "$options": "i"}},
-        ]
+        query["$and"].append({
+            "$or": [
+                {"metadata.house_name": {"$regex": escaped_query, "$options": "i"}},
+                {"metadata.room_code": {"$regex": escaped_query, "$options": "i"}},
+                {"embedding_text": {"$regex": escaped_query, "$options": "i"}},
+            ]
+        })
     
     if city_slug:
         city_map = _get_city_slug_map()
         db_city = city_map.get(city_slug)
         if db_city:
-            query["metadata.province_name"] = db_city
+            query["$and"].append({"metadata.province_name": db_city})
             
     if district_slug:
         dist_map = _get_district_slug_map()
         db_dist = dist_map.get(district_slug)
         if db_dist:
-            query["metadata.district_name"] = db_dist
+            query["$and"].append({"metadata.district_name": db_dist})
             
     filter_features = []
     if amenity:
@@ -227,7 +294,6 @@ def _load_filtered_rooms(
             _get_rooms_collection()
             .find(query)
             .sort("metadata.price", 1)
-            .limit(60)
         )
     except Exception:
         docs = []
@@ -385,9 +451,7 @@ def _normalize_room_from_rooms_collection(doc: dict[str, Any]) -> dict[str, Any]
             else:
                 amenities = [item.strip().title() for item in str(tien_ich_xq).split(",") if item.strip()]
 
-    import hashlib
-    img_idx = int(hashlib.md5(room_id.encode("utf-8")).hexdigest(), 16) % len(FALLBACK_IMAGES)
-    fallback_image = FALLBACK_IMAGES[img_idx]
+    resolved_image = _resolve_room_image(doc, room_id)
     
     area_match = re.search(r"(?:Diện tích|Diện tích sử dụng)\s*:\s*(\d+(?:\.\d+)?)\s*(?:m2|m²)", embedding_text, re.IGNORECASE)
     area_text = f"{area_match.group(1)}m2" if area_match else ""
@@ -433,7 +497,7 @@ def _normalize_room_from_rooms_collection(doc: dict[str, Any]) -> dict[str, Any]
         "description": doc.get("house_remark") or doc.get("embedding_text") or "",
         "tags": [metadata.get("status_desc")] if metadata.get("status_desc") else [],
         "hero_badge": "",
-        "image": fallback_image,
+        "image": resolved_image,
         "available_rooms": [
             {
                 "room_code": metadata.get("room_code", "-"),
@@ -568,6 +632,7 @@ def _json_safe_value(value: Any) -> Any:
 def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "") -> dict[str, Any]:
     rooms = response_dict.get("rooms", [])
     for room in rooms:
+        room_id = str(room.get("room_id") or room.get("id") or "").strip()
         if "rent_price" in room and "price_text" not in room:
             try:
                 room["price_text"] = f"{int(room['rent_price']):,} VND"
@@ -581,8 +646,19 @@ def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "")
             room["city"] = room["province_name"]
         if "category" not in room:
             room["category"] = "Phòng trọ"
-        if "image" not in room:
-            room["image"] = room.get("thumbnail") or room.get("featured_image_url") or "https://placehold.co/400x300?text=No+Image"
+        if "id" not in room and room_id:
+            room["id"] = room_id
+        if not room.get("image"):
+            room_doc = None
+            if room_id:
+                try:
+                    rooms_col = _get_rooms_collection()
+                    room_doc = rooms_col.find_one({"room_id": room_id})
+                    if not room_doc and len(room_id) == 24:
+                        room_doc = rooms_col.find_one({"_id": ObjectId(room_id)})
+                except Exception:
+                    room_doc = None
+            room["image"] = _resolve_room_image(room_doc or room, room_id or str(room.get("title") or "room"))
             
     payload = {
         "success": True,

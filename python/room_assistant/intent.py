@@ -365,6 +365,10 @@ def _looks_like_room_id(value: str) -> bool:
     return any(ch.isdigit() for ch in value)
 
 
+def _normalize_room_reference(value: Any) -> str:
+    return str(value or "").strip().lstrip("#").strip()
+
+
 def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
     """Trích xuất ngân sách tối đa / tối thiểu từ câu hỏi."""
     money = r"(\d[\d\.,]*)\s*(triệu|trieu|tr|k|nghìn|nghin|vnd|đ|d)?"
@@ -431,6 +435,36 @@ def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> No
         match = re.search(rf"(?:lên|len)\s*{money}", normalized)
         if match:
             _append_unique(ops, "set", "budget.max", _money_to_vnd(match.group(1), match.group(2)))
+
+
+def _apply_relative_budget_refinement(
+    text: str,
+    normalized: str,
+    current_state: dict[str, Any] | None,
+    ops: list[dict[str, Any]],
+) -> None:
+    if not current_state:
+        return
+    budget = (current_state.get("constraints") or {}).get("budget") or {}
+    current_max = budget.get("max")
+    if not isinstance(current_max, (int, float)) or current_max <= 0:
+        return
+
+    match = re.search(
+        r"(?:noi|nới|tang|tăng|them|thêm)\s+(?:ngan sach|ngân sách)?\s*(?:them|thêm)?\s*(\d[\d\.,]*)\s*(triệu|trieu|tr|k|nghìn|nghin|vnd|đ|d)?",
+        normalized,
+    )
+    if not match:
+        return
+    if "ngan sach" not in normalized and "ngân sách" not in text.lower():
+        return
+
+    increased_max = int(current_max) + _money_to_vnd(match.group(1), match.group(2))
+    ops[:] = [op for op in ops if op.get("path") != "budget.max"]
+    _append_unique(ops, "set", "budget.max", increased_max)
+    if budget.get("max_operator"):
+        ops[:] = [op for op in ops if op.get("path") != "budget.max_operator"]
+        _append_unique(ops, "set", "budget.max_operator", budget.get("max_operator"))
 
 
 def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -616,10 +650,19 @@ def _is_amenity_remove_request(normalized: str, alias: str) -> bool:
 
 def _requested_action(normalized: str) -> str | None:
     """Kiểm tra xem người dùng có yêu cầu thao tác nghiệp vụ không."""
+    if _is_action_capability_question(normalized):
+        return None
     for action, keywords in ACTION_KEYWORDS.items():
         if any(_norm(keyword) in normalized for keyword in keywords):
             return action
     return None
+
+
+def _is_action_capability_question(normalized: str) -> bool:
+    return bool(
+        re.search(r"\b(co the|liệu có|qua web|tren web|trên web|quy trinh|quy định|thu tuc|thủ tục)\b", normalized)
+        or re.search(r"\b(bao nhieu|bao nhiêu|the nao|thế nào|ra sao)\b", normalized)
+    )
 
 
 def _has_current_room(current_state: dict[str, Any] | None) -> bool:
@@ -693,6 +736,331 @@ def _selected_room_id_from_ordinal(normalized: str, current_state: dict[str, Any
     return None
 
 
+def _selected_room_ids_from_ordinals(normalized: str, current_state: dict[str, Any] | None) -> list[str]:
+    if not current_state:
+        return []
+    ids = current_state.get("last_result_ids") or []
+    if not ids:
+        return []
+
+    indices: list[int] = []
+    for match in re.finditer(r"\b(?:phong|phòng)\s*(?:so|số|thu|thứ|#)?\s*(\d{1,2})\b", normalized):
+        index = int(match.group(1)) - 1
+        if index not in indices:
+            indices.append(index)
+
+    word_map = {
+        "mot": 0,
+        "một": 0,
+        "nhat": 0,
+        "nhất": 0,
+        "hai": 1,
+        "ba": 2,
+        "bon": 3,
+        "bốn": 3,
+        "tu": 3,
+        "tư": 3,
+        "nam": 4,
+        "năm": 4,
+    }
+    for match in re.finditer(r"\b(?:phong|phòng)\s+(?:thu|thứ|so|số)?\s*(mot|một|nhat|nhất|hai|ba|bon|bốn|tu|tư|nam|năm)\b", normalized):
+        index = word_map.get(match.group(1))
+        if index is not None and index not in indices:
+            indices.append(index)
+
+    resolved = []
+    for index in indices:
+        if 0 <= index < len(ids):
+            resolved_id = str(ids[index])
+            if resolved_id not in resolved:
+                resolved.append(resolved_id)
+    return resolved
+
+
+def _maybe_replace_location_filters(
+    normalized: str,
+    current_state: dict[str, Any] | None,
+    ops: list[dict[str, Any]],
+) -> None:
+    if not current_state:
+        return
+    current_location = (current_state.get("constraints") or {}).get("location") or {}
+    current_districts = [str(item).strip() for item in (current_location.get("districts") or []) if item]
+    current_landmarks = [str(item).strip() for item in (current_location.get("near_landmarks") or []) if item]
+    new_districts = [op["value"] for op in ops if op.get("op") == "append" and op.get("path") == "location.districts"]
+    new_landmarks = [op["value"] for op in ops if op.get("op") == "append" and op.get("path") == "location.near_landmarks"]
+    if not new_districts and not new_landmarks:
+        return
+
+    additive = bool(re.search(r"\b(them|thêm|hoac|hoặc|ca|cả)\b", normalized))
+    replace_hint = bool(
+        re.search(r"\b(doi sang|đổi sang|chuyen sang|chuyển sang)\b", normalized)
+        or normalized.endswith(" co")
+        or normalized.endswith(" cơ")
+    )
+    if not replace_hint and additive:
+        return
+
+    normalized_current = {_norm(item) for item in current_districts}
+    normalized_new = {_norm(item) for item in new_districts}
+    should_replace_districts = bool(new_districts and current_districts and normalized_new != normalized_current and not additive)
+    if should_replace_districts:
+        ops.insert(0, {"op": "clear", "path": "location.districts"})
+        if current_location.get("wards"):
+            ops.insert(1, {"op": "clear", "path": "location.wards"})
+        if current_landmarks:
+            ops.insert(2, {"op": "clear", "path": "location.near_landmarks"})
+        return
+
+    if replace_hint and new_landmarks and current_landmarks and not additive:
+        ops.insert(0, {"op": "clear", "path": "location.near_landmarks"})
+
+
+def _coerce_llm_payload(raw: Any) -> tuple[dict[str, Any], float]:
+    if isinstance(raw, dict):
+        confidence = raw.get("confidence")
+        try:
+            parsed_confidence = float(confidence)
+        except (TypeError, ValueError):
+            parsed_confidence = 0.0
+        return raw, parsed_confidence
+    if isinstance(raw, tuple) and raw:
+        intent = raw[0] if len(raw) >= 1 else "GENERAL_HELP"
+        confidence = raw[1] if len(raw) >= 2 else 0.0
+        try:
+            parsed_confidence = float(confidence)
+        except (TypeError, ValueError):
+            parsed_confidence = 0.0
+        return {"intent": intent, "operations": []}, parsed_confidence
+    return {}, 0.0
+
+
+def _sanitize_llm_operations(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sanitized: list[dict[str, Any]] = []
+    for item in operations or []:
+        op = item.get("op")
+        path = item.get("path")
+        value = item.get("value")
+        if path == "location.university":
+            path = "location.near_landmarks"
+            op = "append"
+        if path == "location.districts" and isinstance(value, str):
+            value = DISTRICT_ALIASES.get(_norm(value), value.strip())
+        if op not in OP_TYPES or path not in ALLOWED_OPERATION_PATHS:
+            continue
+        clean_item = {"op": op, "path": path}
+        if op != "clear":
+            clean_item["value"] = _clean_value_for_operation(value)
+        if clean_item not in sanitized:
+            sanitized.append(clean_item)
+    return sanitized
+
+
+def _clean_value_for_operation(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _partition_operations(operations: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    hard_ops: list[dict[str, Any]] = []
+    soft_ops: list[dict[str, Any]] = []
+    for item in operations or []:
+        path = item.get("path")
+        if path in HARD_OPERATION_PATHS:
+            if item not in hard_ops:
+                hard_ops.append(item)
+        elif path in SOFT_OPERATION_PATHS:
+            if item not in soft_ops:
+                soft_ops.append(item)
+    return hard_ops, soft_ops
+
+
+def _operation_signature(item: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return item.get("op"), item.get("path"), _clean_value_for_operation(item.get("value"))
+
+
+def _same_operation_set(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+    return {_operation_signature(item) for item in left} == {_operation_signature(item) for item in right}
+
+
+def _router_candidate_summary(parsed: dict[str, Any], confidence: float) -> dict[str, Any]:
+    operations = list(parsed.get("operations", []))
+    hard_ops, soft_ops = _partition_operations(operations)
+    return {
+        "intent": parsed.get("intent", "GENERAL_HELP"),
+        "confidence": confidence,
+        "hard_operations": hard_ops,
+        "soft_operations": soft_ops,
+        "referenced_room_ids": list(parsed.get("referenced_room_ids", []) or []),
+        "requested_action": parsed.get("requested_action"),
+        "current_room_id": parsed.get("current_room_id"),
+    }
+
+
+def _has_router_conflict(regex_candidate: dict[str, Any], llm_candidate: dict[str, Any]) -> bool:
+    if regex_candidate.get("intent") != llm_candidate.get("intent"):
+        return True
+    if list(regex_candidate.get("referenced_room_ids") or []) != list(llm_candidate.get("referenced_room_ids") or []):
+        return True
+    if regex_candidate.get("requested_action") != llm_candidate.get("requested_action"):
+        return True
+    return not _same_operation_set(
+        list(regex_candidate.get("hard_operations") or []),
+        list(llm_candidate.get("hard_operations") or []),
+    )
+
+
+def _build_llm_candidate(
+    llm_intent: str,
+    llm_confidence: float,
+    llm_operations: list[dict[str, Any]],
+    referenced_room_ids: list[str],
+    requested_action: str | None,
+) -> dict[str, Any]:
+    current_room_id = referenced_room_ids[0] if referenced_room_ids else None
+    return _router_candidate_summary(
+        {
+            "intent": llm_intent,
+            "operations": llm_operations,
+            "referenced_room_ids": referenced_room_ids,
+            "requested_action": requested_action,
+            "current_room_id": current_room_id,
+        },
+        llm_confidence,
+    )
+
+
+def _merge_router_decision(
+    regex_parsed: dict[str, Any],
+    regex_candidate: dict[str, Any],
+    llm_candidate: dict[str, Any],
+    verifier: dict[str, Any],
+    current_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    approved_intent = regex_parsed.get("intent", "GENERAL_HELP")
+    if verifier.get("approved_intent") in INTENTS:
+        approved_intent = verifier["approved_intent"]
+    elif verifier.get("use_llm_intent") and llm_candidate.get("intent") in INTENTS:
+        approved_intent = llm_candidate["intent"]
+    elif regex_candidate.get("intent") in INTENTS:
+        approved_intent = regex_candidate["intent"]
+
+    operations = list(regex_parsed.get("operations", []))
+    if verifier.get("use_llm_hard_slots"):
+        _, regex_soft_ops = _partition_operations(operations)
+        operations = list(llm_candidate.get("hard_operations", [])) + regex_soft_ops
+    if verifier.get("allow_llm_soft_slots", True):
+        for item in llm_candidate.get("soft_operations", []):
+            if item not in operations:
+                operations.append(item)
+    for item in verifier.get("approved_operations", []) or []:
+        if item not in operations and item.get("path") in ALLOWED_OPERATION_PATHS and item.get("op") in OP_TYPES:
+            operations.append(item)
+
+    referenced_room_ids = list(regex_parsed.get("referenced_room_ids", []) or [])
+    approved_ids = [
+        _normalize_room_reference(item)
+        for item in (verifier.get("approved_room_ids") or [])
+        if _normalize_room_reference(item)
+    ]
+    if approved_ids:
+        referenced_room_ids = approved_ids
+    elif verifier.get("use_llm_hard_slots"):
+        referenced_room_ids = list(llm_candidate.get("referenced_room_ids", []) or referenced_room_ids)
+
+    requested_action = regex_parsed.get("requested_action")
+    approved_action = verifier.get("approved_requested_action")
+    if approved_action:
+        requested_action = approved_action
+    elif verifier.get("use_llm_hard_slots") and llm_candidate.get("requested_action"):
+        requested_action = llm_candidate.get("requested_action")
+
+    current_room_id = regex_parsed.get("current_room_id")
+    if referenced_room_ids:
+        current_room_id = referenced_room_ids[0]
+    elif not current_room_id and current_state and approved_intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "FIND_SIMILAR"}:
+        current_room_id = current_state.get("current_room_id") or _first_or_none(current_state.get("last_result_ids") or [])
+
+    return {
+        "intent": approved_intent if approved_intent in INTENTS else "GENERAL_HELP",
+        "operations": operations,
+        "current_room_id": current_room_id,
+        "referenced_room_ids": referenced_room_ids,
+        "requested_action": requested_action,
+    }
+
+
+def _default_verifier_decision(regex_candidate: dict[str, Any], llm_candidate: dict[str, Any]) -> dict[str, Any]:
+    regex_intent = regex_candidate.get("intent", "GENERAL_HELP")
+    llm_intent = llm_candidate.get("intent", "GENERAL_HELP")
+    regex_conf = float(regex_candidate.get("confidence") or 0.0)
+    llm_conf = float(llm_candidate.get("confidence") or 0.0)
+    same_hard = _same_operation_set(
+        list(regex_candidate.get("hard_operations") or []),
+        list(llm_candidate.get("hard_operations") or []),
+    ) and list(regex_candidate.get("referenced_room_ids") or []) == list(llm_candidate.get("referenced_room_ids") or [])
+
+    if regex_intent == llm_intent and same_hard:
+        return {
+            "approved_intent": regex_intent,
+            "use_llm_intent": False,
+            "use_llm_hard_slots": False,
+            "allow_llm_soft_slots": True,
+            "approved_room_ids": regex_candidate.get("referenced_room_ids", []),
+            "approved_requested_action": regex_candidate.get("requested_action"),
+            "hard_conflict": False,
+            "reason": "regex_and_llm_agree",
+        }
+
+    if regex_intent == "GENERAL_HELP" and llm_intent != "GENERAL_HELP" and llm_conf >= 0.9:
+        return {
+            "approved_intent": llm_intent,
+            "use_llm_intent": True,
+            "use_llm_hard_slots": same_hard,
+            "allow_llm_soft_slots": True,
+            "approved_room_ids": llm_candidate.get("referenced_room_ids", []),
+            "approved_requested_action": llm_candidate.get("requested_action"),
+            "hard_conflict": not same_hard,
+            "reason": "llm_rescue_for_unclear_regex",
+        }
+
+    return {
+        "approved_intent": regex_intent,
+        "use_llm_intent": False,
+        "use_llm_hard_slots": False,
+        "allow_llm_soft_slots": not _has_router_conflict(regex_candidate, llm_candidate) or same_hard,
+        "approved_room_ids": regex_candidate.get("referenced_room_ids", []),
+        "approved_requested_action": regex_candidate.get("requested_action"),
+        "hard_conflict": not same_hard,
+        "reason": "prefer_regex_hard_slots",
+    }
+
+
+def _should_call_router_verifier(regex_candidate: dict[str, Any], llm_candidate: dict[str, Any]) -> bool:
+    if not _has_router_conflict(regex_candidate, llm_candidate):
+        return False
+    regex_intent = regex_candidate.get("intent", "GENERAL_HELP")
+    llm_intent = llm_candidate.get("intent", "GENERAL_HELP")
+    regex_conf = float(regex_candidate.get("confidence") or 0.0)
+    llm_conf = float(llm_candidate.get("confidence") or 0.0)
+
+    if llm_conf < max(0.85, regex_conf):
+        return False
+    if regex_intent == "GENERAL_HELP" and llm_intent != "GENERAL_HELP":
+        return False
+    if regex_candidate.get("requested_action") != llm_candidate.get("requested_action"):
+        return True
+    if not _same_operation_set(
+        list(regex_candidate.get("hard_operations") or []),
+        list(llm_candidate.get("hard_operations") or []),
+    ):
+        return True
+    if list(regex_candidate.get("referenced_room_ids") or []) != list(llm_candidate.get("referenced_room_ids") or []):
+        return True
+    return regex_intent != llm_intent and llm_conf >= 0.95
+
+
 # ---------------------------------------------------------------------------
 # Tầng 1: Phân loại intent bằng regex
 # Trả về (intent, confidence) — confidence < 1.0 thì cần LLM verify
@@ -745,7 +1113,34 @@ def _regex_classify(
 # Tầng 2: LLM fallback khi regex không chắc chắn
 # ---------------------------------------------------------------------------
 
-from agents.prompts import INTENT_CLASSIFIER_PROMPT as _LLM_SYSTEM_PROMPT
+from agents.prompts import (
+    INTENT_CLASSIFIER_PROMPT as _LLM_SYSTEM_PROMPT,
+    INTENT_ROUTER_VERIFIER_PROMPT as _LLM_ROUTER_VERIFIER_PROMPT,
+)
+
+
+HARD_OPERATION_PATHS: set[str] = {
+    "budget.min",
+    "budget.min_operator",
+    "budget.max",
+    "budget.max_operator",
+    "location.districts",
+    "location.wards",
+}
+
+SOFT_OPERATION_PATHS: set[str] = {
+    "location.near_landmarks",
+    "location.province",
+    "location.max_distance_km",
+    "categories",
+    "occupants",
+    "vehicles",
+    "pets_required",
+    "amenities_required",
+    "amenities_preferred",
+    "excluded_features",
+    "move_in_date",
+}
 
 
 async def _llm_classify_intent(question: str, current_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -776,6 +1171,41 @@ async def _llm_classify_intent(question: str, current_state: dict[str, Any] | No
     return {}
 
 
+async def _llm_verify_routing_decision(
+    question: str,
+    current_state: dict[str, Any] | None,
+    regex_candidate: dict[str, Any],
+    llm_candidate: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from agents.llm_client import groq_complete, GROQ_MODEL_FAST
+
+        payload = {
+            "question": question,
+            "current_state": {
+                "last_intent": (current_state or {}).get("last_intent"),
+                "current_room_id": (current_state or {}).get("current_room_id"),
+                "constraints": (current_state or {}).get("constraints", {}),
+            },
+            "regex_candidate": regex_candidate,
+            "llm_candidate": llm_candidate,
+        }
+        raw = await groq_complete(
+            prompt=json.dumps(payload, ensure_ascii=False),
+            system_prompt=_LLM_ROUTER_VERIFIER_PROMPT,
+            model=GROQ_MODEL_FAST,
+            max_tokens=350,
+            temperature=0.0,
+        )
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            return json.loads(raw[start:end])
+    except Exception:
+        pass
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # API chính: phân tích một lượt người dùng
 # ---------------------------------------------------------------------------
@@ -800,13 +1230,25 @@ def parse_intent_and_constraint_patch(
     _extract_people_and_pets(normalized, operations)
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
+    _apply_relative_budget_refinement(text, normalized, current_state, operations)
+    _maybe_replace_location_filters(normalized, current_state, operations)
 
-    referenced_room_ids = _extract_room_ids(text)
+    referenced_room_ids = [_normalize_room_reference(item) for item in _extract_room_ids(text)]
     selected_room_id = _selected_room_id_from_ordinal(normalized, current_state)
-    if selected_room_id and selected_room_id not in referenced_room_ids:
+    compare_room_ids = _selected_room_ids_from_ordinals(normalized, current_state)
+    if len(compare_room_ids) >= 2:
+        referenced_room_ids = compare_room_ids
+    elif selected_room_id and selected_room_id not in referenced_room_ids:
         referenced_room_ids = [selected_room_id]
     action = _requested_action(normalized)
     intent, _ = _regex_classify(normalized, action, referenced_room_ids, current_state)
+    if len(compare_room_ids) >= 2:
+        intent = "COMPARE_ROOMS"
+    if _is_action_capability_question(normalized) and any(_norm(keyword) in normalized for keywords in ACTION_KEYWORDS.values() for keyword in keywords):
+        intent = "REQUEST_FAQ"
+    if not action and (_has_keyword(normalized, COST_FIELD_KEYWORDS) or _is_action_capability_question(normalized)):
+        if "dat coc" in normalized or "đặt cọc" in text.lower():
+            intent = "REQUEST_FAQ"
     if operations and intent == "GENERAL_HELP":
         intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
     if (
@@ -839,32 +1281,65 @@ async def parse_intent_async(
     current_state: dict[str, Any] | None = None,
 ) -> ParsedRequest:
     """
-    Phân tích một lượt người dùng bằng LLM, hạn chế tối đa Regex.
+    Phân tích một lượt người dùng bằng regex trước, chỉ dùng LLM để cứu
+    các trường hợp regex không đủ chắc hoặc thiếu tín hiệu.
     """
     text = question or ""
-    
-    data = await _llm_classify_intent(text, current_state)
-    
-    intent = data.get("intent", "GENERAL_HELP")
-    if intent not in INTENTS:
-        intent = "GENERAL_HELP"
-        
-    operations = data.get("operations", [])
-    referenced_room_ids = data.get("referenced_room_ids", [])
-    requested_action = data.get("requested_action", None)
-    
-    if not referenced_room_ids:
-        referenced_room_ids = _extract_room_ids(text)
-    
-    current_room_id = referenced_room_ids[0] if referenced_room_ids else None
-    
-    return {
-        "intent": intent,
-        "operations": operations,
-        "current_room_id": current_room_id,
-        "referenced_room_ids": referenced_room_ids,
-        "requested_action": requested_action,
-    }
+    normalized = _norm(text)
+    regex_parsed = parse_intent_and_constraint_patch(text, current_state)
+    regex_intent, regex_confidence = _regex_classify(
+        normalized,
+        regex_parsed.get("requested_action"),
+        regex_parsed.get("referenced_room_ids", []),
+        current_state,
+    )
+
+    raw_llm = await _llm_classify_intent(text, current_state)
+    data, llm_confidence = _coerce_llm_payload(raw_llm)
+    llm_intent = data.get("intent", "GENERAL_HELP")
+    if llm_intent not in INTENTS:
+        llm_intent = "GENERAL_HELP"
+    llm_operations = _sanitize_llm_operations(data.get("operations", []))
+    llm_room_ids = [
+        _normalize_room_reference(item)
+        for item in (data.get("referenced_room_ids") or [])
+        if _normalize_room_reference(item)
+    ]
+    if not llm_room_ids:
+        llm_room_ids = list(regex_parsed.get("referenced_room_ids", []))
+    llm_requested_action = data.get("requested_action") or regex_parsed.get("requested_action")
+
+    regex_candidate = _router_candidate_summary(regex_parsed, regex_confidence)
+    llm_candidate = _build_llm_candidate(
+        llm_intent=llm_intent,
+        llm_confidence=llm_confidence,
+        llm_operations=llm_operations,
+        referenced_room_ids=llm_room_ids,
+        requested_action=llm_requested_action,
+    )
+
+    verifier: dict[str, Any] = {}
+    if _should_call_router_verifier(regex_candidate, llm_candidate):
+        verifier = await _llm_verify_routing_decision(
+            text,
+            current_state,
+            regex_candidate,
+            llm_candidate,
+        )
+    if not verifier:
+        verifier = _default_verifier_decision(regex_candidate, llm_candidate)
+
+    return _merge_router_decision(
+        regex_parsed=regex_parsed,
+        regex_candidate=regex_candidate,
+        llm_candidate=llm_candidate,
+        verifier=verifier,
+        current_state=current_state,
+    )
+
+
+def _first_or_none(values: list[Any]) -> Any | None:
+    return values[0] if values else None
 
 
 

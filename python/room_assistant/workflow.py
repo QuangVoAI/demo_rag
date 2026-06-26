@@ -587,6 +587,27 @@ def _compose_answer_template(
         if not estimate.get("available"):
             return "Dạ em chưa đủ thông tin tính chi phí căn này. Anh/chị cho em xin mã phòng nhé!"
         lines = ["Dạ em tính sương sương chi phí dự kiến cho anh/chị nhé:"]
+        fixed_items = estimate.get("fixed_items") or []
+        if fixed_items:
+            field_labels = {
+                "monthly_rent": "Tiền thuê mỗi tháng",
+                "parking": "Phí gửi xe",
+                "management": "Phí quản lý",
+                "water": "Tiền nước",
+                "wifi": "Wifi",
+                "washing_machine": "Máy giặt",
+            }
+            for item in fixed_items:
+                amount = item.get("amount")
+                if amount is None or amount == 0:
+                    continue
+                label = field_labels.get(str(item.get("field")), _cost_item_label(f"fee_{item.get('field')}"))
+                if item.get("field") == "monthly_rent":
+                    label = "Tiền thuê mỗi tháng"
+                lines.append(f"- {label}: {format_vnd(amount)}")
+        initial_options = estimate.get("initial_payment_options") or []
+        if initial_options and initial_options[0].get("deposit") is not None:
+            lines.append(f"- Tiền cọc: {format_vnd(initial_options[0].get('deposit'))}")
         if estimate.get("rental_months"):
             lines.append(f"- Thời gian thuê: {estimate['rental_months']} tháng")
             for item in estimate.get("period_items", []):

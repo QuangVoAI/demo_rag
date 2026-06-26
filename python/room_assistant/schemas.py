@@ -237,14 +237,14 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     # Price from metadata
     price = metadata.get("price") if "price" in metadata else raw.get("price", raw.get("rent_price"))
 
-    # Status: "0" = phòng trống (available)
+    # Status: "0" or "" = phòng trống (some live rows leave status_code blank)
     status_code = metadata.get("status_code")
     if status_code is not None:
-        is_available = str(status_code) == "0"
+        is_available = str(status_code).strip() in {"0", ""}
     else:
         is_available = raw.get("available") if "available" in raw else (raw.get("status") == "active")
 
-    status_desc = metadata.get("status_desc", "Còn phòng" if is_available else "Hết phòng")
+    status_desc = metadata.get("status_desc") or ("Còn phòng" if is_available else "Hết phòng")
 
     # Location from metadata
     province = metadata.get("province_name") if "province_name" in metadata else raw.get("province")

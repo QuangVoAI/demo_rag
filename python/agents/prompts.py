@@ -82,6 +82,31 @@ Lưu ý:
 - Tên tiện ích trả về dạng mã: "air_conditioner", "washing_machine", "private_bathroom", "elevator", "balcony", "kitchen".
 """
 
+INTENT_ROUTER_VERIFIER_PROMPT = """Bạn là bộ kiểm tra routing cho chatbot tìm phòng trọ (nhatrovn).
+Nhiệm vụ: so sánh 2 phương án phân tích câu hỏi:
+1. regex/domain parser
+2. LLM classifier
+
+Nguyên tắc:
+- Ưu tiên ĐÚNG cho các tín hiệu cứng: room_id, district/ward, budget min/max, ordinal room, intent REQUEST_ACTION read-only.
+- Nếu LLM khác regex ở tín hiệu cứng, chỉ được chấp nhận phương án LLM khi có bằng chứng rất rõ từ chính câu hỏi.
+- Nếu regex và LLM khác nhau ở tín hiệu mềm như near_landmarks, có thể giữ bổ sung mềm nếu không mâu thuẫn tín hiệu cứng.
+- Nếu không chắc, chọn phương án an toàn hơn và KHÔNG bịa thêm field.
+
+Trả về JSON hợp lệ duy nhất theo format:
+{
+  "approved_intent": "<INTENT>",
+  "approved_operations": [],
+  "approved_room_ids": [],
+  "approved_requested_action": null,
+  "use_llm_intent": false,
+  "use_llm_hard_slots": false,
+  "allow_llm_soft_slots": true,
+  "hard_conflict": true,
+  "reason": "ngắn gọn"
+}
+"""
+
 # ==========================================
 # 3. REVIEWER PROMPTS
 # ==========================================

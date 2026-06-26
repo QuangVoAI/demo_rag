@@ -14,6 +14,7 @@ from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.repository import (
     InMemoryRoomRepository,
     MongoRoomRepository,
+    _available_status_query,
     build_mongo_query,
     room_matches_constraints,
 )
@@ -398,7 +399,22 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertFalse(room_matches_constraints(unavailable, constraints))
 
         mongo_query = build_mongo_query(constraints)
-        self.assertIn({"metadata.status_code": "0"}, mongo_query["$and"])
+        self.assertIn(_available_status_query(), mongo_query["$and"])
+
+    def test_normalize_room_treats_blank_status_code_as_available(self):
+        room = normalize_room({
+            "room_id": "Q5-202",
+            "metadata": {
+                "status_code": "",
+                "status_desc": "",
+                "price": 4_300_000,
+                "district_name": "Quận 5",
+            },
+            "embedding_text": "",
+        })
+        self.assertTrue(room["available"])
+        self.assertEqual(room["status"], "active")
+        self.assertEqual(room["status_desc"], "Còn phòng")
 
     def test_mongo_repository_uses_object_id_for_native_room_documents(self):
         try:
@@ -651,6 +667,92 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("Tiền thuê mỗi tháng", answer)
         self.assertIn("Tiền cọc", answer)
         self.assertIn("Tổng tạm tính 6 tháng", answer)
+
+    def test_trace_cost_room_id_with_hash_is_resolved(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "61ea636e3048d576be90729b",
+                "house_id": "61ea636e3048d576be907293",
+                "embedding_text": (
+                    "## Giá & phí\n"
+                    "- Điện: 4k/kWh\n"
+                    "- Nước: 100k/ng\n"
+                    "- Quản lý: 250k/ph\n"
+                    "- Xe: Không có\n"
+                    "- Wifi: Không có\n"
+                    "- Máy giặt: Không có\n"
+                ),
+                "metadata": {
+                    "house_name": "C2-C3 HOÀNG QUỐC VIỆT",
+                    "room_code": "P.204",
+                    "district_name": "Quận 7",
+                    "price": 4_800_000,
+                    "status_code": "0",
+                },
+                "available": True,
+                "status": "active",
+            }
+        ])
+
+        with patch("room_assistant.intent._llm_classify_intent", return_value={
+            "intent": "CALCULATE_COST",
+            "confidence": 1.0,
+            "operations": [],
+            "referenced_room_ids": ["#61ea636e3048d576be90729b"],
+        }):
+            result = asyncio.run(run_room_assistant(
+                "Tính tổng chi phí cho #61ea636e3048d576be90729b",
+                session_id="trace-cost",
+                repository=repo,
+                session_store=InMemorySessionStore(),
+                semantic_index=None,
+            ))
+
+        self.assertEqual(result["intent"], "CALCULATE_COST")
+        self.assertTrue(result["cost_estimate"]["available"])
+        self.assertEqual(result["cost_estimate"]["room_id"], "61ea636e3048d576be90729b")
+        self.assertIn("4.800.000", result["answer"])
+
+    def test_refine_budget_adds_relative_to_existing_max(self):
+        state = default_session_state("trace-budget")
+        state, _ = apply_operations(state, [
+            {"op": "set", "path": "budget.max", "value": 5_000_000},
+            {"op": "set", "path": "budget.max_operator", "value": "lt"},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("Nới ngân sách thêm 1 triệu", state)
+        self.assertIn({"op": "set", "path": "budget.max", "value": 6_000_000}, parsed["operations"])
+        next_state, _ = apply_operations(state, parsed["operations"])
+        self.assertEqual(next_state["constraints"]["budget"]["max"], 6_000_000)
+
+    def test_near_landmark_constraint_matches_embedding_text(self):
+        room = normalize_room({
+            "room_id": "TDTU-1",
+            "metadata": {
+                "price": 3_200_000,
+                "status_code": "0",
+                "district_name": "Quận 7",
+            },
+            "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n- Ghi chú: gần TDTU, tiện đi học",
+            "available": True,
+            "status": "active",
+        })
+        self.assertTrue(
+            room_matches_constraints(
+                room,
+                {"location": {"near_landmarks": ["tdtu"]}},
+            )
+        )
+
+    def test_new_district_replaces_previous_search_district(self):
+        state = default_session_state("trace-district")
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("tìm cho tôi nhà quận 5", state)
+        self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "location.districts", "value": "quan 5"}, parsed["operations"])
 
 
 if __name__ == "__main__":

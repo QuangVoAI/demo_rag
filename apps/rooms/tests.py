@@ -39,8 +39,43 @@ class FakeCollection:
         self.docs = [deepcopy(doc) for doc in (docs or [])]
         self.indexes = []
 
+    def _get_nested(self, doc, key):
+        current = doc
+        for part in str(key).split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return current
+
+    def _match_condition(self, actual, expected):
+        if isinstance(expected, dict):
+            if "$regex" in expected:
+                import re
+
+                pattern = expected["$regex"]
+                flags = re.IGNORECASE if "i" in str(expected.get("$options", "")) else 0
+                return isinstance(actual, str) and re.search(pattern, actual, flags) is not None
+            if "$gte" in expected and not (actual is not None and actual >= expected["$gte"]):
+                return False
+            if "$lte" in expected and not (actual is not None and actual <= expected["$lte"]):
+                return False
+            return True
+        return actual == expected
+
     def _matches(self, doc, query):
-        return all(doc.get(key) == value for key, value in (query or {}).items())
+        query = query or {}
+        for key, value in query.items():
+            if key == "$and":
+                if not all(self._matches(doc, clause) for clause in value):
+                    return False
+                continue
+            if key == "$or":
+                if not any(self._matches(doc, clause) for clause in value):
+                    return False
+                continue
+            if not self._match_condition(self._get_nested(doc, key), value):
+                return False
+        return True
 
     def find_one(self, query=None, sort=None):
         docs = [doc for doc in self.docs if self._matches(doc, query or {})]
@@ -50,6 +85,18 @@ class FakeCollection:
 
     def find(self, query=None):
         return FakeCursor([deepcopy(doc) for doc in self.docs if self._matches(doc, query or {})])
+
+    def distinct(self, key):
+        values = []
+        seen = set()
+        for doc in self.docs:
+            value = self._get_nested(doc, key)
+            marker = json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list)) else value
+            if marker in seen or value is None:
+                continue
+            seen.add(marker)
+            values.append(deepcopy(value))
+        return values
 
     def update_one(self, query, update, upsert=False):
         target = None
@@ -100,6 +147,10 @@ class RecordingCollection(FakeCollection):
     def find(self, query=None):
         self.last_find_query = deepcopy(query or {})
         return super().find(query)
+
+
+class NestedCollection(FakeCollection):
+    pass
 
 
 @override_settings(ALLOWED_HOSTS=["127.0.0.1", "testserver", "localhost"])
@@ -394,9 +445,85 @@ class ChatApiTests(TestCase):
             views._load_filtered_rooms(search_query="(a+)+")
 
         self.assertEqual(
-            rooms.last_find_query["$or"][0]["metadata.house_name"]["$regex"],
+            rooms.last_find_query["$and"][1]["$or"][0]["metadata.house_name"]["$regex"],
             r"\(a\+\)\+",
         )
+
+    def test_load_filtered_rooms_is_not_capped_at_sixty(self):
+        room_docs = [
+            {
+                "room_id": f"R{i}",
+                "metadata": {
+                    "status_code": "0",
+                    "price": i,
+                    "house_name": f"House {i}",
+                    "room_code": f"P{i}",
+                    "district_name": "Quận 7",
+                    "province_name": "Thành phố Hồ Chí Minh",
+                },
+                "embedding_text": "",
+            }
+            for i in range(61)
+        ]
+        rooms = NestedCollection(room_docs)
+
+        with patch("apps.rooms.views.get_collection", return_value=rooms):
+            payload = views._load_filtered_rooms()
+
+        self.assertEqual(len(payload), 61)
+
+    def test_load_filtered_rooms_accepts_blank_status_code_as_available(self):
+        rooms = NestedCollection([
+            {
+                "room_id": "Q5-202",
+                "metadata": {
+                    "status_code": "",
+                    "price": 4_300_000,
+                    "house_name": "1362 VÕ VĂN KIỆT",
+                    "room_code": "202",
+                    "district_name": "Quận 5",
+                    "province_name": "Thành phố Hồ Chí Minh",
+                },
+                "embedding_text": "",
+            }
+        ])
+
+        with patch("apps.rooms.views.get_collection", return_value=rooms):
+            payload = views._load_filtered_rooms(district_slug="quan-5", price_range="0-5")
+
+        self.assertEqual([room["room_id"] for room in payload], ["Q5-202"])
+
+    def test_serialize_rag_response_fills_missing_image_from_room_doc(self):
+        rooms_collection = FakeCollection([
+            {
+                "room_id": "A101",
+                "house_id": "665f00000000000000000001",
+                "metadata": {
+                    "status_code": "0",
+                    "price": 4_500_000,
+                    "house_name": "Studio Bình Thạnh",
+                    "room_code": "P101",
+                },
+                "media": {
+                    "cover_image": "https://cdn.example.com/cover-a101.jpg",
+                },
+                "embedding_text": "",
+            }
+        ])
+
+        def fake_get_collection(name):
+            if name == "rooms":
+                return rooms_collection
+            return FakeCollection([])
+
+        with patch("apps.rooms.views.get_collection", side_effect=fake_get_collection):
+            payload = views._serialize_rag_response({
+                "answer": "OK",
+                "rooms": [{"room_id": "A101", "title": "Studio Bình Thạnh", "image": ""}],
+            })
+
+        self.assertEqual(payload["rooms"][0]["id"], "A101")
+        self.assertEqual(payload["rooms"][0]["image"], "https://cdn.example.com/cover-a101.jpg")
 
 
 @override_settings(ALLOWED_HOSTS=["127.0.0.1", "testserver", "localhost"], RAG_API_KEY="")

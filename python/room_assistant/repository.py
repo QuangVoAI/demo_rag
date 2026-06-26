@@ -9,6 +9,15 @@ from typing import Any, Iterable, Protocol
 from .schemas import normalize_room
 
 
+def _available_status_query() -> dict[str, Any]:
+    return {
+        "$or": [
+            {"metadata.status_code": "0"},
+            {"metadata.status_code": ""},
+        ]
+    }
+
+
 class RoomRepository(Protocol):
     def search_by_constraints(
         self,
@@ -176,7 +185,7 @@ class MongoRoomRepository:
 
         cursor = self._collection.find({
             "$and": [
-                {"metadata.status_code": "0"},
+                _available_status_query(),
                 {"$or": clauses},
             ]
         }).limit(max(limit, 1))
@@ -343,7 +352,7 @@ def _room_lookup_keys(raw: dict[str, Any], normalized: dict[str, Any]) -> set[st
 def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     query: dict[str, Any] = {
         "$and": [
-            {"metadata.status_code": "0"},  # Phòng trống
+            _available_status_query(),  # Phòng trống, chấp nhận status_code rỗng
         ]
     }
 
@@ -380,6 +389,16 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
             ward_clauses.append({"metadata.ward_name": {"$regex": w, "$options": "i"}})
             ward_clauses.append({"embedding_text": {"$regex": w, "$options": "i"}})
         query["$and"].append({"$or": ward_clauses})
+    if location.get("near_landmarks"):
+        landmark_clauses = []
+        for landmark in location["near_landmarks"]:
+            pattern = _accent_flexible_regex(str(landmark))
+            landmark_clauses.extend([
+                {"embedding_text": {"$regex": pattern, "$options": "i"}},
+                {"tien_ich_xq": {"$regex": pattern, "$options": "i"}},
+                {"metadata.house_name": {"$regex": pattern, "$options": "i"}},
+            ])
+        query["$and"].append({"$or": landmark_clauses})
 
     # Amenities/features — search within embedding_text
     required = constraints.get("amenities_required") or []
@@ -424,6 +443,20 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
         target_districts = {_normalize_location_value(item) for item in location["districts"]}
         if room_district and room_district not in target_districts:
             return False
+    if location.get("near_landmarks"):
+        searchable = " ".join(
+            str(part or "")
+            for part in (
+                room.get("embedding_text"),
+                room.get("tien_ich_xq"),
+                room.get("address"),
+                room.get("title"),
+            )
+        )
+        searchable_norm = _normalize_location_value(searchable)
+        for landmark in location["near_landmarks"]:
+            if _normalize_location_value(landmark) not in searchable_norm:
+                return False
 
     # Check required amenities
     required = constraints.get("amenities_required") or []

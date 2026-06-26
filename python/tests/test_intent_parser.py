@@ -168,6 +168,85 @@ class IntentParserTests(unittest.TestCase):
             parsed = asyncio.run(parse_intent_async("Quy trình bên mình ra sao?", None))
         self.assertEqual(parsed["intent"], "REQUEST_FAQ")
 
+    def test_async_llm_university_path_is_mapped_to_near_landmark(self):
+        async def tdtu_llm(_question, _state):
+            return {
+                "intent": "SEARCH_ROOM",
+                "confidence": 0.95,
+                "operations": [{"op": "set", "path": "location.university", "value": "tdtu"}],
+                "referenced_room_ids": [],
+            }
+
+        with patch("room_assistant.intent._llm_classify_intent", tdtu_llm):
+            parsed = asyncio.run(parse_intent_async("có phòng nào gần TDTU k", None))
+        self.assertIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu"},
+            parsed["operations"],
+        )
+
+    def test_async_router_verifier_keeps_regex_hard_slots_on_conflict(self):
+        state = default_session_state("s-verifier")
+
+        async def wrong_llm(_question, _state):
+            return {
+                "intent": "SEARCH_ROOM",
+                "confidence": 0.98,
+                "operations": [{"op": "append", "path": "location.districts", "value": "quan 7"}],
+                "referenced_room_ids": [],
+            }
+
+        async def verifier(_question, _state, _regex_candidate, _llm_candidate):
+            return {
+                "approved_intent": "SEARCH_ROOM",
+                "approved_operations": [],
+                "approved_room_ids": [],
+                "approved_requested_action": None,
+                "use_llm_intent": False,
+                "use_llm_hard_slots": False,
+                "allow_llm_soft_slots": False,
+                "hard_conflict": True,
+                "reason": "district_conflict_keep_regex",
+            }
+
+        with patch("room_assistant.intent._llm_classify_intent", wrong_llm):
+            with patch("room_assistant.intent._llm_verify_routing_decision", verifier):
+                parsed = asyncio.run(parse_intent_async("tìm cho tôi nhà quận 5", state))
+        self.assertIn(
+            {"op": "append", "path": "location.districts", "value": "quan 5"},
+            parsed["operations"],
+        )
+        self.assertNotIn(
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+            parsed["operations"],
+        )
+
+    def test_async_router_verifier_allows_llm_intent_rescue_for_unclear_text(self):
+        async def faq_llm(_question, _state):
+            return {
+                "intent": "REQUEST_FAQ",
+                "confidence": 0.97,
+                "operations": [],
+                "referenced_room_ids": [],
+            }
+
+        async def verifier(_question, _state, _regex_candidate, _llm_candidate):
+            return {
+                "approved_intent": "REQUEST_FAQ",
+                "approved_operations": [],
+                "approved_room_ids": [],
+                "approved_requested_action": None,
+                "use_llm_intent": True,
+                "use_llm_hard_slots": False,
+                "allow_llm_soft_slots": True,
+                "hard_conflict": False,
+                "reason": "llm_better_for_ambiguous_faq",
+            }
+
+        with patch("room_assistant.intent._llm_classify_intent", faq_llm):
+            with patch("room_assistant.intent._llm_verify_routing_decision", verifier):
+                parsed = asyncio.run(parse_intent_async("quy trình bên mình ra sao?", None))
+        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
+
 
 if __name__ == "__main__":
     unittest.main()
