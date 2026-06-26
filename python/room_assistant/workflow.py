@@ -206,6 +206,8 @@ async def run_room_assistant(
         await stream_callback("[status:Tổng hợp|Trợ lý AI] Đang tổng hợp câu trả lời...\n")
 
     rooms = _extract_rooms(tool_results)
+    if tool_results.get("relaxed_search"):
+        rooms = [dict(room, relaxed_search=True) for room in rooms]
     result_ids = [item["room_id"] for item in rooms if item.get("room_id")]
     current_room_id = parsed.get("current_room_id") or _current_room_from_results(parsed["intent"], rooms)
 
@@ -219,8 +221,14 @@ async def run_room_assistant(
     _update_summary(next_state, question, parsed["intent"])
     save_session_state(next_state, store, ttl_seconds)
 
-    grounding = _build_grounding_context(parsed, next_state, tool_results)
-    answer = await _compose_answer_async(question, parsed, grounding, tool_results, history, user_mood, stream_callback)
+    grounding = _build_grounding_context(parsed, next_state, tool_results, question=question)
+    composed = await _compose_answer_async(
+        question, parsed, grounding, tool_results, history, user_mood, stream_callback,
+    )
+    answer = composed.get("answer", "")
+    abstain = bool(composed.get("abstain"))
+    abstain_reason = composed.get("abstain_reason") or ""
+    verification = composed.get("verification") or {}
     suggested_questions = _suggest_questions(parsed["intent"], rooms, current_room_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
@@ -234,6 +242,9 @@ async def run_room_assistant(
         "comparison": tool_results.get("comparison"),
         "suggested_questions": suggested_questions,
         "sources": grounding["sources"],
+        "abstain": abstain,
+        "abstain_reason": abstain_reason if abstain else None,
+        "verification": verification,
         "retrieval_confidence": context.retrieval_trace.get("retrieval_confidence"),
         "retrieval_low_confidence": context.retrieval_trace.get("retrieval_low_confidence"),
         "retrieval_feedback_retry_count": context.retrieval_trace.get("retrieval_feedback_retry_count", 0),
@@ -307,40 +318,47 @@ def _execute_workflow(
         if is_complex:
             # Route to planner (simulated here by standard search but indicating complex branch)
             context.planner_invoked = True
-        
+
         rooms = _tool_registry.execute(
             "search_rooms",
             {"query_text": question, "constraints": constraints, "top_k": 5},
             context,
         )
-        
-        # Implement cache hit assertion / reserve pool refill logic
-        if not rooms and _has_soft_preferences(constraints) and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
-            retry_constraints = dict(constraints)
-            retry_constraints["amenities_preferred"] = []
+        if rooms:
+            return {"rooms": rooms}
+
+        has_district = bool((constraints.get("location") or {}).get("districts"))
+
+        # Bước 1 — nới lỏng các bộ lọc địa lý "mờ" (mốc gần, phường) + tiện ích ưu tiên.
+        # Giữ nguyên quận + ngân sách để vẫn đúng khu vực và túi tiền của khách.
+        soft_constraints, soft_dropped = _relax_soft_filters(constraints)
+        if soft_dropped and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
             rooms = _tool_registry.execute(
                 "search_rooms",
-                {"query_text": question, "constraints": retry_constraints, "top_k": 5},
+                {"query_text": question, "constraints": soft_constraints, "top_k": 5},
                 context,
             )
             if rooms:
-                return {"rooms": rooms, "retrieval_retry": True}
-        
-        if not rooms and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
-            relaxed_constraints = dict(constraints)
-            if "budget" in relaxed_constraints:
-                relaxed_constraints["budget"] = {}
-            if "amenities_required" in relaxed_constraints:
-                relaxed_constraints["amenities_required"] = []
-            
+                return {"rooms": rooms, "relaxed_search": True, "relaxed_fields": soft_dropped}
+        else:
+            soft_constraints = dict(constraints)
+
+        # Bước 2 — nới thêm tiện ích bắt buộc + ngân sách. Nếu vẫn còn quận thì coi là
+        # kết quả cùng khu vực; nếu không có quận thì trả về như gợi ý lân cận.
+        hard_constraints, hard_dropped = _relax_hard_filters(soft_constraints)
+        all_dropped = soft_dropped + hard_dropped
+        if hard_dropped and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
             alt_rooms = _tool_registry.execute(
                 "search_rooms",
-                {"query_text": question, "constraints": relaxed_constraints, "top_k": 3},
+                {"query_text": question, "constraints": hard_constraints, "top_k": 5},
                 context,
             )
-            return {"rooms": [], "alternative_rooms": alt_rooms}
+            if alt_rooms:
+                if has_district:
+                    return {"rooms": alt_rooms, "relaxed_search": True, "relaxed_fields": all_dropped}
+                return {"rooms": [], "alternative_rooms": alt_rooms, "relaxed_fields": all_dropped}
 
-        return {"rooms": rooms}
+        return {"rooms": []}
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         detail = _tool_registry.execute(
@@ -437,19 +455,17 @@ def _input_too_long_result(
 
 def _build_grounding_context(
     parsed: dict[str, Any], state: dict[str, Any], tool_results: dict[str, Any],
+    question: str = "",
 ) -> dict[str, Any]:
     rooms = _extract_rooms(tool_results)
-    sources = []
+    from .sources import build_room_sources
+
+    sources = build_room_sources(rooms, query=question)
     unknown: list[str] = []
     for room in rooms:
         room_id = room.get("room_id")
         if not room_id:
             continue
-        sources.append({
-            "type": "room",
-            "room_id": room_id,
-            "house_id": room.get("house_id"),
-        })
         unknown.extend(f"{room_id}.{field}" for field in _unknown_fields(room))
 
     if tool_results.get("cost_estimate", {}).get("unknown"):
@@ -543,6 +559,42 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
         return context[:3500]
 
 
+def _search_no_result_message(user_mood: str = "normal") -> str:
+    if user_mood == "urgent":
+        return (
+            "Dạ em hiểu mình đang cần gấp ạ. Em chưa thấy căn khớp 100% ngay, "
+            "nhưng nếu mình nới ngân sách một chút hoặc mở rộng khu vực, em lọc lại liền "
+            "để tìm phòng còn trống sớm nhất cho mình nha."
+        )
+    if user_mood == "frustrated":
+        return (
+            "Dạ em hiểu mình tìm mãi cũng hơi mệt ạ. Em chưa thấy căn khớp trọn điều kiện, "
+            "nhưng mình thử nới ngân sách hoặc bỏ bớt 1–2 tiêu chí, em lọc lại ngay — "
+            "chắc chắn sẽ có thêm lựa chọn phù hợp hơn ạ."
+        )
+    return (
+        "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ. "
+        "Anh/chị thử nới ngân sách hoặc mở rộng khu vực giúp em nhé, đảm bảo sẽ có nhiều căn đẹp lắm ạ!"
+    )
+
+
+def _search_alternative_opening(user_mood: str = "normal") -> str:
+    if user_mood == "frustrated":
+        return (
+            "Dạ em hiểu điều kiện hơi khó nên mình hơi mệt khi chưa thấy căn ưng ý ạ. "
+            "Em gợi ý mấy căn gần đúng nhất để mình tham khảo nha:"
+        )
+    if user_mood == "urgent":
+        return (
+            "Dạ em hiểu mình cần gấp ạ. Chưa có căn khớp 100% nhưng em tìm được vài căn "
+            "gần đúng nhất để mình xem trước nha:"
+        )
+    return (
+        "Dạ điều kiện hiện tại hơi khó nên em chưa thấy căn khớp 100% ạ. "
+        "Em gợi ý mấy căn gần đúng nhất để mình tham khảo nha:"
+    )
+
+
 def _compose_answer_template(
     parsed: dict[str, Any],
     grounding: dict[str, Any],
@@ -564,8 +616,22 @@ def _compose_answer_template(
     rooms = grounding["rooms"]
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
         if not rooms:
-            return "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ. Anh/chị thử nới ngân sách hoặc mở rộng khu vực giúp em nhé, đảm bảo sẽ có nhiều căn đẹp lắm ạ!"
-        lines = ["Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây:"]
+            alternative_rooms = [item for item in (tool_results.get("alternative_rooms") or []) if item]
+            if alternative_rooms:
+                alt_lines = [_search_alternative_opening(user_mood)]
+                for idx, room in enumerate(alternative_rooms[:5], 1):
+                    alt_lines.append(
+                        f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
+                        f"chỉ {format_vnd(room.get('rent_price'))}/tháng, "
+                        f"{room.get('district') or 'chưa rõ khu vực'}."
+                    )
+                alt_lines.append("\nNếu mình nới ngân sách hoặc bỏ bớt 1–2 tiêu chí, em sẽ tìm được nhiều căn ưng hơn ạ 😊")
+                return "\n".join(alt_lines)
+            return _search_no_result_message(user_mood)
+        if tool_results.get("relaxed_search"):
+            lines = [f"Dạ {_relaxed_note(tool_results.get('relaxed_fields') or [])} Mấy căn cùng khu vực vẫn ngon mà hợp lý nè:"]
+        else:
+            lines = ["Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây:"]
         landmark_hints = _matching_landmark_hints(rooms, grounding.get("constraints", {}))
         for idx, room in enumerate(rooms[:5], 1):
             landmark_suffix = f", {landmark_hints.get(room.get('room_id'))}" if room.get("room_id") in landmark_hints else ""
@@ -699,25 +765,58 @@ async def _compose_answer_async(
     question: str, parsed: dict[str, Any], grounding: dict[str, Any],
     tool_results: dict[str, Any], history: list[dict[str, Any]], user_mood: str = "normal",
     stream_callback: Callable[[str], Awaitable[None]] | None = None,
-) -> str:
+) -> dict[str, Any]:
     intent = parsed["intent"]
     rooms = grounding.get("rooms", [])
-    
+    verification: dict[str, Any] = {"reviewed": False, "approved": True}
+
+    def _template_answer() -> str:
+        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
+
     if intent in {
         "REQUEST_ACTION",
         "CALCULATE_COST",
         "COMPARE_ROOMS",
         "GENERAL_HELP",
     } or tool_results.get("error"):
-        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
-        
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+        return _finalize_composed_answer(answer, abstain, reason, verification)
+
+    if _is_off_topic_question(question):
+        answer = _compose_answer_template(
+            {"intent": "GENERAL_HELP"},
+            grounding,
+            tool_results,
+            question=question,
+            user_mood=user_mood,
+        )
+        return _finalize_composed_answer(answer, False, "", verification)
+
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
-        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+        return _finalize_composed_answer(answer, abstain, reason, verification)
+
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
-        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+        return _finalize_composed_answer(answer, abstain, reason, verification)
+
     faq = tool_results.get("faq_results")
     if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
-        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+        return _finalize_composed_answer(answer, abstain, reason, verification)
+
     verified_data = _build_llm_context(grounding, tool_results)
     answer = ""
     try:
@@ -725,22 +824,86 @@ async def _compose_answer_async(
         if not rooms and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
             constraints = grounding.get("constraints", {})
             alt_rooms = tool_results.get("alternative_rooms", [])
-            answer = await write_no_result_response(question, constraints, user_mood, alt_rooms, stream_callback=stream_callback)
+            answer = await write_no_result_response(
+                question, constraints, user_mood, alt_rooms, stream_callback=stream_callback,
+            )
         else:
-            answer = await write_response(question=question, verified_context=verified_data, history=history, mood=user_mood, stream_callback=stream_callback)
+            answer = await write_response(
+                question=question,
+                verified_context=verified_data,
+                history=history,
+                mood=user_mood,
+                stream_callback=stream_callback,
+            )
     except Exception:
         pass
     if not answer or len(answer.strip()) < 20:
-        return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
+        answer = _template_answer()
+
     try:
         from config import ENABLE_REVIEWER
-        if not ENABLE_REVIEWER:
-            return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
-        from agents.reviewer import review_with_retry
-        answer, _ = await review_with_retry(question=question, answer=answer, room_context=verified_data, max_retries=1)
+        if ENABLE_REVIEWER:
+            from agents.reviewer import review_with_retry
+            answer, review_result = await review_with_retry(
+                question=question,
+                answer=answer,
+                room_context=verified_data,
+                max_retries=1,
+            )
+            verification = {
+                "reviewed": True,
+                "approved": bool(review_result.get("is_approved", True)),
+                "issues": list(review_result.get("issues") or []),
+            }
+            if not verification["approved"]:
+                abstain, reason = True, "reviewer_rejected"
+                return _finalize_composed_answer(answer, abstain, reason, verification)
     except Exception:
         pass
-    return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
+
+    abstain, reason = _evaluate_abstain(question, intent, grounding, tool_results, answer)
+    if abstain and reason == "unverified_claims":
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+    return _finalize_composed_answer(answer, abstain, reason, verification)
+
+
+def _evaluate_abstain(
+    question: str,
+    intent: str,
+    grounding: dict[str, Any],
+    tool_results: dict[str, Any],
+    answer: str,
+    *,
+    from_template: bool = False,
+) -> tuple[bool, str]:
+    try:
+        from agents.reviewer import should_abstain
+        abstain, reason = should_abstain(question, intent, grounding, tool_results, answer)
+        if from_template and reason == "unverified_claims":
+            return False, ""
+        return abstain, reason
+    except Exception:
+        return False, ""
+
+
+def _finalize_composed_answer(
+    answer: str,
+    abstain: bool,
+    abstain_reason: str,
+    verification: dict[str, Any],
+) -> dict[str, Any]:
+    if abstain:
+        from agents.reviewer import ABSTAIN_USER_MESSAGE
+        answer = ABSTAIN_USER_MESSAGE
+    return {
+        "answer": answer.strip(),
+        "abstain": abstain,
+        "abstain_reason": abstain_reason or None,
+        "verification": verification,
+    }
 
 
 def _extract_rooms(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1138,6 +1301,68 @@ def _is_off_topic_question(question: str) -> bool:
 
 def _has_soft_preferences(constraints: dict[str, Any]) -> bool:
     return bool(constraints.get("amenities_preferred"))
+
+
+def _relax_soft_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Bỏ các điều kiện "mềm"/mờ: mốc gần, phường, tiện ích ưu tiên.
+
+    Đây là các bộ lọc hay khiến tìm kiếm trả về rỗng vì khớp chuỗi quá chặt
+    (tên đường, viết tắt địa danh) dù khu vực vẫn còn phòng.
+    """
+    relaxed = dict(constraints)
+    dropped: list[str] = []
+    location = dict(relaxed.get("location") or {})
+    if location.get("near_landmarks"):
+        location["near_landmarks"] = []
+        dropped.append("near_landmarks")
+    if location.get("wards"):
+        location["wards"] = []
+        dropped.append("wards")
+    relaxed["location"] = location
+    if relaxed.get("amenities_preferred"):
+        relaxed["amenities_preferred"] = []
+        dropped.append("amenities_preferred")
+    return relaxed, dropped
+
+
+def _relax_hard_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Nới các điều kiện "cứng" còn lại: tiện ích bắt buộc và ngân sách.
+
+    Quận được giữ nguyên để kết quả vẫn nằm trong khu vực khách yêu cầu.
+    """
+    relaxed = dict(constraints)
+    dropped: list[str] = []
+    if relaxed.get("amenities_required"):
+        relaxed["amenities_required"] = []
+        dropped.append("amenities_required")
+    if relaxed.get("excluded_features"):
+        relaxed["excluded_features"] = []
+        dropped.append("excluded_features")
+    if relaxed.get("budget"):
+        relaxed["budget"] = {}
+        dropped.append("budget")
+    return relaxed, dropped
+
+
+_RELAX_FIELD_LABELS: dict[str, str] = {
+    "near_landmarks": "vị trí gần mốc bạn nói",
+    "wards": "phường bạn chọn",
+    "amenities_preferred": "vài tiện nghi ưu tiên",
+    "amenities_required": "đủ tiện nghi yêu cầu",
+    "excluded_features": "điều kiện loại trừ",
+    "budget": "mức ngân sách",
+}
+
+
+def _relaxed_note(dropped: list[str]) -> str:
+    labels = [_RELAX_FIELD_LABELS[item] for item in dropped if item in _RELAX_FIELD_LABELS]
+    if not labels:
+        return "em chưa thấy căn khớp đúng 100% nên xin phép nới nhẹ tiêu chí cho mình ạ."
+    return (
+        "em chưa thấy căn khớp đúng "
+        + ", ".join(labels)
+        + " nên em xin phép gợi ý mấy căn gần đúng nhất nha."
+    )
 
 
 def _suggest_questions(intent: str, rooms: list[dict[str, Any]], current_room_id: str | None) -> list[str]:

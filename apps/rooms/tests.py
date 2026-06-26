@@ -525,8 +525,161 @@ class ChatApiTests(TestCase):
         self.assertEqual(payload["rooms"][0]["id"], "A101")
         self.assertEqual(payload["rooms"][0]["image"], "https://cdn.example.com/cover-a101.jpg")
 
+    def test_serialize_rag_response_serializes_object_id_fields(self):
+        oid_room = ObjectId("665f00000000000000000001")
+        oid_source = ObjectId("665f00000000000000000002")
+        oid_trace = ObjectId("665f00000000000000000003")
+        payload = views._serialize_rag_response({
+            "answer": "OK",
+            "rooms": [{
+                "room_id": "A101",
+                "title": "Studio",
+                "property_id": oid_room,
+            }],
+            "sources": [{"type": "room", "room_id": "A101", "property_id": oid_source}],
+            "retrieval_attempts": [{"top_room_ids": ["A101"], "trace_id": oid_trace}],
+        })
+        self.assertEqual(payload["rooms"][0]["property_id"], "665f00000000000000000001")
+        self.assertEqual(payload["sources"][0]["property_id"], "665f00000000000000000002")
+        self.assertEqual(payload["retrieval_attempts"][0]["trace_id"], "665f00000000000000000003")
+
+    def test_customer_get_after_post_returns_persisted_messages(self):
+        body = {
+            "message": "Tìm phòng quận 7",
+            "contact_phone": "0900111333",
+            "contact_name": "Persist QA",
+            "demo_role": "customer",
+        }
+
+        with patch("apps.rooms.views.get_collection", side_effect=self._get_collection):
+            with patch("apps.rooms.views.run_streaming", new=self._stream_response):
+                post = self.client.post(
+                    "/api/chat/",
+                    data=json.dumps(body),
+                    content_type="application/json",
+                )
+                chunks = []
+                for chunk in post.streaming_content:
+                    chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+                final_line = [
+                    line for line in "".join(chunks).splitlines()
+                    if line.startswith("data: ") and '"type": "final"' in line
+                ][-1]
+                post_payload = json.loads(final_line[len("data: "):])["payload"]
+                conv_id = post_payload["conversation_id"]
+
+                reload = self.client.get("/api/chat/", {
+                    "contact_phone": "0900111333",
+                    "contact_name": "Persist QA",
+                    "demo_role": "customer",
+                })
+
+        reload_payload = reload.json()
+        self.assertEqual(reload_payload["conversation_id"], conv_id)
+        self.assertGreaterEqual(len(reload_payload["messages"]), 2)
+        roles = [msg["role"] for msg in reload_payload["messages"]]
+        self.assertIn("user", roles)
+        self.assertIn("assistant", roles)
+
 
 @override_settings(ALLOWED_HOSTS=["127.0.0.1", "testserver", "localhost"], RAG_API_KEY="")
+class ChatTranscriptApiTests(ChatApiTests):
+    """Multi-turn chat API cases mirroring production transcript."""
+
+    async def _transcript_stream(self, question, history=None, session_id="", stream_callback=None):
+        q = (question or "").lower()
+        if "viết code" in q:
+            return {
+                "answer": "Em chỉ hỗ trợ tư vấn phòng trọ, không viết code ạ.",
+                "rooms": [],
+                "suggested_questions": [],
+                "session_state": {"constraints": {}},
+                "intent": "GENERAL_HELP",
+            }
+        if "quận 7" in q or "tdtu" in q:
+            return {
+                "answer": "Dạ còn phòng Quận 7 ạ.",
+                "rooms": [{"room_id": "Q7-ROOM", "title": "Studio Q7", "rent_price": 4_500_000, "district": "Quận 7"}],
+                "suggested_questions": ["Rẻ hơn"],
+                "session_state": {"constraints": {"location": {"districts": ["quan 7"]}}},
+                "intent": "SEARCH_ROOM",
+            }
+        return {
+            "answer": "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ.",
+            "rooms": [],
+            "suggested_questions": [],
+            "session_state": {"constraints": {}},
+            "intent": "SEARCH_ROOM",
+        }
+
+    def _post_chat(self, body: dict) -> dict:
+        with patch("apps.rooms.views.get_collection", side_effect=self._get_collection):
+            with patch("apps.rooms.views.run_streaming", new=self._transcript_stream):
+                response = self.client.post(
+                    "/api/chat/",
+                    data=json.dumps(body),
+                    content_type="application/json",
+                )
+        joined = "".join(
+            chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+            for chunk in response.streaming_content
+        )
+        final_line = [
+            line for line in joined.splitlines()
+            if line.startswith("data: ") and '"type": "final"' in line
+        ][-1]
+        return json.loads(final_line[len("data: "):])["payload"]
+
+    def test_transcript_multi_turn_persists_on_single_customer_thread(self):
+        init = self.client.get("/api/chat/", {
+            "contact_phone": "0900222444",
+            "contact_name": "Transcript QA",
+            "demo_role": "customer",
+        }).json()
+        conv_id = init["conversation_id"]
+
+        questions = [
+            "Tìm phòng ở quận 7",
+            "Căn nào gần TDTU á",
+            "Viết code Python giúp tôi",
+        ]
+        for question in questions:
+            payload = self._post_chat({
+                "message": question,
+                "contact_phone": "0900222444",
+                "contact_name": "Transcript QA",
+                "demo_role": "customer",
+                "conversation_id": conv_id,
+            })
+            self.assertEqual(payload["conversation_id"], conv_id)
+
+        with patch("apps.rooms.views.get_collection", side_effect=self._get_collection):
+            reload = self.client.get("/api/chat/", {
+                "contact_phone": "0900222444",
+                "contact_name": "Transcript QA",
+                "demo_role": "customer",
+            }).json()
+
+        self.assertEqual(reload["conversation_id"], conv_id)
+        self.assertGreaterEqual(len(reload["messages"]), len(questions) * 2)
+
+    def test_staff_can_load_previous_thread_by_conversation_id(self):
+        with patch("apps.rooms.views.get_collection", side_effect=self._get_collection):
+            payload = self.client.get("/api/chat/", {
+                "contact_phone": "0987654321",
+                "contact_name": "Jane Staff",
+                "demo_role": "landlord",
+                "conversation_id": "conv_staff_001",
+            }).json()
+
+        self.assertEqual(payload["conversation_id"], "conv_staff_001")
+        self.assertEqual(payload["messages"][0]["content"], "Khách hỏi studio quận 7")
+        self.assertGreaterEqual(len(payload["threads"]), 2)
+        active_threads = [t for t in payload["threads"] if t.get("active")]
+        self.assertEqual(len(active_threads), 1)
+        self.assertEqual(active_threads[0]["conversation_id"], "conv_staff_001")
+
+
 class RagApiQueryTests(TestCase):
     def setUp(self):
         self.client = Client(HTTP_HOST="127.0.0.1")
@@ -611,13 +764,14 @@ class RagApiQueryTests(TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertTrue(response["X-Request-ID"])
 
-    def test_demo_template_points_to_rag_query_endpoint(self):
+    def test_demo_template_uses_chat_api_for_production_ui(self):
         response = self.client.get("/", secure=True)
         self.assertEqual(response.status_code, 200)
         content = response.content.decode("utf-8", errors="ignore")
-        self.assertIn("/api/rag/query/", content)
-        self.assertIn("/api/rag/stream/", content)
-        self.assertNotIn("/api/chat/", content)
+        self.assertIn("/api/chat/", content)
+        self.assertIn("chat-thread-panel", content)
+        self.assertIn("bootstrapChatSession", content)
+        self.assertNotIn("/api/rag/stream/", content)
 
     @override_settings(RAG_RATE_LIMIT_MAX_REQUESTS=1, RAG_RATE_LIMIT_WINDOW_SECONDS=60)
     def test_rag_query_rate_limit_returns_cooldown_payload(self):

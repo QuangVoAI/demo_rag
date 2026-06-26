@@ -617,9 +617,9 @@ class RoomAssistantCoreTests(unittest.TestCase):
         ))
         self.assertEqual(result["intent"], "SEARCH_ROOM")
         joined = "".join(events)
-        self.assertIn("[status:planning]", joined)
-        self.assertIn("[status:retrieving]", joined)
-        self.assertIn("[status:verifying]", joined)
+        self.assertIn("[status:Phân tích|Hệ thống]", joined)
+        self.assertIn("[status:Truy vấn|Cơ sở dữ liệu]", joined)
+        self.assertIn("[status:Tổng hợp|Trợ lý AI]", joined)
 
     def test_hallucinated_money_falls_back_to_template_answer(self):
         store = InMemorySessionStore()
@@ -702,6 +702,19 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("chỉ hỗ trợ tư vấn phòng trọ", answer)
         self.assertIn("viết code", answer)
         self.assertIn("khu vực", answer)
+
+    def test_frustrated_search_no_result_is_empathetic(self):
+        parsed = {"intent": "SEARCH_ROOM"}
+        grounding = {"rooms": [], "constraints": {}}
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {"rooms": []},
+            question="Tìm hoài không thấy phòng nào",
+            user_mood="frustrated",
+        )
+        self.assertIn("em hiểu", answer.lower())
+        self.assertIn("mệt", answer.lower())
 
     def test_compare_template_highlights_price_area_and_feature_tradeoffs(self):
         parsed = {"intent": "COMPARE_ROOMS"}
@@ -921,6 +934,103 @@ class RoomAssistantCoreTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("tìm cho tôi nhà quận 5", state)
         self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
         self.assertIn({"op": "append", "path": "location.districts", "value": "quan 5"}, parsed["operations"])
+
+    def test_repeated_same_district_clears_stale_ward_and_landmark(self):
+        state = default_session_state("s-stale-loc")
+        state["last_intent"] = "SEARCH_ROOM"
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+            {"op": "append", "path": "location.wards", "value": "tan hung"},
+            {"op": "append", "path": "location.near_landmarks", "value": "nguyen huu tho"},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng ở quận 7", state)
+        self.assertIn({"op": "clear", "path": "location.wards"}, parsed["operations"])
+        self.assertIn({"op": "clear", "path": "location.near_landmarks"}, parsed["operations"])
+
+        next_state, _ = apply_operations(state, parsed["operations"])
+        location = next_state["constraints"]["location"]
+        self.assertEqual(location["districts"], ["quan 7"])
+        self.assertEqual(location["wards"], [])
+        self.assertEqual(location["near_landmarks"], [])
+
+    def test_ward_query_is_accent_flexible(self):
+        query = build_mongo_query({"location": {"wards": ["tan hung"]}})
+        ward_patterns = []
+        for clause in query["$and"]:
+            for option in clause.get("$or", []):
+                if "metadata.ward_name" in option:
+                    ward_patterns.append(option["metadata.ward_name"]["$regex"])
+        self.assertTrue(
+            any(re.search(pattern, "Tân Hưng", re.IGNORECASE) for pattern in ward_patterns)
+        )
+
+    def test_search_relaxes_unmatchable_landmark_and_returns_area_rooms(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "Q7-1",
+                "metadata": {"house_name": "HQV", "room_code": "204", "price": 4_800_000, "status_code": "0", "district_name": "Quận 7"},
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7",
+                "available": True,
+                "status": "active",
+            },
+            {
+                "room_id": "Q7-2",
+                "metadata": {"house_name": "CUBI", "room_code": "107", "price": 4_500_000, "status_code": "0", "district_name": "Quận 7"},
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7",
+                "available": True,
+                "status": "active",
+            },
+        ])
+        state = default_session_state("relax-landmark")
+        state["last_intent"] = "SEARCH_ROOM"
+        state, _ = apply_operations(state, [{"op": "append", "path": "location.districts", "value": "quan 7"}])
+        store = InMemorySessionStore()
+        store.save("relax-landmark", state, ttl_seconds=3600)
+
+        result = asyncio.run(run_room_assistant(
+            "Căn nào mà gần TDTU á",
+            session_id="relax-landmark",
+            repository=repo,
+            session_store=store,
+            semantic_index=None,
+        ))
+        self.assertTrue(result["rooms"])
+        self.assertTrue(all(room["district"] == "Quận 7" for room in result["rooms"]))
+        self.assertIn("vị trí gần mốc", result["answer"])
+
+    def test_repeated_district_run_recovers_after_stale_filters(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "Q7-1",
+                "metadata": {"house_name": "HQV", "room_code": "204", "price": 4_800_000, "status_code": "0", "district_name": "Quận 7"},
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7",
+                "available": True,
+                "status": "active",
+            },
+        ])
+        state = default_session_state("stale-recover")
+        state["last_intent"] = "SEARCH_ROOM"
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+            {"op": "append", "path": "location.wards", "value": "tan hung"},
+            {"op": "append", "path": "location.near_landmarks", "value": "nguyen huu tho"},
+        ])
+        store = InMemorySessionStore()
+        store.save("stale-recover", state, ttl_seconds=3600)
+
+        result = asyncio.run(run_room_assistant(
+            "Tìm phòng ở quận 7",
+            session_id="stale-recover",
+            repository=repo,
+            session_store=store,
+            semantic_index=None,
+        ))
+        self.assertTrue(result["rooms"])
+        self.assertEqual(result["rooms"][0]["room_id"], "Q7-1")
+        location = result["session_state"]["constraints"]["location"]
+        self.assertEqual(location["near_landmarks"], [])
+        self.assertEqual(location["wards"], [])
 
 
 if __name__ == "__main__":

@@ -88,8 +88,9 @@ MONGODB_ROOMS_COLLECTION = os.getenv("MONGODB_ROOMS_COLLECTION", "rooms")
 RAG_LOW_VRAM_MODE = _env_bool("RAG_LOW_VRAM_MODE", True)
 # Cross-encoder reranker rất tốn VRAM — mặc định TẮT trong low-VRAM.
 USE_RERANKER = _env_bool("USE_RERANKER", False)
+RERANK_CANDIDATE_POOL = int(os.getenv("RERANK_CANDIDATE_POOL", "20"))
 TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "6"))
-TOP_K_RERANK = int(os.getenv("TOP_K_RERANK", "3"))
+TOP_K_RERANK = int(os.getenv("TOP_K_RERANK", "5"))
 # Tổng số ký tự evidence đưa vào LLM (cắt cứng để giảm token & latency).
 EVIDENCE_MAX_CHARS = int(os.getenv("EVIDENCE_MAX_CHARS", "3500"))
 # Max tokens cho mỗi lượt sinh câu trả lời.
@@ -98,6 +99,8 @@ ANSWER_MAX_TOKENS = int(os.getenv("ANSWER_MAX_TOKENS", "1024"))
 MAX_USER_QUESTION_CHARS = int(os.getenv("MAX_USER_QUESTION_CHARS", "1200"))
 # Nếu False, bỏ qua reviewer LLM (tiết kiệm token, latency).
 ENABLE_REVIEWER = _env_bool("ENABLE_REVIEWER", False)
+# Khi bật, bot từ chối trả lời nếu thiếu bằng chứng hoặc verifier phát hiện claim không an toàn.
+ENABLE_ABSTAIN = _env_bool("ENABLE_ABSTAIN", True)
 # 0 = tắt rewrite loop; legacy graph luôn dùng config này.
 MAX_REWRITE_RETRIES = int(os.getenv("MAX_REWRITE_RETRIES", "0"))
 # Nếu True và VRAM không đủ, fallback embedding cho router.
@@ -161,6 +164,8 @@ def validate_runtime_config(strict: bool | None = None) -> dict[str, list[str]]:
 
     if TOP_K_RETRIEVAL < 1:
         errors.append("TOP_K_RETRIEVAL must be >= 1")
+    if RERANK_CANDIDATE_POOL < 1:
+        errors.append("RERANK_CANDIDATE_POOL must be >= 1")
     if TOP_K_RERANK < 1:
         errors.append("TOP_K_RERANK must be >= 1")
     if EVIDENCE_MAX_CHARS < 500:

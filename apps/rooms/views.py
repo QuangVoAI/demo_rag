@@ -630,36 +630,12 @@ def _json_safe_value(value: Any) -> Any:
 
 
 def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "") -> dict[str, Any]:
-    rooms = response_dict.get("rooms", [])
+    rooms = _build_rooms_data(response_dict)
     for room in rooms:
         room_id = str(room.get("room_id") or room.get("id") or "").strip()
-        if "rent_price" in room and "price_text" not in room:
-            try:
-                room["price_text"] = f"{int(room['rent_price']):,} VND"
-            except (ValueError, TypeError):
-                room["price_text"] = str(room.get("rent_price", ""))
-        if "area_m2" in room and "area_text" not in room:
-            room["area_text"] = f"{room['area_m2']} m²" if room["area_m2"] else ""
-        if "status_desc" in room and "status_text" not in room:
-            room["status_text"] = room["status_desc"]
-        if "province_name" in room and "city" not in room:
-            room["city"] = room["province_name"]
-        if "category" not in room:
-            room["category"] = "Phòng trọ"
-        if "id" not in room and room_id:
-            room["id"] = room_id
-        if not room.get("image"):
-            room_doc = None
-            if room_id:
-                try:
-                    rooms_col = _get_rooms_collection()
-                    room_doc = rooms_col.find_one({"room_id": room_id})
-                    if not room_doc and len(room_id) == 24:
-                        room_doc = rooms_col.find_one({"_id": ObjectId(room_id)})
-                except Exception:
-                    room_doc = None
-            room["image"] = _resolve_room_image(room_doc or room, room_id or str(room.get("title") or "room"))
-            
+        if room_id and not room.get("detail_url"):
+            room["detail_url"] = f"/tim-phong/{room_id}/"
+
     payload = {
         "success": True,
         "session_id": response_dict.get("session_id") or session_id,
@@ -673,6 +649,10 @@ def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "")
         "follow_ups": response_dict.get("suggested_questions", []),
         "suggested_questions": response_dict.get("suggested_questions", []),
         "sources": response_dict.get("sources", []),
+        "abstain": bool(response_dict.get("abstain")),
+        "abstain_reason": response_dict.get("abstain_reason"),
+        "verification": response_dict.get("verification", {}),
+        "relaxed_search": any(bool(room.get("relaxed_search")) for room in (response_dict.get("rooms") or [])),
         "retrieval_confidence": response_dict.get("retrieval_confidence"),
         "retrieval_low_confidence": response_dict.get("retrieval_low_confidence"),
         "retrieval_feedback_retry_count": response_dict.get("retrieval_feedback_retry_count", 0),
@@ -890,6 +870,29 @@ def _load_chat_messages(conversation_id: str | None) -> list[dict[str, Any]]:
     return list(chat_doc.get("messages", [])) if chat_doc else []
 
 
+def _ensure_chat_history_indexes() -> None:
+    if getattr(_ensure_chat_history_indexes, "_ready", False):
+        return
+
+    chat_history_col = get_collection("chat_history")
+    try:
+        existing_names = {index.get("name") for index in chat_history_col.list_indexes()}
+        if "uniq_conversation_id" not in existing_names:
+            chat_history_col.create_index(
+                [("conversation_id", 1)],
+                name="uniq_conversation_id",
+                unique=True,
+            )
+        if "contact_updated" not in existing_names:
+            chat_history_col.create_index(
+                [("contact_id", 1), ("updated_at", -1)],
+                name="contact_updated",
+            )
+        _ensure_chat_history_indexes._ready = True
+    except Exception:
+        logger.exception("Failed to ensure chat_history indexes")
+
+
 def _ensure_contacts_phone_unique_index() -> None:
     if getattr(_ensure_contacts_phone_unique_index, "_ready", False):
         return
@@ -980,7 +983,18 @@ def _resolve_contact_identity(
             upsert=True,
         )
     except Exception:
-        pass
+        if normalized_phone:
+            try:
+                existing = contacts_col.find_one({"phone_number": normalized_phone})
+            except Exception:
+                existing = None
+            if existing:
+                return {
+                    "contact_id": existing.get("contact_id") or resolved_contact_id,
+                    "contact_name": cleaned_name or existing.get("name", ""),
+                    "contact_phone": normalized_phone,
+                    "role": _normalize_chat_role(existing.get("role")),
+                }
 
     return {
         "contact_id": resolved_contact_id,
@@ -1073,7 +1087,7 @@ def _build_rooms_data(response_dict: dict[str, Any]) -> list[dict[str, Any]]:
         if not normalized:
             continue
 
-        rooms_data.append({
+        entry = {
             "id": normalized["id"],
             "room_id": normalized.get("room_id", normalized["id"]),
             "house_id": normalized.get("house_id", ""),
@@ -1088,7 +1102,13 @@ def _build_rooms_data(response_dict: dict[str, Any]) -> list[dict[str, Any]]:
             "available_room_count": normalized.get("available_room_count"),
             "status_text": normalized.get("status_text", ""),
             "amenities": normalized.get("amenities", [])[:4],
-        })
+            "detail_url": f"/tim-phong/{normalized['id']}/",
+            "relaxed_search": bool(room.get("relaxed_search")),
+        }
+        property_id = room.get("property_id") or normalized.get("property_id")
+        if property_id:
+            entry["property_id"] = property_id
+        rooms_data.append(entry)
     return rooms_data
 
 
@@ -1128,6 +1148,9 @@ def _build_chat_payload(
             "Cho nuôi thú cưng",
         ],
         "filters": _build_ui_filters(response_dict),
+        "sources": response_dict.get("sources", []),
+        "abstain": bool(response_dict.get("abstain")),
+        "relaxed_search": any(bool(room.get("relaxed_search")) for room in (response_dict.get("rooms") or [])),
         "threads": _list_chat_threads(contact_id, role, active_conversation_id=conversation_id),
     }
 
@@ -1155,6 +1178,8 @@ def _sse_event(event: dict[str, Any]) -> str:
 def api_chat(request):
     if request.method not in ["GET", "POST"]:
         return HttpResponseNotAllowed(["GET", "POST"])
+
+    _ensure_chat_history_indexes()
 
     if request.method == "GET":
         explicit_contact_id = request.GET.get("contact_id")

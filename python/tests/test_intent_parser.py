@@ -8,6 +8,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from room_assistant.intent import parse_intent_and_constraint_patch, parse_intent_async
 from room_assistant.schemas import default_session_state
+from room_assistant.session_store import apply_operations
 
 
 class IntentParserTests(unittest.TestCase):
@@ -259,6 +260,66 @@ class IntentParserTests(unittest.TestCase):
         )
         self.assertNotIn(
             {"op": "append", "path": "location.districts", "value": "quan 7"},
+            parsed["operations"],
+        )
+
+    def test_near_landmark_ignores_reference_word_do(self):
+        parsed = parse_intent_and_constraint_patch("Có gợi ý phòng nào gần đó không?")
+        landmarks = [op["value"] for op in parsed["operations"] if op["path"] == "location.near_landmarks"]
+        self.assertEqual(landmarks, [])
+
+    def test_near_landmark_strips_trailing_filler_a(self):
+        parsed = parse_intent_and_constraint_patch("Căn nào mà gần TDTU á")
+        self.assertIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu"},
+            parsed["operations"],
+        )
+        self.assertNotIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu a"},
+            parsed["operations"],
+        )
+
+    def test_street_landmark_drops_duong_prefix(self):
+        parsed = parse_intent_and_constraint_patch(
+            "tìm cho tôi phòng quận 7 ở đường Nguyễn Hữu Thọ"
+        )
+        landmarks = [op["value"] for op in parsed["operations"] if op["path"] == "location.near_landmarks"]
+        self.assertIn("nguyen huu tho", landmarks)
+        self.assertTrue(all("duong" not in str(lm) for lm in landmarks))
+        self.assertIn(
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+            parsed["operations"],
+        )
+
+    def test_new_landmark_replaces_previous_without_doi_sang(self):
+        state = default_session_state("s-landmark-replace")
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+            {"op": "append", "path": "location.near_landmarks", "value": "lotte"},
+        ])
+        parsed = parse_intent_and_constraint_patch("có phòng nào gần TDTU không", state)
+        self.assertIn({"op": "clear", "path": "location.near_landmarks"}, parsed["operations"])
+        landmarks = [
+            op["value"] for op in parsed["operations"]
+            if op.get("path") == "location.near_landmarks" and op.get("op") == "append"
+        ]
+        self.assertIn("tdtu", landmarks)
+        self.assertNotIn("lotte", landmarks)
+
+    def test_district_change_clears_amenities_preferred(self):
+        state = default_session_state("s-amenity-reset")
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+            {"op": "append", "path": "amenities_preferred", "value": "balcony"},
+        ])
+        parsed = parse_intent_and_constraint_patch("tìm phòng quận 1", state)
+        self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
+        self.assertIn({"op": "clear", "path": "amenities_preferred"}, parsed["operations"])
+        next_state, _ = apply_operations(state, parsed["operations"])
+        self.assertEqual(next_state["constraints"]["location"]["districts"], ["quan 1"])
+        self.assertEqual(next_state["constraints"]["amenities_preferred"], [])
+        self.assertIn(
+            {"op": "append", "path": "location.districts", "value": "quan 1"},
             parsed["operations"],
         )
 

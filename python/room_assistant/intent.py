@@ -577,6 +577,7 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     for match in re.finditer(r"\b(?:gan|gần)\s+([a-z0-9 àáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]{2,40})", normalized):
         value = match.group(1).strip()
         value = re.split(r"\b(?:duoi|tren|co|va|khong|ko|k|,|\.)\b", value)[0].strip()
+        value = _clean_landmark(value)
         if value and value not in landmarks:
             landmarks.append(value)
     for landmark in landmarks:
@@ -587,8 +588,9 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     )
     for pattern in street_patterns:
         for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
-            value = match.group(0).strip()
+            value = match.group(1).strip()
             value = re.split(r"\b(?:duoi|tren|co|va|gia|,|\.)\b", value)[0].strip()
+            value = _clean_landmark(value)
             if value:
                 _append_unique(ops, "append", "location.near_landmarks", value)
 
@@ -650,6 +652,37 @@ def _extract_people_and_pets(normalized: str, ops: list[dict[str, Any]]) -> None
 def _contains_phrase(normalized: str, phrase: str) -> bool:
     escaped = re.escape(_norm(phrase))
     return bool(re.search(rf"(?<!\w){escaped}(?!\w)", normalized))
+
+
+# Từ đệm / đại từ chỉ định bị regex "gần …", "đường …" vô tình gom vào địa danh.
+# Loại chúng để tránh tạo near_landmark rác như "do" (từ "gần đó"), "tdtu a" (từ "gần TDTU á").
+_LANDMARK_TRAILING_FILLER: frozenset[str] = frozenset({
+    "a", "ah", "vay", "v", "z", "nha", "nhe", "nhi", "ne",
+    "ko", "k", "kg", "khong", "oi", "luon", "do", "day", "kia",
+})
+# Đại từ chỉ định thuần — không phải địa danh thật ("gần đó", "gần đây", "gần kia").
+_LANDMARK_REFERENCE_ONLY: frozenset[str] = frozenset({
+    "do", "day", "kia", "nay",
+})
+
+
+def _clean_landmark(value: str) -> str | None:
+    """Làm sạch địa danh: bỏ từ đệm cuối câu và loại đại từ chỉ định.
+
+    Trả về None nếu chuỗi không còn là địa danh thật (vd: "đó", "đây").
+    """
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    if not cleaned:
+        return None
+    tokens = cleaned.split(" ")
+    while tokens and tokens[-1] in _LANDMARK_TRAILING_FILLER:
+        tokens.pop()
+    result = " ".join(tokens).strip()
+    if len(result) < 2:
+        return None
+    if result in _LANDMARK_REFERENCE_ONLY:
+        return None
+    return result
 
 
 def _extract_categories(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -848,6 +881,7 @@ def _maybe_replace_location_filters(
         return
     current_location = (current_state.get("constraints") or {}).get("location") or {}
     current_districts = [str(item).strip() for item in (current_location.get("districts") or []) if item]
+    current_wards = [str(item).strip() for item in (current_location.get("wards") or []) if item]
     current_landmarks = [str(item).strip() for item in (current_location.get("near_landmarks") or []) if item]
     new_districts = [op["value"] for op in ops if op.get("op") == "append" and op.get("path") == "location.districts"]
     new_landmarks = [op["value"] for op in ops if op.get("op") == "append" and op.get("path") == "location.near_landmarks"]
@@ -855,27 +889,37 @@ def _maybe_replace_location_filters(
         return
 
     additive = bool(re.search(r"\b(them|thêm|hoac|hoặc|ca|cả)\b", normalized))
-    replace_hint = bool(
-        re.search(r"\b(doi sang|đổi sang|chuyen sang|chuyển sang)\b", normalized)
-        or normalized.endswith(" co")
-        or normalized.endswith(" cơ")
-    )
-    if not replace_hint and additive:
+    if additive:
         return
 
-    normalized_current = {_norm(item) for item in current_districts}
-    normalized_new = {_norm(item) for item in new_districts}
-    should_replace_districts = bool(new_districts and current_districts and normalized_new != normalized_current and not additive)
-    if should_replace_districts:
-        ops.insert(0, {"op": "clear", "path": "location.districts"})
-        if current_location.get("wards"):
-            ops.insert(1, {"op": "clear", "path": "location.wards"})
+    def _prepend_clear(path: str) -> None:
+        clear_op = {"op": "clear", "path": path}
+        if clear_op not in ops:
+            ops.insert(0, clear_op)
+
+    def _district_sets_differ(current: list[str], new: list[str]) -> bool:
+        if not current or not new:
+            return bool(current) != bool(new)
+        return {_norm(item) for item in current} != {_norm(item) for item in new}
+
+    # Lượt tìm kiếm neo theo quận: reset phường/mốc cũ; khi đổi quận thì reset thêm tiện ích ưu tiên.
+    if new_districts:
+        if current_districts and _district_sets_differ(current_districts, new_districts):
+            _prepend_clear("location.districts")
+            if (current_state.get("constraints") or {}).get("amenities_preferred"):
+                _prepend_clear("amenities_preferred")
+        if current_wards:
+            _prepend_clear("location.wards")
         if current_landmarks:
-            ops.insert(2, {"op": "clear", "path": "location.near_landmarks"})
+            _prepend_clear("location.near_landmarks")
         return
 
-    if replace_hint and new_landmarks and current_landmarks and not additive:
-        ops.insert(0, {"op": "clear", "path": "location.near_landmarks"})
+    # Mốc mới (không kèm quận): thay mốc cũ thay vì cộng dồn — trừ khi chỉ lặp lại đúng mốc hiện tại.
+    if new_landmarks and current_landmarks:
+        normalized_new = {_norm(item) for item in new_landmarks}
+        normalized_current = {_norm(item) for item in current_landmarks}
+        if not normalized_new.issubset(normalized_current):
+            _prepend_clear("location.near_landmarks")
 
 
 def _coerce_llm_payload(raw: Any) -> tuple[dict[str, Any], float]:

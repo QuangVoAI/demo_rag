@@ -327,6 +327,16 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized["tien_ich_xq"] = raw.get("tien_ich_xq", "")
     normalized["has_image"] = metadata.get("has_image", False)
     normalized["updated_at"] = raw.get("updated_at")
+
+    source = raw.get("source")
+    source_url = None
+    if isinstance(source, dict):
+        source_url = source.get("url")
+    if not source_url and isinstance(room_id, str) and "#" in room_id:
+        source_url = room_id.split("#", 1)[0]
+    normalized["source_url"] = source_url
+    normalized["listing_id"] = str(room_id)
+
     return normalized
 
 

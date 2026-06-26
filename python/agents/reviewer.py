@@ -174,6 +174,68 @@ async def review_with_retry(
 import re
 from typing import Any
 
+def should_abstain(
+    question: str,
+    intent: str,
+    grounding: dict[str, Any],
+    tool_results: dict[str, Any],
+    answer: str,
+) -> tuple[bool, str]:
+    """Lightweight faithfulness gate without Ragas/DeepEval runtime dependency."""
+    try:
+        from config import ENABLE_ABSTAIN
+    except Exception:
+        ENABLE_ABSTAIN = True
+    if not ENABLE_ABSTAIN:
+        return False, ""
+
+    rooms = grounding.get("rooms") or []
+    estimate = tool_results.get("cost_estimate") or {}
+    q_lower = (question or "").lower()
+    factual_intents = {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "COMPARE_ROOMS"}
+    needs_verified_facts = any(token in q_lower for token in (
+        "cọc", "tiền", "giá", "phí", "bao nhiêu", "tổng", "hợp đồng", "cam kết",
+    ))
+
+    if intent == "CALCULATE_COST" and not estimate.get("available"):
+        return True, "missing_cost_estimate"
+    if intent == "CALCULATE_COST" and estimate.get("available"):
+        return False, ""
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and not rooms:
+        return True, "missing_room_context"
+    if intent in factual_intents and needs_verified_facts and not rooms and not estimate.get("available"):
+        return True, "missing_verified_facts"
+
+    claims: dict[str, Any] = {}
+    if isinstance(estimate, dict) and estimate.get("available"):
+        claims = {
+            "fixed_items": estimate.get("items") or [],
+            "initial_payment_options": [{"deposit": estimate.get("total_initial_cost")}],
+        }
+    elif rooms:
+        claims = {
+            "fixed_items": [
+                {"amount": room.get("rent_price")}
+                for room in rooms
+                if room.get("rent_price")
+            ],
+        }
+
+    if not claims.get("fixed_items") and not claims.get("initial_payment_options"):
+        return False, ""
+
+    issues = deterministic_claim_validator(answer, claims)
+    if issues:
+        return True, "unverified_claims"
+
+    return False, ""
+
+
+ABSTAIN_USER_MESSAGE = (
+    "Dạ em chưa đủ dữ liệu xác minh để trả lời chính xác câu này ạ. "
+    "Anh/chị có thể xem chi tiết phòng bên dưới hoặc nhắn thêm khu vực / ngân sách để em lọc lại giúp mình nha."
+)
+
 SAFE_NUMBER_PATTERNS = [
     r"\b\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|k|nghìn|nghin|đ|d|vnd|vnđ)\b",
 ]

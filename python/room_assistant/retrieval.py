@@ -166,6 +166,13 @@ def _rank_attempt(
         })
 
     ranked.sort(key=lambda item: (item["combined_score"], -item["position"]), reverse=True)
+    ranked = _maybe_rerank_candidates(
+        query_text=query_text,
+        ranked=ranked,
+        candidates=candidates,
+        repository=repository,
+        metadata_boost=cfg["metadata_boost"],
+    )
     ranked_ids = [item["room_id"] for item in ranked[:top_k]]
     authoritative = repository.get_many_by_ids(ranked_ids)
     score_by_id = {item["room_id"]: item for item in ranked}
@@ -195,6 +202,70 @@ def _rank_attempt(
             "semantic_result_count": len(semantic_results),
         },
     }
+
+
+def _maybe_rerank_candidates(
+    query_text: str,
+    ranked: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    repository: RoomRepository,
+    metadata_boost: float,
+) -> list[dict[str, Any]]:
+    try:
+        from config import RERANK_CANDIDATE_POOL, TOP_K_RERANK, USE_RERANKER
+    except Exception:
+        return ranked
+    if not USE_RERANKER or not ranked or not query_text.strip():
+        return ranked
+
+    pool_size = min(len(ranked), RERANK_CANDIDATE_POOL)
+    if pool_size < 2:
+        return ranked
+
+    candidate_by_id = {
+        str(item.get("room_id")): item
+        for item in candidates
+        if item.get("room_id")
+    }
+    docs: list[dict[str, Any]] = []
+    for item in ranked[:pool_size]:
+        room_id = str(item.get("room_id") or "")
+        if not room_id:
+            continue
+        room = candidate_by_id.get(room_id) or repository.get_by_id(room_id) or {}
+        text = str(room.get("embedding_text") or room.get("title") or room_id).strip()
+        docs.append({"id": room_id, "room_id": room_id, "text": text})
+
+    if not docs:
+        return ranked
+
+    try:
+        from retrieval.reranker import rerank
+
+        reranked_docs = rerank(query_text, docs, top_k=min(TOP_K_RERANK, len(docs)))
+    except Exception:
+        return ranked
+
+    rerank_scores = {
+        str(doc.get("room_id") or doc.get("id")): float(doc.get("rerank_score", 0.0))
+        for doc in reranked_docs
+        if doc.get("room_id") or doc.get("id")
+    }
+    for item in ranked:
+        room_id = str(item.get("room_id") or "")
+        if room_id not in rerank_scores:
+            continue
+        item["rerank_score"] = rerank_scores[room_id]
+        item["combined_score"] = rerank_scores[room_id] + float(item.get("metadata_score") or 0.0) * metadata_boost
+
+    ranked.sort(
+        key=lambda item: (
+            float(item.get("rerank_score", item.get("combined_score", 0.0))),
+            -int(item.get("position", 999999)),
+        ),
+        reverse=True,
+    )
+    return ranked
 
 
 def _metadata_filter_from_constraints(constraints: dict[str, Any]) -> dict[str, Any]:

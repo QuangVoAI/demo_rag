@@ -131,25 +131,32 @@
         <button type="button" class="chat-thread-chip chat-thread-chip--action" id="chatNewThreadChip" onclick="resetChatConversation()" hidden>Đoạn chat mới</button>
       </div>
 
-      <div class="chat-thread-panel" id="chatThreadPanel" hidden>
-        <div class="chat-thread-list" id="chatThreadList"></div>
-      </div>
-
-      <div class="chat-messages-wrap" id="chatMessagesWrap">
-        <div class="chat-content-column">
-          <div class="chat-bubble bot chat-bubble--welcome">
-            Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+      <div class="chat-body-layout" id="chatBodyLayout">
+        <aside class="chat-thread-panel" id="chatThreadPanel" hidden>
+          <div class="chat-thread-panel-head">
+            <strong>Lịch sử chat</strong>
           </div>
+          <div class="chat-thread-list" id="chatThreadList"></div>
+        </aside>
+
+        <div class="chat-conversation-pane">
+          <div class="chat-messages-wrap" id="chatMessagesWrap">
+            <div class="chat-content-column">
+              <div class="chat-bubble bot chat-bubble--welcome">
+                Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+              </div>
+            </div>
+          </div>
+
+          <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
+            {% csrf_token %}
+            <div class="chat-input-shell">
+              <input type="text" id="chatMessageInput" placeholder="Nhập câu hỏi tìm phòng của bạn tại đây..." required autocomplete="off" disabled>
+              <button type="submit" id="chatSendBtn" disabled>Gửi</button>
+            </div>
+          </form>
         </div>
       </div>
-
-      <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
-        {% csrf_token %}
-        <div class="chat-input-shell">
-          <input type="text" id="chatMessageInput" placeholder="Nhập câu hỏi tìm phòng của bạn tại đây..." required autocomplete="off" disabled>
-          <button type="submit" id="chatSendBtn" disabled>Gửi</button>
-        </div>
-      </form>
     </div>
   </div>
 
@@ -178,12 +185,47 @@
         threadBar: document.getElementById('chatThreadBar'),
         roleChip: document.getElementById('chatRoleChip'),
         newThreadChip: document.getElementById('chatNewThreadChip'),
+        bodyLayout: document.getElementById('chatBodyLayout'),
         threadPanel: document.getElementById('chatThreadPanel'),
         threadList: document.getElementById('chatThreadList'),
         messagesWrap: document.getElementById('chatMessagesWrap'),
         form: document.getElementById('chatDrawerForm'),
         preauthForm: document.getElementById('chatPreauthForm'),
       };
+    }
+
+    function normalizeChatDisplayRole(role) {
+      return role === 'assistant' ? 'assistant' : 'user';
+    }
+
+    function buildChatApiQuery(params = {}) {
+      const query = new URLSearchParams();
+      if (!chatIdentity) return query;
+      query.set('contact_phone', chatIdentity.phone || '');
+      query.set('contact_name', chatIdentity.name || '');
+      query.set('demo_role', chatIdentity.requestedRole || 'customer');
+      if (params.conversationId) {
+        query.set('conversation_id', params.conversationId);
+      }
+      if (params.newChat) {
+        query.set('new_chat', '1');
+      }
+      return query;
+    }
+
+    async function bootstrapChatSession({ conversationId = null, newChat = false } = {}) {
+      if (!chatIdentity) return null;
+      const query = buildChatApiQuery({ conversationId, newChat });
+      const response = await fetch(`{% url 'rooms:api_chat' %}?${query.toString()}`);
+      const payload = await response.json();
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.message || 'Không tải được lịch sử chat.');
+      }
+      updateChatIdentity(payload);
+      renderChatMessages(payload.messages || []);
+      renderThreadList();
+      syncChatAccessState();
+      return payload;
     }
 
     function isEmployeeIdentity() {
@@ -328,9 +370,10 @@
         return;
       }
       messages.forEach((msg) => {
-        rememberChatMessage(msg.role === 'assistant' ? 'assistant' : 'user', msg.content || '');
-        appendChatBubble(msg.role === 'assistant' ? 'assistant' : 'user', msg.content || '', {
-          markdown: msg.role === 'assistant',
+        const displayRole = normalizeChatDisplayRole(msg.role);
+        rememberChatMessage(displayRole, msg.content || '');
+        appendChatBubble(displayRole, msg.content || '', {
+          markdown: displayRole === 'assistant',
         });
       });
     }
@@ -452,17 +495,19 @@
       syncChatAccessState();
     }
 
-    function resetChatConversation() {
+    async function resetChatConversation() {
+      if (!chatIdentity || !isEmployeeIdentity()) return;
       const { input } = getChatElements();
       input.value = '';
-      renderWelcomeState();
-      if (chatIdentity) {
-        chatIdentity.conversationId = null;
-        chatIdentity.newChatPending = false;
-        chatIdentity.threads = [];
-        renderThreadList();
+      try {
+        await bootstrapChatSession({ newChat: true });
+        chatIdentity.newChatPending = true;
+        renderWelcomeState();
+      } catch (err) {
+        appendChatBubble('assistant', 'Không tạo được đoạn chat mới. Vui lòng thử lại.', { extraClass: 'error' });
+        console.error(err);
       }
-      if (chatIdentity && !getChatElements().input.disabled) {
+      if (!getChatElements().input.disabled) {
         input.focus();
       }
     }
@@ -495,7 +540,7 @@
     }
 
     function syncChatAccessState() {
-      const { overlay, main, input, sendBtn, threadBar, roleChip, newThreadChip, threadPanel } = getChatElements();
+      const { overlay, main, input, sendBtn, threadBar, roleChip, newThreadChip, threadPanel, bodyLayout } = getChatElements();
 
       if (chatIdentity) {
         overlay.classList.add('hidden');
@@ -508,6 +553,9 @@
         roleChip.dataset.role = isEmployee ? 'employee' : 'customer';
         newThreadChip.hidden = !isEmployee;
         newThreadChip.style.display = isEmployee ? 'inline-flex' : 'none';
+        if (bodyLayout) {
+          bodyLayout.classList.toggle('has-threads', isEmployee);
+        }
         if (!isEmployee) {
           threadPanel.hidden = true;
         }
@@ -524,9 +572,12 @@
       newThreadChip.hidden = true;
       newThreadChip.style.display = 'none';
       threadPanel.hidden = true;
+      if (bodyLayout) {
+        bodyLayout.classList.remove('has-threads');
+      }
     }
 
-    function handleChatIdentitySubmit(e) {
+    async function handleChatIdentitySubmit(e) {
       e.preventDefault();
       const name = document.getElementById('chatIdentityName').value.trim();
       const phone = document.getElementById('chatIdentityPhone').value.trim();
@@ -547,9 +598,17 @@
       };
 
       submitBtn.disabled = true;
-      syncChatAccessState();
-      renderWelcomeState();
-      submitBtn.disabled = false;
+      try {
+        await bootstrapChatSession();
+      } catch (err) {
+        chatIdentity = null;
+        syncChatAccessState();
+        alert('Không kết nối được lịch sử chat. Vui lòng thử lại.');
+        console.error(err);
+        return;
+      } finally {
+        submitBtn.disabled = false;
+      }
     }
 
     function buildFollowUps(chips) {
@@ -564,46 +623,86 @@
       return wrapper;
     }
 
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function buildRoomCards(rooms) {
+      const cardsContainer = document.createElement('div');
+      cardsContainer.className = 'chat-cards-grid';
+      (rooms || []).forEach(room => {
+        const detailUrl = room.detail_url || (room.id || room.room_id ? `/tim-phong/${room.id || room.room_id}/` : '#');
+        const card = document.createElement('a');
+        card.className = 'chat-card-inline';
+        card.href = detailUrl;
+        const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
+        const relaxedBadge = room.relaxed_search
+          ? '<span class="chat-card-badge">Gợi ý gần đúng</span>'
+          : '';
+        card.innerHTML = `
+          ${room.image ? `<img src="${escapeHtml(room.image)}" alt="${escapeHtml(room.title || 'Phòng trọ')}">` : ''}
+          <div class="chat-card-body">
+            <div class="chat-card-topline">
+              <span class="chat-card-location">${escapeHtml(room.district || '')}${room.city ? ' • ' + escapeHtml(room.city) : ''}</span>
+              ${relaxedBadge}
+            </div>
+            <h4>${escapeHtml(room.title || 'Phòng phù hợp')}</h4>
+            <p class="price">${escapeHtml(room.price_text || '')}</p>
+            <p class="meta">${escapeHtml(metaParts.join(' • '))}</p>
+            <div class="chat-card-amenities">${(room.amenities || []).slice(0, 4).map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>
+            <p class="address">${escapeHtml(room.address || '')}</p>
+            <span class="chat-card-cta">Xem chi tiết</span>
+          </div>
+        `;
+        cardsContainer.appendChild(card);
+      });
+      return cardsContainer;
+    }
+
+    function renderSourcesFooter(sources) {
+      if (!sources || !sources.length) return null;
+      const footer = document.createElement('div');
+      footer.className = 'chat-sources-footnote';
+      const items = sources.slice(0, 3).map((source, index) => {
+        const label = source.title || source.listing_id || source.room_id || `Nguồn ${index + 1}`;
+        const href = source.detail_url || (source.listing_id ? `/tim-phong/${source.listing_id}/` : (source.source_url || '#'));
+        const updated = source.updated_at ? (() => {
+          const parsedDate = new Date(source.updated_at);
+          return Number.isNaN(parsedDate.getTime()) ? '' : ` • cập nhật ${parsedDate.toLocaleDateString('vi-VN')}`;
+        })() : '';
+        const excerpt = source.excerpt ? `<span class="chat-source-excerpt">${escapeHtml(source.excerpt)}</span>` : '';
+        return `<div class="chat-source-item"><a href="${escapeHtml(href)}">${escapeHtml(label)}</a>${escapeHtml(updated)}${excerpt}</div>`;
+      });
+      footer.innerHTML = `<div class="chat-sources-title">Nguồn tham chiếu</div>${items.join('')}`;
+      return footer;
+    }
+
     function renderRagPayload(result, targetBubble) {
       const { messagesWrap } = getChatElements();
       if (result.success) {
         const answerText = result.reply || result.answer || '';
+        targetBubble.classList.toggle('chat-bubble--abstain', Boolean(result.abstain));
         targetBubble.innerHTML = formatMarkdown(answerText);
         rememberChatMessage('assistant', answerText);
 
+        if (result.relaxed_search) {
+          const note = document.createElement('p');
+          note.className = 'chat-relaxed-note';
+          note.textContent = 'Em đã nới một số điều kiện lọc để gợi ý các phòng gần đúng nhất.';
+          messagesWrap.appendChild(note);
+        }
+
         if (result.rooms && result.rooms.length > 0) {
-          const cardsContainer = document.createElement('div');
-          cardsContainer.className = 'chat-cards-grid';
+          messagesWrap.appendChild(buildRoomCards(result.rooms));
+        }
 
-          result.rooms.forEach(room => {
-            const roomRef = room.id || room.room_id;
-            const card = document.createElement('a');
-            card.className = 'chat-card-inline';
-            card.href = roomRef ? `/tim-phong/${roomRef}/` : '#';
-            const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
-            const idLines = [
-              room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
-              room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
-            ].filter(Boolean).join('');
-            card.innerHTML = `
-              ${room.image ? `<img src="${room.image}" alt="${room.title || room.room_id || 'room'}">` : ''}
-              <div class="chat-card-body">
-                <div class="chat-card-topline">
-                  <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
-                </div>
-                <h4>${room.title || room.room_id || 'Phòng phù hợp'}</h4>
-                ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
-                <p class="price">${room.price_text || ''}</p>
-                <p class="meta">${metaParts.join(' • ')}</p>
-                <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
-                <p class="address">${room.address || ''}</p>
-                <span class="chat-card-cta">Xem chi tiết</span>
-              </div>
-            `;
-            cardsContainer.appendChild(card);
-          });
-
-          messagesWrap.appendChild(cardsContainer);
+        const sourcesFooter = renderSourcesFooter(result.sources);
+        if (sourcesFooter) {
+          messagesWrap.appendChild(sourcesFooter);
         }
 
         const followUps = result.follow_ups || result.suggested_questions || [];
@@ -619,254 +718,16 @@
 
     async function selectChatThread(conversationId) {
       if (!chatIdentity || !conversationId) return;
-      chatIdentity.conversationId = conversationId;
-      renderThreadList();
-    }
-
-    async function handleChatSubmit(e) {
-      e.preventDefault();
-      if (!chatIdentity) return;
-      const { input, sendBtn, messagesWrap } = getChatElements();
-      const message = input.value.trim();
-      if (!message) return;
-
-      input.value = '';
-      input.disabled = true;
-      sendBtn.disabled = true;
-      appendChatBubble('user', message);
-      rememberChatMessage('user', message);
-
-      const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
-      existingSuggestions.forEach(el => el.remove());
-
-      const typingBubble = document.createElement('div');
-      typingBubble.className = 'chat-bubble bot typing';
-      typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
-      messagesWrap.appendChild(typingBubble);
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
-
-      try {
-        const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
-        const response = await fetch("{% url 'rooms:api_rag_stream' %}", {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': csrfToken,
-          },
-          body: JSON.stringify({
-            message,
-            session_id: chatIdentity.conversationId || chatIdentity.contactId || '',
-            history: chatHistory.slice(0, -1),
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error('RAG response unavailable');
-        }
-
-        if ((response.headers.get('Content-Type') || '').includes('application/json')) {
-          chatStatusAnimationToken += 1;
-          const result = await response.json();
-          typingBubble.className = 'chat-bubble bot';
-          typingBubble.textContent = '';
-          if (result.success) {
-            updateChatIdentity(result);
-            chatIdentity.newChatPending = false;
-            renderThreadList();
-            renderRagPayload(result, typingBubble);
-          } else {
-            typingBubble.classList.add('error');
-            typingBubble.textContent = result.message || 'Đã xảy ra lỗi.';
-          }
-          return;
-        }
-
-        if (!response.body) {
-          throw new Error('Streaming body unavailable');
-        }
-
-        typingBubble.className = 'chat-bubble bot';
-        typingBubble.textContent = '';
-        const botBubble = typingBubble;
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let streamedText = '';
-
-        const renderFinalPayload = (result, targetBubble = botBubble) => {
-          if (result.success) {
-            targetBubble.innerHTML = formatMarkdown(result.reply);
-            updateChatIdentity(result);
-            renderThreadList();
-
-            if (result.rooms && result.rooms.length > 0) {
-              const cardsContainer = document.createElement('div');
-              cardsContainer.className = 'chat-cards-grid';
-
-              result.rooms.forEach(room => {
-                const card = document.createElement('a');
-                card.className = 'chat-card-inline';
-                card.href = `/tim-phong/${room.id}/`;
-                const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
-                const idLines = [
-                  room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
-                  room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
-                ].filter(Boolean).join('');
-                card.innerHTML = `
-                  <img src="${room.image}" alt="${room.title}">
-                  <div class="chat-card-body">
-                    <div class="chat-card-topline">
-                      <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
-                    </div>
-                    <h4>${room.title}</h4>
-                    ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
-                    <p class="price">${room.price_text}</p>
-                    <p class="meta">${metaParts.join(' • ')}</p>
-                    <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
-                    <p class="address">${room.address}</p>
-                    <span class="chat-card-cta">Xem chi tiết</span>
-                  </div>
-                `;
-                cardsContainer.appendChild(card);
-              });
-
-              messagesWrap.appendChild(cardsContainer);
-            }
-
-            if (result.follow_ups && result.follow_ups.length) {
-              messagesWrap.appendChild(buildFollowUps(result.follow_ups));
-            }
-          } else {
-            targetBubble.classList.add('error');
-            targetBubble.textContent = result.message || 'Đã xảy ra lỗi.';
-          }
-        };
-
-        const processSseEvent = (rawEvent) => {
-          const lines = rawEvent.split('\n');
-          const dataLines = lines.filter(line => line.startsWith('data:'));
-          if (!dataLines.length) return;
-          const dataText = dataLines.map(line => line.slice(5).trimStart()).join('\n');
-          if (!dataText) return;
-
-          const event = JSON.parse(dataText);
-          if (event.type === 'status') {
-            if (!streamedText) {
-              botBubble.textContent = event.message || 'Đang xử lý...';
-            }
-            messagesWrap.scrollTop = messagesWrap.scrollHeight;
-            return;
-          }
-          if (event.type === 'token') {
-            streamedText += event.content || '';
-            botBubble.textContent = streamedText;
-            messagesWrap.scrollTop = messagesWrap.scrollHeight;
-            return;
-          }
-          if (event.type === 'final') {
-            if (chatIdentity) {
-              chatIdentity.newChatPending = false;
-            }
-            renderFinalPayload(event.payload || {});
-            messagesWrap.scrollTop = messagesWrap.scrollHeight;
-            return;
-          }
-          if (event.type === 'error') {
-            botBubble.classList.add('error');
-            botBubble.textContent = event.message || 'Đã xảy ra lỗi.';
-          }
-        };
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split('\n\n');
-          buffer = parts.pop() || '';
-          parts.forEach(processSseEvent);
-        }
-        if (buffer.trim()) {
-          processSseEvent(buffer);
-        }
-      } catch (err) {
-        typingBubble.remove();
-        appendChatBubble('assistant', 'Lỗi kết nối mạng. Vui lòng thử lại sau.', { extraClass: 'error' });
-        console.error(err);
-      } finally {
-        input.disabled = false;
-        sendBtn.disabled = false;
-        input.focus();
+      if (conversationId === chatIdentity.conversationId) {
+        renderThreadList();
+        return;
       }
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
-    }
-
-    async function handleChatSubmit(e) {
-      e.preventDefault();
-      if (!chatIdentity) return;
-      const { input, sendBtn, messagesWrap } = getChatElements();
-      const message = input.value.trim();
-      if (!message) return;
-
-      input.value = '';
-      input.disabled = true;
-      sendBtn.disabled = true;
-      appendChatBubble('user', message);
-      rememberChatMessage('user', message);
-
-      const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
-      existingSuggestions.forEach(el => el.remove());
-
-      const typingBubble = document.createElement('div');
-      typingBubble.className = 'chat-bubble bot typing';
-      typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
-      messagesWrap.appendChild(typingBubble);
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
-
       try {
-        const response = await fetch("{% url 'rooms:api_rag_query' %}", {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            message,
-            session_id: chatIdentity.conversationId || chatIdentity.contactId || '',
-            history: chatHistory.slice(0, -1),
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error('RAG response unavailable');
-        }
-
-        const result = await response.json();
-        typingBubble.className = 'chat-bubble bot';
-        typingBubble.textContent = '';
-
-        if (result.success) {
-          updateChatIdentity(result);
-          chatIdentity.newChatPending = false;
-          renderThreadList();
-          renderRagPayload(result, typingBubble);
-        } else if (result.rate_limited) {
-          startChatCooldown(result.retry_after_seconds, typingBubble);
-        } else {
-          typingBubble.classList.add('error');
-          typingBubble.textContent = result.message || 'Đã xảy ra lỗi.';
-        }
+        await bootstrapChatSession({ conversationId });
       } catch (err) {
-        typingBubble.remove();
-        appendChatBubble('assistant', 'Lỗi kết nối mạng. Vui lòng thử lại sau.', { extraClass: 'error' });
+        appendChatBubble('assistant', 'Không tải được đoạn chat này. Vui lòng thử lại.', { extraClass: 'error' });
         console.error(err);
-      } finally {
-        if (!chatCooldownTimer) {
-          input.disabled = false;
-          sendBtn.disabled = false;
-          input.focus();
-        }
       }
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
     }
 
     async function handleChatSubmit(e) {
@@ -921,7 +782,7 @@
 
       try {
         const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
-        const response = await fetch("{% url 'rooms:api_rag_stream' %}", {
+        const response = await fetch("{% url 'rooms:api_chat' %}", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -929,7 +790,11 @@
           },
           body: JSON.stringify({
             message,
-            session_id: chatIdentity.conversationId || chatIdentity.contactId || '',
+            contact_phone: chatIdentity.phone,
+            contact_name: chatIdentity.name,
+            demo_role: chatIdentity.requestedRole,
+            conversation_id: chatIdentity.conversationId || '',
+            new_chat: chatIdentity.newChatPending ? '1' : '0',
             history: chatHistory.slice(0, -1),
           })
         });

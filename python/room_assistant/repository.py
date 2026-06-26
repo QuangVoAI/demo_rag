@@ -386,8 +386,10 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     if location.get("wards"):
         ward_clauses = []
         for w in location["wards"]:
-            ward_clauses.append({"metadata.ward_name": {"$regex": w, "$options": "i"}})
-            ward_clauses.append({"embedding_text": {"$regex": w, "$options": "i"}})
+            # Dùng regex linh hoạt dấu để "tan hung" khớp "Tân Hưng" trong dữ liệu có dấu.
+            pattern = _accent_flexible_regex(str(w))
+            ward_clauses.append({"metadata.ward_name": {"$regex": pattern, "$options": "i"}})
+            ward_clauses.append({"embedding_text": {"$regex": pattern, "$options": "i"}})
         query["$and"].append({"$or": ward_clauses})
     if location.get("near_landmarks"):
         landmark_clauses = []
