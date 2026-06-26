@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Router Agent — Phân loại loại tương tác của người dùng trên nhatrovn.
 
@@ -10,18 +12,16 @@ Chiến lược:
   1. Fast classify bằng keyword (không cần model)
   2. Embedding similarity khi keyword không đủ rõ
 """
-import numpy as np
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from agents.model_registry import get_embed_model
 from utils.console import console
 
 # Singleton centroids cho embedding-based classification
-_search_centroid: np.ndarray | None = None
-_question_centroid: np.ndarray | None = None
-_casual_centroid: np.ndarray | None = None
+_search_centroid: list[float] | None = None
+_question_centroid: list[float] | None = None
+_casual_centroid: list[float] | None = None
 
 # ---------------------------------------------------------------------------
 # Từ khóa tốc độ nhanh (không dùng embedding)
@@ -62,6 +62,12 @@ _CASUAL_SEEDS = [
 ]
 
 
+def get_embed_model():
+    from agents.model_registry import get_embed_model as _get_embed_model
+
+    return _get_embed_model()
+
+
 def _ensure_centroids() -> None:
     global _search_centroid, _question_centroid, _casual_centroid
     if _search_centroid is not None:
@@ -69,10 +75,9 @@ def _ensure_centroids() -> None:
     model = get_embed_model()
     console.print("[dim]  Router: đang tính centroids...[/]")
 
-    def _centroid(seeds: list[str]) -> np.ndarray:
+    def _centroid(seeds: list[str]) -> list[float]:
         embs = model.encode(seeds, normalize_embeddings=True, batch_size=32)
-        c = np.mean(embs, axis=0)
-        return c / np.linalg.norm(c)
+        return _l2_normalize(_mean_vector(embs))
 
     _search_centroid   = _centroid(_SEARCH_SEEDS)
     _question_centroid = _centroid(_QUESTION_SEEDS)
@@ -115,12 +120,12 @@ def classify(question: str) -> str:
 
     _ensure_centroids()
     model = get_embed_model()
-    q_emb = model.encode(question, normalize_embeddings=True)
+    q_emb = _vector_to_list(model.encode(question, normalize_embeddings=True))
 
     scores = {
-        "SEARCH":   float(np.dot(q_emb, _search_centroid)),    # type: ignore[arg-type]
-        "QUESTION": float(np.dot(q_emb, _question_centroid)),  # type: ignore[arg-type]
-        "CASUAL":   float(np.dot(q_emb, _casual_centroid)),    # type: ignore[arg-type]
+        "SEARCH":   _dot(q_emb, _search_centroid or []),
+        "QUESTION": _dot(q_emb, _question_centroid or []),
+        "CASUAL":   _dot(q_emb, _casual_centroid or []),
     }
     # Ưu tiên nhẹ cho SEARCH — đây là luồng chính của nhatrovn
     scores["SEARCH"] += 0.02
@@ -131,3 +136,29 @@ def classify(question: str) -> str:
         f"question={scores['QUESTION']:.3f} casual={scores['CASUAL']:.3f} → {result}[/]"
     )
     return result
+
+
+def _vector_to_list(vector) -> list[float]:
+    return [float(value) for value in vector]
+
+
+def _mean_vector(vectors) -> list[float]:
+    rows = [_vector_to_list(vector) for vector in vectors]
+    if not rows:
+        return []
+    width = len(rows[0])
+    return [
+        sum(row[idx] for row in rows) / len(rows)
+        for idx in range(width)
+    ]
+
+
+def _l2_normalize(vector: list[float]) -> list[float]:
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm <= 0:
+        return vector
+    return [value / norm for value in vector]
+
+
+def _dot(left: list[float], right: list[float]) -> float:
+    return float(sum(a * b for a, b in zip(left, right)))

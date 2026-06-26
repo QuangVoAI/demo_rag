@@ -92,37 +92,73 @@
         </span>
         <div>
           <h3>CSKH nhatrovn</h3>
-          <div style="margin-top: 6px; display: flex; gap: 6px; align-items: center;">
-            <span style="font-size: 11px; opacity: 0.8;">Contact ID:</span>
-            <input type="text" id="chatContactIdInput" value="c_user_001" style="font-size: 11px; padding: 2px 6px; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; background: rgba(0,0,0,0.15); color: inherit; width: 120px;" onchange="changeChatContact()" onkeydown="if(event.key === 'Enter') { this.blur(); }">
-          </div>
           <small>Hỗ trợ tìm phòng theo khu vực, giá và tiện ích</small>
         </div>
       </div>
       <div class="chat-header-actions">
-        <button class="chat-reset-btn" type="button" onclick="resetChatDrawer()">Làm mới</button>
         <button class="chat-close-btn" type="button" onclick="closeChatDrawer()" aria-label="Đóng chat">&times;</button>
       </div>
     </div>
-    
-    <div class="chat-messages-wrap" id="chatMessagesWrap">
-      <div class="chat-content-column">
-        <div class="chat-bubble bot chat-bubble--welcome">
-          Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+
+    <div class="chat-main" id="chatMain">
+      <div class="chat-preauth-overlay" id="chatPreauthOverlay">
+        <form class="chat-preauth-form" id="chatPreauthForm" onsubmit="handleChatIdentitySubmit(event)">
+          <div class="chat-preauth-copy">
+            <h4>Bắt đầu trò chuyện</h4>
+            <p>Nhập thông tin để tiếp tục.</p>
+          </div>
+          <div class="chat-preauth-grid">
+            <label class="chat-preauth-field">
+              <span>Họ và tên</span>
+              <input type="text" id="chatIdentityName" placeholder="Ví dụ: Nguyễn Văn A" required autocomplete="name">
+            </label>
+            <label class="chat-preauth-field">
+              <span>Số điện thoại</span>
+              <input type="tel" id="chatIdentityPhone" placeholder="Ví dụ: 0909 123 456" required autocomplete="tel">
+            </label>
+          </div>
+          <div class="chat-role-toggle" id="chatRoleToggle" role="group" aria-label="Chọn vai trò demo">
+            <button type="button" class="chat-role-option active" data-role="customer" onclick="selectChatRole('customer')">Khách</button>
+            <button type="button" class="chat-role-option" data-role="landlord" onclick="selectChatRole('landlord')">Nhân viên</button>
+          </div>
+          <input type="hidden" id="chatIdentityRole" value="customer">
+          <button type="submit" class="chat-preauth-submit">Tiếp tục</button>
+        </form>
+      </div>
+
+      <div class="chat-thread-bar" id="chatThreadBar" hidden>
+        <span class="chat-thread-chip chat-thread-chip--role" id="chatRoleChip">Khách</span>
+        <button type="button" class="chat-thread-chip chat-thread-chip--action" id="chatNewThreadChip" onclick="resetChatConversation()" hidden>Đoạn chat mới</button>
+      </div>
+
+      <div class="chat-thread-panel" id="chatThreadPanel" hidden>
+        <div class="chat-thread-list" id="chatThreadList"></div>
+      </div>
+
+      <div class="chat-messages-wrap" id="chatMessagesWrap">
+        <div class="chat-content-column">
+          <div class="chat-bubble bot chat-bubble--welcome">
+            Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?
+          </div>
         </div>
       </div>
+
+      <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
+        {% csrf_token %}
+        <div class="chat-input-shell">
+          <input type="text" id="chatMessageInput" placeholder="Nhập câu hỏi tìm phòng của bạn tại đây..." required autocomplete="off" disabled>
+          <button type="submit" id="chatSendBtn" disabled>Gửi</button>
+        </div>
+      </form>
     </div>
-    
-    <form class="chat-input-bar" id="chatDrawerForm" onsubmit="handleChatSubmit(event)">
-      {% csrf_token %}
-      <div class="chat-input-shell">
-        <input type="text" id="chatMessageInput" placeholder="Nhập câu hỏi tìm phòng của bạn tại đây..." required autocomplete="off">
-        <button type="submit" id="chatSendBtn">Gửi</button>
-      </div>
-    </form>
   </div>
 
   <script>
+    let chatIdentity = null;
+    let chatHistory = [];
+    let chatCooldownTimer = null;
+    let chatStatusAnimationToken = 0;
+
     const CHAT_WELCOME_HTML = `
       <div class="chat-content-column">
         <div class="chat-bubble bot chat-bubble--welcome">
@@ -131,70 +167,308 @@
       </div>
     `;
 
-    async function loadChatHistory(force = false) {
-      const messagesWrap = document.getElementById('chatMessagesWrap');
-      if (!force && messagesWrap.querySelector('.chat-bubble:not(.chat-bubble--welcome)')) {
+    function getChatElements() {
+      return {
+        drawer: document.getElementById('chatDrawer'),
+        backdrop: document.getElementById('chatDrawerBackdrop'),
+        main: document.getElementById('chatMain'),
+        overlay: document.getElementById('chatPreauthOverlay'),
+        input: document.getElementById('chatMessageInput'),
+        sendBtn: document.getElementById('chatSendBtn'),
+        threadBar: document.getElementById('chatThreadBar'),
+        roleChip: document.getElementById('chatRoleChip'),
+        newThreadChip: document.getElementById('chatNewThreadChip'),
+        threadPanel: document.getElementById('chatThreadPanel'),
+        threadList: document.getElementById('chatThreadList'),
+        messagesWrap: document.getElementById('chatMessagesWrap'),
+        form: document.getElementById('chatDrawerForm'),
+        preauthForm: document.getElementById('chatPreauthForm'),
+      };
+    }
+
+    function isEmployeeIdentity() {
+      return Boolean(chatIdentity && chatIdentity.roleNormalized === 'staff');
+    }
+
+    function updateChatIdentity(payload = {}) {
+      if (!chatIdentity) {
+        chatIdentity = {};
+      }
+        if (payload.contact_id) chatIdentity.contactId = payload.contact_id;
+        if (Object.prototype.hasOwnProperty.call(payload, 'conversation_id')) {
+          chatIdentity.conversationId = payload.conversation_id || null;
+        } else if (payload.session_id && !chatIdentity.conversationId) {
+          chatIdentity.conversationId = payload.session_id;
+        }
+      if (payload.role) {
+        chatIdentity.roleNormalized = payload.role;
+      }
+      if (payload.contact_name) chatIdentity.name = payload.contact_name;
+      if (payload.contact_phone) chatIdentity.phone = payload.contact_phone;
+      if (Array.isArray(payload.threads)) {
+        chatIdentity.threads = payload.threads;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'new_chat')) {
+        chatIdentity.newChatPending = Boolean(payload.new_chat);
+      }
+    }
+
+    function renderWelcomeState() {
+      const { messagesWrap } = getChatElements();
+      messagesWrap.innerHTML = CHAT_WELCOME_HTML;
+      chatHistory = [];
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    function appendChatBubble(role, content, { markdown = false, extraClass = '' } = {}) {
+      const { messagesWrap } = getChatElements();
+      const bubble = document.createElement('div');
+      const isBot = role === 'assistant' || role === 'bot';
+      bubble.className = `chat-bubble ${isBot ? 'bot' : 'user'}${extraClass ? ` ${extraClass}` : ''}`;
+      if (markdown && isBot) {
+        bubble.innerHTML = formatMarkdown(content || '');
+      } else {
+        bubble.textContent = content || '';
+      }
+      messagesWrap.appendChild(bubble);
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+      return bubble;
+    }
+
+    function clearChatCooldown() {
+      if (chatCooldownTimer) {
+        window.clearInterval(chatCooldownTimer);
+        chatCooldownTimer = null;
+      }
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    async function animateStatusText(element, message, token, { initialDelay = 180, wordDelay = 85 } = {}) {
+      if (!element) return;
+      const words = String(message || '').trim().split(/\s+/).filter(Boolean);
+      if (!words.length) {
+        element.textContent = '';
         return;
       }
-      
-      const loadingEl = document.createElement('div');
-      loadingEl.className = 'chat-bubble bot loading-history';
-      loadingEl.innerText = 'Đang tải lịch sử trò chuyện...';
-      messagesWrap.appendChild(loadingEl);
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
-
-      const contactId = document.getElementById('chatContactIdInput').value || 'c_user_001';
-      try {
-        const response = await fetch(`{% url 'rooms:api_chat' %}?contact_id=${contactId}`);
-        const result = await response.json();
-        loadingEl.remove();
-        
-        if (result.success && result.messages && result.messages.length > 0) {
-          messagesWrap.innerHTML = '';
-          result.messages.forEach(msg => {
-            const bubble = document.createElement('div');
-            bubble.className = msg.role === 'user' ? 'chat-bubble user' : 'chat-bubble bot';
-            bubble.innerHTML = formatMarkdown(msg.content);
-            messagesWrap.appendChild(bubble);
-          });
-          messagesWrap.scrollTop = messagesWrap.scrollHeight;
-        } else {
-          messagesWrap.innerHTML = CHAT_WELCOME_HTML;
-        }
-      } catch (err) {
-        loadingEl.remove();
-        console.error("Lỗi khi tải lịch sử:", err);
+      await sleep(initialDelay);
+      if (token !== chatStatusAnimationToken) return;
+      element.textContent = '';
+      for (let index = 0; index < words.length; index += 1) {
+        if (token !== chatStatusAnimationToken) return;
+        element.textContent = words.slice(0, index + 1).join(' ');
+        await sleep(wordDelay);
       }
+    }
+
+    function setChatComposerState({ disabled, placeholder = null, buttonText = null } = {}) {
+      const { input, sendBtn } = getChatElements();
+      input.disabled = Boolean(disabled);
+      sendBtn.disabled = Boolean(disabled);
+      if (placeholder !== null) {
+        input.placeholder = placeholder;
+      }
+      if (buttonText !== null) {
+        sendBtn.textContent = buttonText;
+      }
+    }
+
+    function startChatCooldown(seconds, targetBubble = null) {
+      const waitSeconds = Math.max(1, Number(seconds) || 1);
+      let remaining = waitSeconds;
+      clearChatCooldown();
+
+      const renderCooldown = () => {
+        const message = `Bạn có thể gửi tin nhắn tiếp sau ${remaining}s.`;
+        setChatComposerState({
+          disabled: true,
+          placeholder: message,
+          buttonText: `${remaining}s`,
+        });
+        if (targetBubble) {
+          targetBubble.classList.add('error');
+          targetBubble.textContent = message;
+        }
+      };
+
+      renderCooldown();
+      chatCooldownTimer = window.setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearChatCooldown();
+          setChatComposerState({
+            disabled: false,
+            placeholder: 'Nhập câu hỏi tìm phòng của bạn tại đây...',
+            buttonText: 'Gửi',
+          });
+          getChatElements().input.focus();
+          return;
+        }
+        renderCooldown();
+      }, 1000);
+    }
+
+    function rememberChatMessage(role, content) {
+      const normalized = (content || '').trim();
+      if (!normalized) return;
+      chatHistory.push({ role, content: normalized });
+      if (chatHistory.length > 10) {
+        chatHistory = chatHistory.slice(-10);
+      }
+    }
+
+    function renderChatMessages(messages) {
+      const { messagesWrap } = getChatElements();
+      messagesWrap.innerHTML = '';
+      chatHistory = [];
+      if (!messages || !messages.length) {
+        renderWelcomeState();
+        return;
+      }
+      messages.forEach((msg) => {
+        rememberChatMessage(msg.role === 'assistant' ? 'assistant' : 'user', msg.content || '');
+        appendChatBubble(msg.role === 'assistant' ? 'assistant' : 'user', msg.content || '', {
+          markdown: msg.role === 'assistant',
+        });
+      });
+    }
+
+    function renderThreadList() {
+      const { threadPanel, threadList } = getChatElements();
+      threadList.innerHTML = '';
+
+      if (!isEmployeeIdentity()) {
+        threadPanel.hidden = true;
+        return;
+      }
+
+      const threads = chatIdentity.threads || [];
+      threadPanel.hidden = false;
+
+      if (!threads.length) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'chat-thread-empty';
+        emptyState.textContent = 'Chưa có đoạn chat nào. Hãy bắt đầu một đoạn mới.';
+        threadList.appendChild(emptyState);
+        return;
+      }
+
+      threads.forEach((thread) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'chat-thread-item';
+        if (thread.conversation_id === chatIdentity.conversationId) {
+          button.classList.add('active');
+        }
+        button.addEventListener('click', () => selectChatThread(thread.conversation_id));
+
+        const avatar = document.createElement('span');
+        avatar.className = 'chat-thread-avatar';
+        avatar.textContent = ((thread.title || chatIdentity.name || 'C').trim().charAt(0) || 'C').toUpperCase();
+        button.appendChild(avatar);
+
+        const body = document.createElement('span');
+        body.className = 'chat-thread-body';
+
+        const titleRow = document.createElement('span');
+        titleRow.className = 'chat-thread-title-row';
+
+        const title = document.createElement('strong');
+        title.textContent = thread.title || 'Đoạn chat chưa đặt tên';
+        titleRow.appendChild(title);
+
+        const time = document.createElement('span');
+        time.className = 'chat-thread-time';
+        time.textContent = formatThreadTime(thread.updated_at);
+        titleRow.appendChild(time);
+        body.appendChild(titleRow);
+
+        const preview = document.createElement('span');
+        preview.className = 'chat-thread-preview';
+        preview.textContent = thread.last_message || 'Chưa có tin nhắn';
+        body.appendChild(preview);
+
+        const meta = document.createElement('span');
+        meta.className = 'chat-thread-meta';
+        meta.textContent = thread.message_count ? `${thread.message_count} tin nhắn` : 'Đoạn chat mới';
+        body.appendChild(meta);
+
+        button.appendChild(body);
+
+        if (thread.has_staff_messages && thread.conversation_id !== chatIdentity.conversationId) {
+          const dot = document.createElement('span');
+          dot.className = 'chat-thread-dot';
+          dot.setAttribute('aria-hidden', 'true');
+          button.appendChild(dot);
+        }
+
+        threadList.appendChild(button);
+      });
+    }
+
+    function formatThreadTime(value) {
+      if (!value) return '';
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return '';
+      const now = new Date();
+      const diffMinutes = Math.max(0, Math.round((now.getTime() - parsed.getTime()) / 60000));
+      if (diffMinutes < 1) return 'now';
+      if (diffMinutes < 60) return `${diffMinutes}m`;
+      const diffHours = Math.round(diffMinutes / 60);
+      if (diffHours < 24) return `${diffHours}h`;
+      return parsed.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
     }
 
     function openChatDrawer() {
-      document.getElementById('chatDrawer').classList.add('open');
-      document.getElementById('chatDrawerBackdrop').classList.add('open');
+      const { drawer, backdrop } = getChatElements();
+      drawer.classList.add('open');
+      backdrop.classList.add('open');
       document.body.style.overflow = 'hidden';
-      loadChatHistory();
-    }
-
-    function changeChatContact() {
-      const messagesWrap = document.getElementById('chatMessagesWrap');
-      messagesWrap.innerHTML = '';
-      loadChatHistory(true);
+      syncChatAccessState();
     }
 
     function closeChatDrawer() {
-      document.getElementById('chatDrawer').classList.remove('open');
-      document.getElementById('chatDrawerBackdrop').classList.remove('open');
+      const { drawer, backdrop } = getChatElements();
+      drawer.classList.remove('open');
+      backdrop.classList.remove('open');
       document.body.style.overflow = '';
     }
 
     function resetChatDrawer() {
-      const messagesWrap = document.getElementById('chatMessagesWrap');
-      const inputEl = document.getElementById('chatMessageInput');
-      messagesWrap.innerHTML = CHAT_WELCOME_HTML;
-      inputEl.value = '';
-      inputEl.focus();
+      const { preauthForm } = getChatElements();
+      clearChatCooldown();
+      chatIdentity = null;
+      renderWelcomeState();
+      preauthForm.reset();
+      document.getElementById('chatIdentityRole').value = 'customer';
+      selectChatRole('customer');
+      setChatComposerState({
+        disabled: true,
+        placeholder: 'Nhập câu hỏi tìm phòng của bạn tại đây...',
+        buttonText: 'Gửi',
+      });
+      syncChatAccessState();
+    }
+
+    function resetChatConversation() {
+      const { input } = getChatElements();
+      input.value = '';
+      renderWelcomeState();
+      if (chatIdentity) {
+        chatIdentity.conversationId = null;
+        chatIdentity.newChatPending = false;
+        chatIdentity.threads = [];
+        renderThreadList();
+      }
+      if (chatIdentity && !getChatElements().input.disabled) {
+        input.focus();
+      }
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+      selectChatRole('customer');
       const chatbotTriggers = document.querySelectorAll('a[href="#chatbot"], a[href="#chatbot-preview"]');
       chatbotTriggers.forEach(el => {
         el.addEventListener('click', function(e) {
@@ -204,9 +478,78 @@
       });
     });
 
+    function selectChatRole(role) {
+      document.getElementById('chatIdentityRole').value = role;
+      document.querySelectorAll('.chat-role-option').forEach((button) => {
+        button.classList.toggle('active', button.dataset.role === role);
+      });
+    }
+
     function sendSuggestion(text) {
+      if (!chatIdentity) {
+        openChatDrawer();
+        return;
+      }
       document.getElementById('chatMessageInput').value = text;
       document.getElementById('chatDrawerForm').dispatchEvent(new Event('submit'));
+    }
+
+    function syncChatAccessState() {
+      const { overlay, main, input, sendBtn, threadBar, roleChip, newThreadChip, threadPanel } = getChatElements();
+
+      if (chatIdentity) {
+        overlay.classList.add('hidden');
+        main.classList.remove('chat-main--locked');
+        input.disabled = false;
+        sendBtn.disabled = false;
+        threadBar.hidden = false;
+        const isEmployee = isEmployeeIdentity();
+        roleChip.textContent = isEmployee ? 'Nhân viên' : 'Khách';
+        roleChip.dataset.role = isEmployee ? 'employee' : 'customer';
+        newThreadChip.hidden = !isEmployee;
+        newThreadChip.style.display = isEmployee ? 'inline-flex' : 'none';
+        if (!isEmployee) {
+          threadPanel.hidden = true;
+        }
+        renderThreadList();
+        input.focus();
+        return;
+      }
+
+      overlay.classList.remove('hidden');
+      main.classList.add('chat-main--locked');
+      input.disabled = true;
+      sendBtn.disabled = true;
+      threadBar.hidden = true;
+      newThreadChip.hidden = true;
+      newThreadChip.style.display = 'none';
+      threadPanel.hidden = true;
+    }
+
+    function handleChatIdentitySubmit(e) {
+      e.preventDefault();
+      const name = document.getElementById('chatIdentityName').value.trim();
+      const phone = document.getElementById('chatIdentityPhone').value.trim();
+      const role = document.getElementById('chatIdentityRole').value;
+      const submitBtn = e.currentTarget.querySelector('button[type="submit"]');
+
+      if (!name || !phone || !role) return;
+
+      chatIdentity = {
+        name,
+        phone,
+        requestedRole: role,
+        roleNormalized: role === 'landlord' ? 'staff' : 'user',
+        contactId: null,
+        conversationId: null,
+        threads: [],
+        newChatPending: false,
+      };
+
+      submitBtn.disabled = true;
+      syncChatAccessState();
+      renderWelcomeState();
+      submitBtn.disabled = false;
     }
 
     function buildFollowUps(chips) {
@@ -221,112 +564,471 @@
       return wrapper;
     }
 
+    function renderRagPayload(result, targetBubble) {
+      const { messagesWrap } = getChatElements();
+      if (result.success) {
+        const answerText = result.reply || result.answer || '';
+        targetBubble.innerHTML = formatMarkdown(answerText);
+        rememberChatMessage('assistant', answerText);
+
+        if (result.rooms && result.rooms.length > 0) {
+          const cardsContainer = document.createElement('div');
+          cardsContainer.className = 'chat-cards-grid';
+
+          result.rooms.forEach(room => {
+            const roomRef = room.id || room.room_id;
+            const card = document.createElement('a');
+            card.className = 'chat-card-inline';
+            card.href = roomRef ? `/tim-phong/${roomRef}/` : '#';
+            const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
+            const idLines = [
+              room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
+              room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
+            ].filter(Boolean).join('');
+            card.innerHTML = `
+              ${room.image ? `<img src="${room.image}" alt="${room.title || room.room_id || 'room'}">` : ''}
+              <div class="chat-card-body">
+                <div class="chat-card-topline">
+                  <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
+                </div>
+                <h4>${room.title || room.room_id || 'Phòng phù hợp'}</h4>
+                ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
+                <p class="price">${room.price_text || ''}</p>
+                <p class="meta">${metaParts.join(' • ')}</p>
+                <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
+                <p class="address">${room.address || ''}</p>
+                <span class="chat-card-cta">Xem chi tiết</span>
+              </div>
+            `;
+            cardsContainer.appendChild(card);
+          });
+
+          messagesWrap.appendChild(cardsContainer);
+        }
+
+        const followUps = result.follow_ups || result.suggested_questions || [];
+        if (followUps.length) {
+          messagesWrap.appendChild(buildFollowUps(followUps));
+        }
+      } else {
+        targetBubble.classList.add('error');
+        targetBubble.textContent = result.message || 'Đã xảy ra lỗi.';
+      }
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    async function selectChatThread(conversationId) {
+      if (!chatIdentity || !conversationId) return;
+      chatIdentity.conversationId = conversationId;
+      renderThreadList();
+    }
+
     async function handleChatSubmit(e) {
       e.preventDefault();
-      const inputEl = document.getElementById('chatMessageInput');
-      const message = inputEl.value.trim();
+      if (!chatIdentity) return;
+      const { input, sendBtn, messagesWrap } = getChatElements();
+      const message = input.value.trim();
       if (!message) return;
 
-      inputEl.value = '';
-      
-      const messagesWrap = document.getElementById('chatMessagesWrap');
-      
-      // 1. Add User Bubble
-      const userBubble = document.createElement('div');
-      userBubble.className = 'chat-bubble user';
-      userBubble.innerText = message;
-      messagesWrap.appendChild(userBubble);
-      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+      input.value = '';
+      input.disabled = true;
+      sendBtn.disabled = true;
+      appendChatBubble('user', message);
+      rememberChatMessage('user', message);
 
       const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
       existingSuggestions.forEach(el => el.remove());
 
-      // 2. Add Typing Indicator Bubble
       const typingBubble = document.createElement('div');
       typingBubble.className = 'chat-bubble bot typing';
       typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
       messagesWrap.appendChild(typingBubble);
       messagesWrap.scrollTop = messagesWrap.scrollHeight;
 
-      // 3. Post to backend
-      const csrfToken = document.querySelector('#chatDrawerForm [name=csrfmiddlewaretoken]').value;
-      const contactId = document.getElementById('chatContactIdInput').value || 'c_user_001';
       try {
-        const response = await fetch("{% url 'rooms:api_chat' %}", {
+        const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+        const response = await fetch("{% url 'rooms:api_rag_stream' %}", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-CSRFToken': csrfToken
+            'X-CSRFToken': csrfToken,
           },
-          body: JSON.stringify({ 
-            message: message,
-            contact_id: contactId
+          body: JSON.stringify({
+            message,
+            session_id: chatIdentity.conversationId || chatIdentity.contactId || '',
+            history: chatHistory.slice(0, -1),
           })
         });
-        
-        const result = await response.json();
-        
-        // Remove typing bubble
-        typingBubble.remove();
-        
-        if (result.success) {
-          // Add Bot reply bubble
-          const botBubble = document.createElement('div');
-          botBubble.className = 'chat-bubble bot';
-          botBubble.innerHTML = formatMarkdown(result.reply);
-          messagesWrap.appendChild(botBubble);
-          
-          // Render results as inline cards
-          if (result.rooms && result.rooms.length > 0) {
-            const cardsContainer = document.createElement('div');
-            cardsContainer.className = 'chat-cards-grid';
-            
-            result.rooms.forEach(room => {
-              const card = document.createElement('a');
-              card.className = 'chat-card-inline';
-              card.href = `/tim-phong/${room.id}/`;
-              const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
-              const idLines = [
-                room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
-                room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
-              ].filter(Boolean).join('');
-              card.innerHTML = `
-                <img src="${room.image}" alt="${room.title}">
-                <div class="chat-card-body">
-                  <div class="chat-card-topline">
-                    <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
-                  </div>
-                  <h4>${room.title}</h4>
-                  ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
-                  <p class="price">${room.price_text}</p>
-                  <p class="meta">${metaParts.join(' • ')}</p>
-                  <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
-                  <p class="address">${room.address}</p>
-                  <span class="chat-card-cta">Xem chi tiết</span>
-                </div>
-              `;
-              cardsContainer.appendChild(card);
-            });
-            
-            messagesWrap.appendChild(cardsContainer);
-          }
 
-          if (result.follow_ups && result.follow_ups.length) {
-            messagesWrap.appendChild(buildFollowUps(result.follow_ups));
+        if (!response.ok) {
+          throw new Error('RAG response unavailable');
+        }
+
+        if ((response.headers.get('Content-Type') || '').includes('application/json')) {
+          chatStatusAnimationToken += 1;
+          const result = await response.json();
+          typingBubble.className = 'chat-bubble bot';
+          typingBubble.textContent = '';
+          if (result.success) {
+            updateChatIdentity(result);
+            chatIdentity.newChatPending = false;
+            renderThreadList();
+            renderRagPayload(result, typingBubble);
+          } else {
+            typingBubble.classList.add('error');
+            typingBubble.textContent = result.message || 'Đã xảy ra lỗi.';
           }
-        } else {
-          const botBubble = document.createElement('div');
-          botBubble.className = 'chat-bubble bot error';
-          botBubble.innerText = result.message || 'Đã xảy ra lỗi.';
-          messagesWrap.appendChild(botBubble);
+          return;
+        }
+
+        if (!response.body) {
+          throw new Error('Streaming body unavailable');
+        }
+
+        typingBubble.className = 'chat-bubble bot';
+        typingBubble.textContent = '';
+        const botBubble = typingBubble;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamedText = '';
+
+        const renderFinalPayload = (result, targetBubble = botBubble) => {
+          if (result.success) {
+            targetBubble.innerHTML = formatMarkdown(result.reply);
+            updateChatIdentity(result);
+            renderThreadList();
+
+            if (result.rooms && result.rooms.length > 0) {
+              const cardsContainer = document.createElement('div');
+              cardsContainer.className = 'chat-cards-grid';
+
+              result.rooms.forEach(room => {
+                const card = document.createElement('a');
+                card.className = 'chat-card-inline';
+                card.href = `/tim-phong/${room.id}/`;
+                const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
+                const idLines = [
+                  room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
+                  room.house_id ? `<span>house_id: ${room.house_id}</span>` : ''
+                ].filter(Boolean).join('');
+                card.innerHTML = `
+                  <img src="${room.image}" alt="${room.title}">
+                  <div class="chat-card-body">
+                    <div class="chat-card-topline">
+                      <span class="chat-card-location">${room.district || ''}${room.city ? ' • ' + room.city : ''}</span>
+                    </div>
+                    <h4>${room.title}</h4>
+                    ${idLines ? `<p class="room-id-row">${idLines}</p>` : ''}
+                    <p class="price">${room.price_text}</p>
+                    <p class="meta">${metaParts.join(' • ')}</p>
+                    <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
+                    <p class="address">${room.address}</p>
+                    <span class="chat-card-cta">Xem chi tiết</span>
+                  </div>
+                `;
+                cardsContainer.appendChild(card);
+              });
+
+              messagesWrap.appendChild(cardsContainer);
+            }
+
+            if (result.follow_ups && result.follow_ups.length) {
+              messagesWrap.appendChild(buildFollowUps(result.follow_ups));
+            }
+          } else {
+            targetBubble.classList.add('error');
+            targetBubble.textContent = result.message || 'Đã xảy ra lỗi.';
+          }
+        };
+
+        const processSseEvent = (rawEvent) => {
+          const lines = rawEvent.split('\n');
+          const dataLines = lines.filter(line => line.startsWith('data:'));
+          if (!dataLines.length) return;
+          const dataText = dataLines.map(line => line.slice(5).trimStart()).join('\n');
+          if (!dataText) return;
+
+          const event = JSON.parse(dataText);
+          if (event.type === 'status') {
+            if (!streamedText) {
+              botBubble.textContent = event.message || 'Đang xử lý...';
+            }
+            messagesWrap.scrollTop = messagesWrap.scrollHeight;
+            return;
+          }
+          if (event.type === 'token') {
+            streamedText += event.content || '';
+            botBubble.textContent = streamedText;
+            messagesWrap.scrollTop = messagesWrap.scrollHeight;
+            return;
+          }
+          if (event.type === 'final') {
+            if (chatIdentity) {
+              chatIdentity.newChatPending = false;
+            }
+            renderFinalPayload(event.payload || {});
+            messagesWrap.scrollTop = messagesWrap.scrollHeight;
+            return;
+          }
+          if (event.type === 'error') {
+            botBubble.classList.add('error');
+            botBubble.textContent = event.message || 'Đã xảy ra lỗi.';
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+          parts.forEach(processSseEvent);
+        }
+        if (buffer.trim()) {
+          processSseEvent(buffer);
         }
       } catch (err) {
         typingBubble.remove();
-        const botBubble = document.createElement('div');
-        botBubble.className = 'chat-bubble bot error';
-        botBubble.innerText = 'Lỗi kết nối mạng. Vui lòng thử lại sau.';
-        messagesWrap.appendChild(botBubble);
+        appendChatBubble('assistant', 'Lỗi kết nối mạng. Vui lòng thử lại sau.', { extraClass: 'error' });
         console.error(err);
+      } finally {
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+      }
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    async function handleChatSubmit(e) {
+      e.preventDefault();
+      if (!chatIdentity) return;
+      const { input, sendBtn, messagesWrap } = getChatElements();
+      const message = input.value.trim();
+      if (!message) return;
+
+      input.value = '';
+      input.disabled = true;
+      sendBtn.disabled = true;
+      appendChatBubble('user', message);
+      rememberChatMessage('user', message);
+
+      const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
+      existingSuggestions.forEach(el => el.remove());
+
+      const typingBubble = document.createElement('div');
+      typingBubble.className = 'chat-bubble bot typing';
+      typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+      messagesWrap.appendChild(typingBubble);
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+
+      try {
+        const response = await fetch("{% url 'rooms:api_rag_query' %}", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            message,
+            session_id: chatIdentity.conversationId || chatIdentity.contactId || '',
+            history: chatHistory.slice(0, -1),
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error('RAG response unavailable');
+        }
+
+        const result = await response.json();
+        typingBubble.className = 'chat-bubble bot';
+        typingBubble.textContent = '';
+
+        if (result.success) {
+          updateChatIdentity(result);
+          chatIdentity.newChatPending = false;
+          renderThreadList();
+          renderRagPayload(result, typingBubble);
+        } else if (result.rate_limited) {
+          startChatCooldown(result.retry_after_seconds, typingBubble);
+        } else {
+          typingBubble.classList.add('error');
+          typingBubble.textContent = result.message || 'Đã xảy ra lỗi.';
+        }
+      } catch (err) {
+        typingBubble.remove();
+        appendChatBubble('assistant', 'Lỗi kết nối mạng. Vui lòng thử lại sau.', { extraClass: 'error' });
+        console.error(err);
+      } finally {
+        if (!chatCooldownTimer) {
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+        }
+      }
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+    }
+
+    async function handleChatSubmit(e) {
+      e.preventDefault();
+      if (!chatIdentity) return;
+      const { input, sendBtn, messagesWrap } = getChatElements();
+      const message = input.value.trim();
+      if (!message) return;
+
+      input.value = '';
+      input.disabled = true;
+      sendBtn.disabled = true;
+      appendChatBubble('user', message);
+      rememberChatMessage('user', message);
+
+      const existingSuggestions = messagesWrap.querySelectorAll('.chat-follow-up-wrap');
+      existingSuggestions.forEach(el => el.remove());
+
+      const typingBubble = document.createElement('div');
+      typingBubble.className = 'chat-bubble bot typing';
+      typingBubble.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+      messagesWrap.appendChild(typingBubble);
+      messagesWrap.scrollTop = messagesWrap.scrollHeight;
+
+      const renderStatus = (event) => {
+        const agentLabels = {
+          gateway: 'Gateway',
+          intent_router: 'Intent Router',
+          session_store: 'Session Store',
+          retriever: 'Retriever',
+          grounding_checker: 'Grounding Checker',
+          response_writer: 'Response Writer',
+          reviewer: 'Reviewer',
+        };
+        const stageLabel = event.stage ? `<span class="chat-status-stage">${event.stage}</span>` : '';
+        const agentLabel = event.agent ? (agentLabels[event.agent] || event.agent) : 'Assistant';
+        const message = event.message || 'Đang xử lý...';
+        const animationToken = ++chatStatusAnimationToken;
+        typingBubble.className = 'chat-bubble bot';
+        typingBubble.innerHTML = `
+          <div class="chat-status-card">
+            <div class="chat-status-meta">${stageLabel}<strong>${agentLabel}</strong></div>
+            <div class="chat-status-message"></div>
+          </div>
+        `;
+        const messageElement = typingBubble.querySelector('.chat-status-message');
+        animateStatusText(messageElement, message, animationToken, {
+          initialDelay: 220,
+          wordDelay: 90,
+        });
+      };
+
+      try {
+        const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+        const response = await fetch("{% url 'rooms:api_rag_stream' %}", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+          },
+          body: JSON.stringify({
+            message,
+            session_id: chatIdentity.conversationId || chatIdentity.contactId || '',
+            history: chatHistory.slice(0, -1),
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error('RAG response unavailable');
+        }
+
+        if ((response.headers.get('Content-Type') || '').includes('application/json')) {
+          const result = await response.json();
+          typingBubble.className = 'chat-bubble bot';
+          typingBubble.textContent = '';
+          if (result.success) {
+            updateChatIdentity(result);
+            chatIdentity.newChatPending = false;
+            renderThreadList();
+            renderRagPayload(result, typingBubble);
+          } else if (result.rate_limited) {
+            startChatCooldown(result.retry_after_seconds, typingBubble);
+          } else {
+            typingBubble.classList.add('error');
+            typingBubble.textContent = result.message || 'Đã xảy ra lỗi.';
+          }
+          return;
+        }
+
+        if (!response.body) {
+          throw new Error('Streaming body unavailable');
+        }
+
+        typingBubble.className = 'chat-bubble bot';
+        typingBubble.textContent = '';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamedText = '';
+
+        const processSseEvent = (rawEvent) => {
+          const lines = rawEvent.split('\n');
+          const dataLines = lines.filter(line => line.startsWith('data:'));
+          if (!dataLines.length) return;
+          const dataText = dataLines.map(line => line.slice(5).trimStart()).join('\n');
+          if (!dataText) return;
+
+          const event = JSON.parse(dataText);
+          if (event.type === 'status') {
+            if (!streamedText) {
+              renderStatus(event);
+            }
+            messagesWrap.scrollTop = messagesWrap.scrollHeight;
+            return;
+          }
+          if (event.type === 'token') {
+            streamedText += event.content || '';
+            typingBubble.textContent = streamedText;
+            messagesWrap.scrollTop = messagesWrap.scrollHeight;
+            return;
+          }
+          if (event.type === 'final') {
+            chatStatusAnimationToken += 1;
+            const result = event.payload || {};
+            if (chatIdentity) {
+              chatIdentity.newChatPending = false;
+            }
+            updateChatIdentity(result);
+            renderThreadList();
+            renderRagPayload(result, typingBubble);
+            messagesWrap.scrollTop = messagesWrap.scrollHeight;
+            return;
+          }
+          if (event.type === 'error') {
+            chatStatusAnimationToken += 1;
+            typingBubble.classList.add('error');
+            const errorPayload = event.payload || {};
+            typingBubble.textContent = errorPayload.message || event.message || 'Đã xảy ra lỗi.';
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+          parts.forEach(processSseEvent);
+        }
+        if (buffer.trim()) {
+          processSseEvent(buffer);
+        }
+      } catch (err) {
+        typingBubble.remove();
+        appendChatBubble('assistant', 'Lỗi kết nối mạng. Vui lòng thử lại sau.', { extraClass: 'error' });
+        console.error(err);
+      } finally {
+        if (!chatCooldownTimer) {
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+        }
       }
       messagesWrap.scrollTop = messagesWrap.scrollHeight;
     }

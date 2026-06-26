@@ -54,13 +54,21 @@ class ReadOnlyToolRegistry:
         return self._tools[name](args, context)
 
 
+def _bounded_top_k(value: Any, default: int = 5, maximum: int = 20) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(parsed, maximum))
+
+
 def search_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
     return search_rooms_with_hard_filters(
         query_text=args.get("query_text", ""),
         constraints=args.get("constraints", {}),
         repository=context.repository,
         semantic_index=context.semantic_index,
-        top_k=int(args.get("top_k", 5)),
+        top_k=_bounded_top_k(args.get("top_k", 5)),
         trace=context.retrieval_trace,
     )
 
@@ -69,7 +77,7 @@ def get_room_detail(args: dict[str, Any], context: ToolExecutionContext) -> dict
     room_id = args.get("room_id")
     if not room_id:
         return None
-    return context.repository.get_by_id(str(room_id))
+    return _resolve_room_reference(str(room_id), context)
 
 
 def retrieve_room_context(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
@@ -304,7 +312,11 @@ def calculate_cost_estimate(args: dict[str, Any], context: ToolExecutionContext)
 
 def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
     room_ids = [str(item) for item in (args.get("room_ids") or [])][:3]
-    rooms = context.repository.get_many_by_ids(room_ids)
+    rooms = []
+    for room_ref in room_ids:
+        room = _resolve_room_reference(room_ref, context)
+        if room:
+            rooms.append(room)
     rows = []
     for room in rooms:
         rows.append({
@@ -327,9 +339,13 @@ def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[s
 
 def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
     room_id = args.get("room_id")
-    source = context.repository.get_by_id(str(room_id)) if room_id else None
+    try:
+        source = context.repository.get_by_id(str(room_id)) if room_id else None
+    except Exception:
+        source = None
     if not source:
         return []
+    top_k = _bounded_top_k(args.get("top_k", 5))
     constraints = {
         "location": {"districts": [source.get("district")] if source.get("district") else []},
         "budget": {
@@ -345,14 +361,36 @@ def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> l
         constraints=constraints,
         repository=context.repository,
         semantic_index=context.semantic_index,
-        top_k=int(args.get("top_k", 5)) + 1,
+        top_k=top_k + 1,
         trace=context.retrieval_trace,
     )
-    return [item for item in results if item.get("room_id") != room_id][:int(args.get("top_k", 5))]
+    return [item for item in results if item.get("room_id") != room_id][:top_k]
 
 
 def _unknown_room_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
+
+
+def _resolve_room_reference(room_ref: str, context: ToolExecutionContext) -> dict[str, Any] | None:
+    try:
+        room = context.repository.get_by_id(str(room_ref))
+    except Exception:
+        room = None
+    if room:
+        return room
+    try:
+        candidates = context.repository.search_by_metadata(str(room_ref), limit=3)
+    except Exception:
+        candidates = []
+    if not candidates:
+        return None
+    normalized_ref = str(room_ref).strip().upper().replace(".", "")
+    for candidate in candidates:
+        candidate_room_id = str(candidate.get("room_id") or "").strip().upper().replace(".", "")
+        candidate_room_code = str(candidate.get("room_code") or "").strip().upper().replace(".", "")
+        if normalized_ref and normalized_ref in {candidate_room_id, candidate_room_code}:
+            return candidate
+    return candidates[0]
 
 
 def _positive_int(value: Any) -> int | None:

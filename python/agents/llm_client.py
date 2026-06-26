@@ -104,17 +104,15 @@ def _truncate_messages(
 
 
 # ---------------------------------------------------------------------------
-# Quản lý API key (round-robin, loại key lỗi)
+# Quản lý API key theo Role (Tránh bị ban do Anti-abuse)
 # ---------------------------------------------------------------------------
 
-def _get_groq_key() -> str:
-    global _groq_key_index
-    all_keys = GROQ_API_KEYS if GROQ_API_KEYS else [GROQ_API_KEY]
-    valid_keys = [k for k in all_keys if k and k not in _BAD_GROQ_KEYS]
-    if not valid_keys:
-        raise RuntimeError("Groq API key chưa được cấu hình hoặc đã bị giới hạn.")
-    key = valid_keys[_groq_key_index % len(valid_keys)]
-    _groq_key_index += 1
+def _get_groq_key(model: str) -> str:
+    from config import GROQ_KEY_FAST, GROQ_KEY_SMART
+    # Phân chia theo Role để không bị cấm do rotating trên cùng IP
+    key = GROQ_KEY_SMART if model == GROQ_MODEL_SMART else GROQ_KEY_FAST
+    if not key:
+        raise RuntimeError("Groq API key chưa được cấu hình.")
     return key
 
 
@@ -161,7 +159,7 @@ async def groq_chat_complete(
     temperature: float = 0.1,
 ) -> str:
     """Groq chat completion với auto-truncation và rate limiting."""
-    api_key = _get_groq_key()
+    api_key = _get_groq_key(model)
     await _respect_rate_limit()
 
     if model == GROQ_MODEL_FAST:
@@ -191,7 +189,7 @@ async def groq_chat_complete(
                 ) as resp:
                     if resp.status == 429:
                         await asyncio.sleep(_retry_delay(attempt, multiplier=3))
-                        api_key = _get_groq_key()
+                        api_key = _get_groq_key(model)
                         headers["Authorization"] = f"Bearer {api_key}"
                         continue
 
@@ -206,7 +204,7 @@ async def groq_chat_complete(
                         error_text = await resp.text()
                         if "restricted" in error_text.lower() or resp.status in {401, 403}:
                             _BAD_GROQ_KEYS.add(api_key)
-                            api_key = _get_groq_key()
+                            api_key = _get_groq_key(model)
                             headers["Authorization"] = f"Bearer {api_key}"
                             continue
 
@@ -265,7 +263,7 @@ async def groq_stream_chat_complete(
     temperature: float = 0.1,
 ) -> AsyncGenerator[str, None]:
     """Groq streaming chat completion — yield từng token chunk qua SSE."""
-    api_key = _get_groq_key()
+    api_key = _get_groq_key(model)
 
     payload = {
         "model": model,
@@ -290,7 +288,7 @@ async def groq_stream_chat_complete(
                 ) as resp:
                     if resp.status == 429:
                         await asyncio.sleep(25 * (attempt + 1))
-                        api_key = _get_groq_key()
+                        api_key = _get_groq_key(model)
                         headers["Authorization"] = f"Bearer {api_key}"
                         continue
 

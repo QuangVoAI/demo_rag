@@ -306,6 +306,8 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized = dict(raw)
     normalized["room_id"] = str(room_id)
     normalized["house_id"] = str(house_id) if house_id else None
+    normalized["house_name"] = house_name or None
+    normalized["room_code"] = room_code or None
     normalized["title"] = title
     normalized["description"] = raw.get("house_remark") or raw.get("description") or ""
     normalized["status"] = "active" if is_available else "unavailable"

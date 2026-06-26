@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Sentiment Analyzer — Phân tích cảm xúc người dùng khi tìm phòng trọ.
 
@@ -7,7 +9,6 @@ Nhận diện 3 trạng thái:
   - urgent     : Người dùng cần phòng gấp (hết hạn HĐ, chuyển nhà sớm)
   - normal     : Đang xem bình thường, chưa có dấu hiệu áp lực
 """
-import numpy as np
 import re
 import time
 import sys
@@ -15,12 +16,11 @@ import unicodedata
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from agents.model_registry import get_embed_model
 from agents.state import NhatrovnAgentState
 from utils.console import console
 
 # Singleton centroids — tính một lần rồi cache
-_centroids: dict | None = None
+_centroids: dict[str, list[float]] | None = None
 
 # Từ khóa mẫu để tính centroid cho từng cảm xúc
 MOOD_CLUSTERS: dict[str, list[str]] = {
@@ -61,6 +61,12 @@ MOOD_CUES: dict[str, tuple[str, ...]] = {
 }
 
 
+def get_embed_model():
+    from agents.model_registry import get_embed_model as _get_embed_model
+
+    return _get_embed_model()
+
+
 def _ensure_centroids() -> None:
     """Tính centroids một lần duy nhất khi khởi động."""
     global _centroids
@@ -72,8 +78,7 @@ def _ensure_centroids() -> None:
     _centroids = {}
     for label, keywords in MOOD_CLUSTERS.items():
         embeddings = model.encode(keywords, normalize_embeddings=True, batch_size=64)
-        centroid = np.mean(embeddings, axis=0)
-        centroid /= np.linalg.norm(centroid)
+        centroid = _l2_normalize(_mean_vector(embeddings))
         _centroids[label] = centroid
     console.print("[dim]  Sentiment Analyzer: centroids sẵn sàng[/]")
 
@@ -87,11 +92,11 @@ def analyze_mood(text: str) -> tuple[str, float]:
     """
     _ensure_centroids()
     model = get_embed_model()
-    q_emb = model.encode(text, normalize_embeddings=True)
+    q_emb = _vector_to_list(model.encode(text, normalize_embeddings=True))
 
     scores: dict[str, float] = {}
     for label, centroid in _centroids.items():  # type: ignore[union-attr]
-        scores[label] = float(np.dot(q_emb, centroid))
+        scores[label] = _dot(q_emb, centroid)
 
     best_label = max(scores, key=scores.get)  # type: ignore[arg-type]
     best_score = scores[best_label]
@@ -129,6 +134,32 @@ def _norm(text: str) -> str:
     text = unicodedata.normalize("NFD", text.lower())
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
     return " ".join(text.split())
+
+
+def _vector_to_list(vector) -> list[float]:
+    return [float(value) for value in vector]
+
+
+def _mean_vector(vectors) -> list[float]:
+    rows = [_vector_to_list(vector) for vector in vectors]
+    if not rows:
+        return []
+    width = len(rows[0])
+    return [
+        sum(row[idx] for row in rows) / len(rows)
+        for idx in range(width)
+    ]
+
+
+def _l2_normalize(vector: list[float]) -> list[float]:
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm <= 0:
+        return vector
+    return [value / norm for value in vector]
+
+
+def _dot(left: list[float], right: list[float]) -> float:
+    return float(sum(a * b for a, b in zip(left, right)))
 
 
 def sentiment_analyzer_node(state: NhatrovnAgentState) -> dict:

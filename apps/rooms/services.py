@@ -1,14 +1,47 @@
+import os
+from urllib.parse import parse_qsl, urlsplit
+
 import pymongo
 from django.conf import settings
 from bson import ObjectId
 
 _mongo_client = None
 
+
+def _should_enable_mongo_tls_ca(uri: str) -> bool:
+    normalized = str(uri or "").strip().lower()
+    if normalized.startswith("mongodb+srv://"):
+        return True
+    try:
+        query = dict(parse_qsl(urlsplit(normalized).query, keep_blank_values=True))
+    except Exception:
+        query = {}
+    return query.get("tls") == "true" or query.get("ssl") == "true"
+
+
+def _build_mongo_client_options(uri: str) -> dict:
+    options = {
+        "serverSelectionTimeoutMS": getattr(settings, "MONGODB_SERVER_SELECTION_TIMEOUT_MS", 3000),
+        "connectTimeoutMS": getattr(settings, "MONGODB_CONNECT_TIMEOUT_MS", 3000),
+    }
+    tls_ca_file = os.getenv("MONGODB_TLS_CA_FILE", "").strip()
+    if tls_ca_file:
+        options["tlsCAFile"] = tls_ca_file
+        return options
+    if _should_enable_mongo_tls_ca(uri):
+        try:
+            import certifi
+
+            options["tlsCAFile"] = certifi.where()
+        except Exception:
+            pass
+    return options
+
 def get_mongodb_client():
     global _mongo_client
     if _mongo_client is None:
         uri = getattr(settings, 'MONGODB_URI', 'mongodb://localhost:27017/')
-        _mongo_client = pymongo.MongoClient(uri)
+        _mongo_client = pymongo.MongoClient(uri, **_build_mongo_client_options(uri))
     return _mongo_client
 
 def get_mongodb_db():
