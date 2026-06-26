@@ -6,6 +6,8 @@ import re
 import sys
 from unittest.mock import patch
 
+import numpy as np
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from agents import sentiment_analyzer
@@ -20,7 +22,7 @@ from room_assistant.repository import (
 from room_assistant.schemas import default_session_state, normalize_room
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
-from room_assistant.workflow import _build_llm_context, _compose_answer_template, run_room_assistant
+from room_assistant.workflow import _build_llm_context, run_room_assistant
 
 
 class FakeMongoCursor:
@@ -78,22 +80,6 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(parsed["intent"], "REFINE_SEARCH")
         self.assertIn({"op": "set", "path": "budget.max", "value": 5_000_000}, parsed["operations"])
         self.assertIn({"op": "remove", "path": "amenities_required", "value": "air_conditioner"}, parsed["operations"])
-
-    def test_location_replace_clears_previous_location_filters(self):
-        state = default_session_state("s-location")
-        state, _ = apply_operations(state, [
-            {"op": "append", "path": "location.districts", "value": "binh thanh"},
-            {"op": "append", "path": "location.near_landmarks", "value": "dhqg"},
-        ])
-
-        parsed = parse_intent_and_constraint_patch("đổi sang quận 7 gần lotte", state)
-        self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
-        self.assertIn({"op": "clear", "path": "location.near_landmarks"}, parsed["operations"])
-        self.assertIn({"op": "append", "path": "location.districts", "value": "quan 7"}, parsed["operations"])
-
-        next_state, _ = apply_operations(state, parsed["operations"])
-        self.assertEqual(next_state["constraints"]["location"]["districts"], ["quan 7"])
-        self.assertEqual(next_state["constraints"]["location"]["near_landmarks"], ["lotte"])
 
     def test_search_phrase_after_phong_is_not_room_id(self):
         parsed = parse_intent_and_constraint_patch(
@@ -224,15 +210,15 @@ class RoomAssistantCoreTests(unittest.TestCase):
         class FakeModel:
             def encode(self, text, normalize_embeddings=True, batch_size=None):
                 if isinstance(text, list):
-                    return [[1.0, 0.0] for _ in text]
-                return [1.0, 0.0]
+                    return np.array([[1.0, 0.0] for _ in text])
+                return np.array([1.0, 0.0])
 
         old_centroids = sentiment_analyzer._centroids
         try:
             sentiment_analyzer._centroids = {
-                "frustrated": [1.0, 0.0],
-                "urgent": [0.5, 0.5],
-                "normal": [0.0, 1.0],
+                "frustrated": np.array([1.0, 0.0]),
+                "urgent": np.array([0.5, 0.5]),
+                "normal": np.array([0.0, 1.0]),
             }
             with patch.object(sentiment_analyzer, "get_embed_model", return_value=FakeModel()):
                 mood, _ = sentiment_analyzer.analyze_mood("Tìm phòng dưới 5 triệu ở quận Bình Thạnh")
@@ -288,51 +274,6 @@ class RoomAssistantCoreTests(unittest.TestCase):
         for question in ("Đặt lịch hẹn xem phòng", "Chat ngay với chủ", "Gọi hỗ trợ giúp mình"):
             parsed = parse_intent_and_constraint_patch(question)
             self.assertEqual(parsed["intent"], "REQUEST_ACTION")
-
-    def test_deposit_question_does_not_route_to_request_action(self):
-        parsed = parse_intent_and_constraint_patch("Tiền đặt cọc bao nhiêu?")
-        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
-        self.assertIsNone(parsed["requested_action"])
-
-    def test_action_capability_question_routes_to_faq_instead_of_action(self):
-        parsed = parse_intent_and_constraint_patch("Có thể đặt phòng qua web không?")
-        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
-        self.assertIsNone(parsed["requested_action"])
-
-    def test_compare_by_result_ordinals_collects_multiple_room_ids(self):
-        state = default_session_state("s-compare")
-        state["last_result_ids"] = ["A101", "B202", "C303"]
-        parsed = parse_intent_and_constraint_patch("So sánh phòng số 2 và phòng số 3", state)
-        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
-        self.assertEqual(parsed["referenced_room_ids"], ["B202", "C303"])
-
-    def test_room_code_question_resolves_room_detail_without_llm(self):
-        repo = InMemoryRoomRepository([
-            {
-                "room_id": "507f1f77bcf86cd799439011",
-                "metadata": {
-                    "house_name": "CS7",
-                    "room_code": "P305",
-                    "price": 3_900_000,
-                    "status_code": "0",
-                    "district_name": "Tân Phú",
-                },
-                "embedding_text": "## Thông tin cơ bản\n- Diện tích: 20M2\n## Tiện ích\n- Máy lạnh: Có",
-                "available": True,
-                "status": "active",
-            }
-        ])
-        result = asyncio.run(run_room_assistant(
-            "Phòng P305 giá bao nhiêu?",
-            session_id="room-code-detail",
-            repository=repo,
-            session_store=InMemorySessionStore(),
-            semantic_index=None,
-        ))
-        self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
-        self.assertTrue(result["rooms"])
-        self.assertEqual(result["rooms"][0]["room_code"], "P305")
-        self.assertIn("3.900.000", result["answer"])
 
     def test_patch_keeps_old_constraints_and_remove_trims_value(self):
         state = default_session_state("s1")
@@ -576,81 +517,6 @@ class RoomAssistantCoreTests(unittest.TestCase):
 
     def test_dynamic_room_answer_cache_disabled_without_safe_context(self):
         self.assertIsNone(get_cached_answer("Phòng này có nuôi mèo không?", context=None, dynamic_room=True))
-
-    def test_stream_callback_emits_progress_statuses(self):
-        events = []
-
-        async def capture(chunk):
-            events.append(chunk)
-
-        result = asyncio.run(run_room_assistant(
-            "Tìm phòng dưới 5 triệu ở Bình Thạnh",
-            session_id="stream-status",
-            repository=InMemoryRoomRepository([]),
-            session_store=InMemorySessionStore(),
-            semantic_index=None,
-            stream_callback=capture,
-        ))
-        self.assertEqual(result["intent"], "SEARCH_ROOM")
-        joined = "".join(events)
-        self.assertIn("[status:planning]", joined)
-        self.assertIn("[status:retrieving]", joined)
-        self.assertIn("[status:verifying]", joined)
-
-    def test_hallucinated_money_falls_back_to_template_answer(self):
-        store = InMemorySessionStore()
-        state = default_session_state("room-detail-guard")
-        state["current_room_id"] = "A101"
-        store.save("room-detail-guard", state, ttl_seconds=60)
-        repo = InMemoryRoomRepository([
-            {
-                "room_id": "A101",
-                "metadata": {
-                    "price": 4_500_000,
-                    "status_code": "0",
-                    "district_name": "Bình Thạnh",
-                },
-                "embedding_text": "## Thông tin cơ bản\n- Diện tích: 24M2\n## Tiện ích\n- Máy lạnh: Có",
-                "available": True,
-                "status": "active",
-                "title": "Studio Bình Thạnh",
-            }
-        ])
-
-        with patch("agents.response_writer.write_response", return_value="Phòng này giá 9 triệu/tháng."):
-            result = asyncio.run(run_room_assistant(
-                "Phòng này giá bao nhiêu?",
-                session_id="room-detail-guard",
-                repository=repo,
-                session_store=store,
-                semantic_index=None,
-            ))
-
-        self.assertNotIn("9 triệu", result["answer"])
-        self.assertIn("4.500.000", result["answer"])
-
-    def test_cost_template_reads_fixed_items_from_calculator(self):
-        parsed = {"intent": "CALCULATE_COST"}
-        grounding = {"rooms": [], "constraints": {}}
-        tool_results = {
-            "cost_estimate": {
-                "available": True,
-                "rental_months": 6,
-                "fixed_items": [
-                    {"field": "monthly_rent", "amount": 4_500_000},
-                    {"field": "parking", "amount": 150_000},
-                ],
-                "initial_payment_options": [{"deposit": 4_500_000}],
-                "recurring_fees_for_period": 900_000,
-                "total_period_cost": 32_400_000,
-                "unknown": [],
-                "not_calculated": [],
-            }
-        }
-        answer = _compose_answer_template(parsed, grounding, tool_results)
-        self.assertIn("Tiền thuê mỗi tháng", answer)
-        self.assertIn("Tiền cọc", answer)
-        self.assertIn("Tổng tạm tính 6 tháng", answer)
 
 
 if __name__ == "__main__":

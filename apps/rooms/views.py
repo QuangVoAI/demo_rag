@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 from datetime import datetime
@@ -15,7 +15,7 @@ from pymongo.errors import DuplicateKeyError
 from django.http import Http404, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import csrf_exempt, csrf_protect
+from django.views.decorators.csrf import csrf_protect
 from django.conf import settings
 
 # Add python path for RAG room assistant imports
@@ -41,9 +41,6 @@ from .services import (
     get_collection,
     get_contacts_collection,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 FALLBACK_IMAGES: tuple[str, ...] = (
@@ -186,12 +183,10 @@ def _load_filtered_rooms(
                 pass
 
     if search_query:
-        import re
-        escaped_query = re.escape(search_query)
         query["$or"] = [
-            {"metadata.house_name": {"$regex": escaped_query, "$options": "i"}},
-            {"metadata.room_code": {"$regex": escaped_query, "$options": "i"}},
-            {"embedding_text": {"$regex": escaped_query, "$options": "i"}},
+            {"metadata.house_name": {"$regex": search_query, "$options": "i"}},
+            {"metadata.room_code": {"$regex": search_query, "$options": "i"}},
+            {"embedding_text": {"$regex": search_query, "$options": "i"}},
         ]
     
     if city_slug:
@@ -889,21 +884,11 @@ def api_chat(request):
     if contact_phone and not normalized_phone:
         return JsonResponse({"success": False, "message": GENERIC_INVALID_FORMAT_MESSAGE})
 
-def _sanitize_history(history: Any, limit: int = 10) -> list[dict[str, str]]:
-    if not isinstance(history, list):
-        return []
-    sanitized: list[dict[str, str]] = []
-    for item in history[-limit:]:
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        sanitized.append({
-            "role": str(item.get("role") or "user"),
-            "content": content,
-        })
-    return sanitized
+    # Retrieve history and session ID from Django session
+    session_id = request.session.session_key
+    if not session_id:
+        request.session.save()
+        session_id = request.session.session_key
 
     session_identity = _session_chat_identity(request)
     if contact_name and normalized_phone and demo_role:

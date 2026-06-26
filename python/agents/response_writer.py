@@ -8,33 +8,50 @@ Response Writer — Sinh câu trả lời thân thiện, đúng ngữ cảnh cho
 
 Dual backend: Groq SMART (primary) → Groq FAST (fallback)
 """
-from __future__ import annotations
-
 import sys
 from pathlib import Path
-from typing import Awaitable, Callable
-
 sys.path.append(str(Path(__file__).parent.parent))
 
+from agents.llm_client import groq_chat_complete, GROQ_MODEL_SMART, GROQ_MODEL_FAST
 from config import ANSWER_MAX_TOKENS
 
-from agents.prompts import RESPONSE_WRITER_SYSTEM_PROMPTS as _SYSTEM_PROMPTS
+# ---------------------------------------------------------------------------
+# System prompts theo từng mood
+# ---------------------------------------------------------------------------
 
+_BASE_RULES = """\
+Quy tắc bắt buộc:
+- CHỈ dùng thông tin trong [DỮ LIỆU ĐÃ XÁC MINH]. Không bịa thêm giá, tiện ích, địa chỉ.
+- Nếu không có dữ liệu → thành thật nói "chưa có dữ liệu".
+- KHÔNG hứa hẹn: đặt lịch, nhắn chủ nhà, giữ phòng, thanh toán.
+- Dùng "mình/bạn", không dùng "chúng tôi/quý khách".
+- Format giá: dùng triệu (VD: 4,5 triệu/tháng).
+- Ngắn gọn, dùng danh sách khi liệt kê nhiều phòng.
+- Nếu câu hỏi yêu cầu chọn giữa A hay B, chọn trực tiếp trước rồi giải thích bằng dữ liệu đã xác minh.
+- Nếu dữ liệu có so sánh giữa lựa chọn/baseline/phương án, tách rõ từng bên; không trộn thuộc tính.
+- Không tự bịa ví dụ, kết quả, hạn chế, tiện ích hoặc điều kiện thuê ngoài dữ liệu đã xác minh."""
 
-def _get_llm_client():
-    from agents.llm_client import (
-        GROQ_MODEL_FAST,
-        GROQ_MODEL_SMART,
-        groq_chat_complete,
-        groq_stream_chat_complete,
-    )
-
-    return {
-        "fast_model": GROQ_MODEL_FAST,
-        "smart_model": GROQ_MODEL_SMART,
-        "chat_complete": groq_chat_complete,
-        "stream_chat_complete": groq_stream_chat_complete,
-    }
+_SYSTEM_PROMPTS: dict[str, str] = {
+    "frustrated": (
+        "Bạn là trợ lý tìm phòng nhatrovn — thấu cảm và thực tế.\n"
+        "Người dùng đang bực bội vì chưa tìm được phòng phù hợp.\n"
+        "Hãy: (1) thừa nhận khó khăn của họ, (2) gợi ý điều chỉnh điều kiện "
+        "cụ thể (nới ngân sách, mở rộng khu vực, bỏ bớt tiện ích), "
+        "(3) đưa ra kết quả tốt nhất hiện có nếu có.\n\n"
+        + _BASE_RULES
+    ),
+    "urgent": (
+        "Bạn là trợ lý tìm phòng nhatrovn — nhanh chóng và thiết thực.\n"
+        "Người dùng cần phòng GẤP. Ưu tiên: phòng trống ngay, có thể dọn vào sớm.\n"
+        "Đưa thông tin súc tích, rõ ràng. Tránh dài dòng.\n\n"
+        + _BASE_RULES
+    ),
+    "normal": (
+        "Bạn là trợ lý tìm phòng nhatrovn — thân thiện và chuyên nghiệp.\n"
+        "Trả lời đầy đủ, rõ ràng dựa trên dữ liệu đã xác minh.\n\n"
+        + _BASE_RULES
+    ),
+}
 
 
 def _remove_duplicate_lines(text: str) -> str:
@@ -45,27 +62,6 @@ def _remove_duplicate_lines(text: str) -> str:
         if not any(line == s or (len(line) > 20 and line in s) for s in seen[-3:]):
             seen.append(line)
     return "\n".join(seen)
-
-
-def _build_messages(
-    question: str,
-    verified_context: str,
-    history: list[dict] | None = None,
-    mood: str = "normal",
-) -> list[dict]:
-    system_prompt = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
-
-    for turn in (history or [])[-6:]:
-        role = turn.get("role", "user")
-        if role in {"user", "assistant"}:
-            messages.append({"role": role, "content": str(turn.get("content", ""))[:500]})
-
-    messages.append({
-        "role": "user",
-        "content": f"Câu hỏi: {question}\n\n[DỮ LIỆU ĐÃ XÁC MINH]\n{verified_context}",
-    })
-    return messages
 
 
 async def write_response(
@@ -86,16 +82,28 @@ async def write_response(
     Returns:
         Câu trả lời tiếng Việt.
     """
-    messages = _build_messages(question, verified_context, history=history, mood=mood)
-    llm = _get_llm_client()
+    system_prompt = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
+
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+
+    # Thêm lịch sử hội thoại gần nhất
+    for turn in (history or [])[-6:]:
+        role = turn.get("role", "user")
+        if role in {"user", "assistant"}:
+            messages.append({"role": role, "content": str(turn.get("content", ""))[:500]})
+
+    messages.append({
+        "role": "user",
+        "content": f"Câu hỏi: {question}\n\n[DỮ LIỆU ĐÃ XÁC MINH]\n{verified_context}",
+    })
 
     # Thử model thông minh trước, fallback sang model nhanh
     for model, max_tok in [
-        (llm["smart_model"], min(600, ANSWER_MAX_TOKENS)),
-        (llm["fast_model"], min(400, ANSWER_MAX_TOKENS)),
+        (GROQ_MODEL_SMART, min(600, ANSWER_MAX_TOKENS)),
+        (GROQ_MODEL_FAST, min(400, ANSWER_MAX_TOKENS)),
     ]:
         try:
-            answer = await llm["chat_complete"](
+            answer = await groq_chat_complete(
                 messages=messages,
                 model=model,
                 max_tokens=max_tok,
@@ -109,47 +117,6 @@ async def write_response(
     return ""
 
 
-async def stream_response(
-    question: str,
-    verified_context: str,
-    history: list[dict] | None = None,
-    mood: str = "normal",
-    stream_callback: Callable[[str], Awaitable[None]] | None = None,
-) -> str:
-    """Stream grounded draft tokens while collecting the full answer."""
-    messages = _build_messages(question, verified_context, history=history, mood=mood)
-    llm = _get_llm_client()
-
-    for model, max_tok in [
-        (llm["smart_model"], min(600, ANSWER_MAX_TOKENS)),
-        (llm["fast_model"], min(400, ANSWER_MAX_TOKENS)),
-    ]:
-        collected: list[str] = []
-        try:
-            async for token in llm["stream_chat_complete"](
-                messages=messages,
-                model=model,
-                max_tokens=max_tok,
-                temperature=0.2,
-            ):
-                if token:
-                    collected.append(token)
-                    if stream_callback is not None:
-                        await stream_callback(token)
-            answer = _remove_duplicate_lines("".join(collected).strip())
-            if len(answer) > 20:
-                return answer
-        except Exception:
-            continue
-
-    return await write_response(
-        question=question,
-        verified_context=verified_context,
-        history=history,
-        mood=mood,
-    )
-
-
 async def write_no_result_response(
     question: str,
     constraints: dict,
@@ -159,7 +126,6 @@ async def write_no_result_response(
     Sinh câu trả lời khi không tìm được phòng nào phù hợp.
     Gợi ý người dùng điều chỉnh điều kiện cụ thể.
     """
-    llm = _get_llm_client()
     budget = constraints.get("budget") or {}
     location = constraints.get("location") or {}
     amenities = constraints.get("amenities_required") or []
@@ -183,12 +149,12 @@ async def write_no_result_response(
     )
     system = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
     try:
-        answer = await llm["chat_complete"](
+        answer = await groq_chat_complete(
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            model=llm["fast_model"],
+            model=GROQ_MODEL_FAST,
             max_tokens=min(300, ANSWER_MAX_TOKENS),
             temperature=0.3,
         )
@@ -200,6 +166,6 @@ async def write_no_result_response(
     # Fallback template
     suggestion_str = "; ".join(suggestions)
     return (
-        f"Dạ em rà soát kỹ lắm rồi mà chưa tìm được căn nào khớp 100% điều kiện của mình ạ. "
-        f"Anh/chị thử: {suggestion_str} — rồi nhắn lại để em tìm căn đẹp nhất cho mình nha!"
+        f"Mình chưa tìm được phòng nào khớp với điều kiện hiện tại. "
+        f"Bạn thử: {suggestion_str} — rồi mình tìm lại nhé!"
     )

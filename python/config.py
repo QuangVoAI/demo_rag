@@ -39,21 +39,8 @@ if HF_TOKEN:
         pass
 
 # --- API Keys ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-_groq_keys_str = os.getenv("GROQ_API_KEYS", "")
-GROQ_API_KEYS = [k.strip() for k in _groq_keys_str.split(",") if k.strip()]
-
-_all_keys = []
-if GROQ_API_KEY and GROQ_API_KEY not in _all_keys:
-    _all_keys.append(GROQ_API_KEY)
-for k in GROQ_API_KEYS:
-    if k not in _all_keys:
-        _all_keys.append(k)
-
-# Phân chia Role-based keys (Key 1 cho tác vụ nhanh, Key 2 cho sinh text)
-GROQ_KEY_FAST = _all_keys[0] if _all_keys else ""
-GROQ_KEY_SMART = _all_keys[1] if len(_all_keys) > 1 else GROQ_KEY_FAST
-
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEYS", GROQ_API_KEY).split(",") if k.strip()]
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 
@@ -79,8 +66,7 @@ QDRANT_SKIP_COMPAT_CHECK = _env_bool("QDRANT_SKIP_COMPAT_CHECK", True)
 
 # --- MongoDB (Room Repository) ---
 MONGODB_URI = os.getenv("MONGODB_URI", "")
-MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", os.getenv("MONGODB_DB_NAME", "demo_rag"))
-MONGODB_DB_NAME = MONGODB_DATABASE
+MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "demo_rag")
 MONGODB_ROOMS_COLLECTION = os.getenv("MONGODB_ROOMS_COLLECTION", "rooms")
 
 # --- Retrieval (low-VRAM defaults) ---
@@ -113,7 +99,7 @@ RRF_K = int(os.getenv("RRF_K", "60"))
 # --- Metadata Search (boost theo tín hiệu rõ từ query) ---
 METADATA_BOOST = float(os.getenv("METADATA_BOOST", "0.5"))
 METADATA_FIELDS = tuple(
-    f.strip() for f in os.getenv("METADATA_FIELDS", "room_id,room_code,district,title,amenities,address").split(",") if f.strip()
+    f.strip() for f in os.getenv("METADATA_FIELDS", "room_id,district,title,amenities,address").split(",") if f.strip()
 )
 
 # --- Feedback retry loop (bounded, có log JSONL) ---
