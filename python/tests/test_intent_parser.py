@@ -350,6 +350,62 @@ class IntentParserTests(unittest.TestCase):
                 parsed = asyncio.run(parse_intent_async("quy trình bên mình ra sao?", None))
         self.assertEqual(parsed["intent"], "REQUEST_FAQ")
 
+    def test_ask_more_details_with_room_id_is_ask_about_room(self):
+        room_id = "62963aae137e2a3d7e03c9d0"
+        state = default_session_state("s-ask-detail")
+        state["current_room_id"] = room_id
+        state["last_intent"] = "REFINE_SEARCH"
+        state["constraints"]["location"]["districts"] = ["quan 7"]
+        state["constraints"]["budget"]["max"] = 4000000
+
+        question = f"Phòng #{room_id} — cho em hỏi thêm chi tiết ạ"
+        parsed = parse_intent_and_constraint_patch(question, state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], room_id)
+
+    def test_async_ask_more_details_prefers_llm_when_verifier_returns_prose(self):
+        room_id = "62963aae137e2a3d7e03c9d0"
+        state = default_session_state("s-ask-detail-async")
+        state["current_room_id"] = room_id
+        state["last_intent"] = "REFINE_SEARCH"
+
+        async def ask_room_llm(_question, _state):
+            return {
+                "intent": "ASK_ABOUT_ROOM",
+                "confidence": 1.0,
+                "operations": [],
+                "referenced_room_ids": [room_id],
+            }
+
+        async def broken_verifier(_question, _state, _regex_candidate, _llm_candidate):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", ask_room_llm):
+            with patch("room_assistant.intent._llm_verify_routing_decision", broken_verifier):
+                parsed = asyncio.run(
+                    parse_intent_async(f"Phòng #{room_id} — cho em hỏi thêm chi tiết ạ", state)
+                )
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], room_id)
+
+    def test_room_specific_pet_question_is_ask_about_room_not_faq(self):
+        room_id = "62963aae137e2a3d7e03c9d0"
+        state = default_session_state("s-pet-room")
+        state["current_room_id"] = room_id
+        state["last_intent"] = "COMPARE_ROOMS"
+        state["last_result_ids"] = [room_id, "6399d72f07985f204285aed9"]
+
+        question = f"phòng #{room_id} có cho nuôi mèo ko?"
+        parsed = parse_intent_and_constraint_patch(question, state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], room_id)
+
+    def test_refine_search_still_matches_add_criteria_phrases(self):
+        state = default_session_state("s-refine-them")
+        state["last_intent"] = "SEARCH_ROOM"
+        parsed = parse_intent_and_constraint_patch("thêm điều kiện máy lạnh nha", state)
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+
 
 if __name__ == "__main__":
     unittest.main()

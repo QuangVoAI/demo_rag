@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Công thức 3 lớp: thấu cảm → thông tin → hướng hành động (xem phòng / đặt lịch)
@@ -100,6 +101,8 @@ def is_policy_question(question: str, current_state: dict[str, Any] | None = Non
     """Câu hỏi chính sách/quy trình (cọc, pet, xem phòng...) không cần search phòng."""
     q = (question or "").lower()
     if not match_staff_faq(q):
+        return False
+    if re.search(r"\b[a-f0-9]{24}\b", q) or re.search(r"#[A-Za-z0-9][A-Za-z0-9_-]{1,40}", q):
         return False
     normalized = _norm_policy(q)
     if current_state and (

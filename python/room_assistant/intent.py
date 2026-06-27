@@ -249,8 +249,9 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "co cho nuoi", "cho nuoi thu", "can ho nay", "phong nay co",
     ),
     "REFINE_SEARCH": (
-        "them ", "bo ", "khong can", "tang ngan sach", "giam ngan sach",
-        "doi sang", "thay doi", "chinh sua dieu kien", "bo tieu chi",
+        "them dieu kien", "them tieu chi", "them loc", "them yeu cau",
+        "them ngan sach", "bo loc", "bo ", "khong can", "tang ngan sach",
+        "giam ngan sach", "doi sang", "thay doi", "chinh sua dieu kien", "bo tieu chi",
     ),
     "SEARCH_ROOM": (
         "tim phong", "phong tro", "nha tro", "can ho", "studio",
@@ -278,6 +279,8 @@ DETAIL_FIELD_KEYWORDS: tuple[str, ...] = (
     "gui xe", "xe dien", "may giat", "wifi", "tu lanh", "nuoc nong",
     "gac", "noi that", "full noi that", "nem", "giuong", "tu quan ao", "ke bep", "thang may",
     "may lanh", "dien", "nuoc", "quan ly", "xac thuc", "anhome ho tro",
+    "hoi them", "cho biet them", "cho minh biet", "chi tiet", "them chi tiet",
+    "thong tin them", "noi ro them", "noi ro hon",
 )
 
 ROOM_REFERENCE_KEYWORDS: tuple[str, ...] = (
@@ -1131,6 +1134,25 @@ def _default_verifier_decision(regex_candidate: dict[str, Any], llm_candidate: d
             "reason": "llm_rescue_for_unclear_regex",
         }
 
+    llm_room_ids = list(llm_candidate.get("referenced_room_ids") or [])
+    if (
+        llm_intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST"}
+        and regex_intent in {"REFINE_SEARCH", "REQUEST_FAQ", "GENERAL_HELP"}
+        and llm_room_ids
+        and llm_conf >= 0.9
+        and same_hard
+    ):
+        return {
+            "approved_intent": llm_intent,
+            "use_llm_intent": True,
+            "use_llm_hard_slots": False,
+            "allow_llm_soft_slots": True,
+            "approved_room_ids": llm_room_ids,
+            "approved_requested_action": llm_candidate.get("requested_action"),
+            "hard_conflict": False,
+            "reason": "llm_room_detail_over_regex_mismatch",
+        }
+
     return {
         "approved_intent": regex_intent,
         "use_llm_intent": False,
@@ -1194,6 +1216,8 @@ def _regex_classify(
     if _selected_room_id_from_ordinal(normalized, current_state):
         return "ASK_ABOUT_ROOM", 1.0
     if _is_room_detail_question(normalized, ids, current_state):
+        return "ASK_ABOUT_ROOM", 1.0
+    if ids and _has_keyword(normalized, DETAIL_FIELD_KEYWORDS):
         return "ASK_ABOUT_ROOM", 1.0
 
     for intent, keywords in _INTENT_KEYWORDS.items():
@@ -1279,6 +1303,15 @@ async def _llm_classify_intent(question: str, current_state: dict[str, Any] | No
     return {}
 
 
+def _is_valid_verifier_payload(data: dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("approved_intent") not in INTENTS:
+        return False
+    required = {"approved_intent", "use_llm_intent", "hard_conflict", "reason"}
+    return all(key in data for key in required)
+
+
 async def _llm_verify_routing_decision(
     question: str,
     current_state: dict[str, Any] | None,
@@ -1308,7 +1341,9 @@ async def _llm_verify_routing_decision(
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start >= 0 and end > start:
-            return json.loads(raw[start:end])
+            data = json.loads(raw[start:end])
+            if _is_valid_verifier_payload(data):
+                return data
     except Exception:
         pass
     return {}
@@ -1363,7 +1398,12 @@ def parse_intent_and_constraint_patch(
         intent = "COMPARE_ROOMS"
     try:
         from room_assistant.staff_knowledge import is_policy_question
-        if is_policy_question(text, current_state) and not action:
+        if (
+            is_policy_question(text, current_state)
+            and not action
+            and not referenced_room_ids
+            and not _is_room_detail_question(normalized, referenced_room_ids, current_state)
+        ):
             intent = "REQUEST_FAQ"
     except Exception:
         pass
