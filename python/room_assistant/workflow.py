@@ -58,6 +58,7 @@ except Exception:
 _session_store: SessionStore | None = None
 _room_repository: RoomRepository | None = None
 _semantic_index: RoomSemanticIndex | None = None
+_UNSET = object()
 _init_lock = threading.Lock()
 _tool_registry = ReadOnlyToolRegistry()
 _logger = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ async def run_room_assistant(
     stream_callback: Callable[[str], Awaitable[None]] | None = None,
     repository: RoomRepository | None = None,
     session_store: SessionStore | None = None,
-    semantic_index: RoomSemanticIndex | None = None,
+    semantic_index: Any = _UNSET,
 ) -> dict[str, Any]:
     """Chạy một lượt hội thoại của người dùng."""
     started = time.time()
@@ -176,7 +177,8 @@ async def run_room_assistant(
     if stream_callback:
         await stream_callback("[status:Phân tích|Hệ thống] Đang phân tích yêu cầu...\n")
 
-    semantic_index = semantic_index if semantic_index is not None else _get_semantic_index()
+    if semantic_index is _UNSET:
+        semantic_index = _get_semantic_index()
     parsed = await parse_intent_async(question, state_before)
     merged_state, applied_operations = apply_operations(state_before, parsed["operations"])
 

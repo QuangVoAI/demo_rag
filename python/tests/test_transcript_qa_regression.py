@@ -100,14 +100,14 @@ class TranscriptQaRegressionTests(unittest.TestCase):
 
     def test_full_transcript_critical_turns(self):
         questions = [
-            "tìm cho tôi phòng quận 7 ở đường Nguyễn Hữu Thọ",
-            "Có gợi ý phòng nào gần đó k?",
-            "Vậy phòng ở phường tân hưng",
-            "Tìm phòng ở quận 7",
-            "Ngân sách 4tr",
-            "Tìm cho tôi phòng ở quận 7 dưới 5 triệu",
-            "dưới 4 triệu đi",
-            "Căn nào mà gần TDTU á",
+            "Chị mới về Sài Gòn, em tìm giúp chị phòng quận 7 gần đường Nguyễn Hữu Thọ nha",
+            "Trong list vừa rồi có căn nào gần đó không em?",
+            "Ủa vậy chị muốn xem thêm phòng ở phường Tân Hưng",
+            "Em lọc lại giúp chị phòng quận 7 nha",
+            "Ngân sách chị khoảng 4 triệu thôi",
+            "Có căn nào quận 7 dưới 5 triệu mà sạch sẽ không?",
+            "Hơi căng quá, chị muốn dưới 4 triệu thôi",
+            "Căn nào gần TDTU cho tiện đi học vậy em?",
         ]
         results = self._run_session(questions, session_id="transcript-full")
 
@@ -145,7 +145,7 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         self.assertIn("phòng trọ", off_topic["answer"].lower())
 
         empathy = asyncio.run(run_room_assistant(
-            "Giá cao thế, sinh viên sao thuê nổi",
+            "Giá cao quá em ơi, sinh viên như chị sao thuê nổi",
             session_id="empathy",
             repository=InMemoryRoomRepository(_q7_rooms()),
             session_store=InMemorySessionStore(),
@@ -182,7 +182,7 @@ class TranscriptQaRegressionTests(unittest.TestCase):
             },
         ])
         result = asyncio.run(run_room_assistant(
-            "Tìm phòng quận 1 dưới 6 triệu",
+            "Em tìm giúp chị phòng quận 1 dưới 6 triệu, ưu tiên giá mềm nha",
             session_id="budget-cap",
             repository=repo,
             session_store=InMemorySessionStore(),
@@ -200,7 +200,7 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         store = InMemorySessionStore()
         session_id = "compare-preserve"
         first = asyncio.run(run_room_assistant(
-            "Tìm phòng quận 7 dưới 5 triệu",
+            "Em lọc giúp chị vài căn quận 7 dưới 5 triệu nha",
             session_id=session_id,
             repository=repo,
             session_store=store,
@@ -209,7 +209,7 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(len(first.get("rooms") or []), 2)
 
         asyncio.run(run_room_assistant(
-            "dưới 3 triệu",
+            "Chị thu hẹp còn dưới 3 triệu thôi em",
             session_id=session_id,
             repository=repo,
             session_store=store,
@@ -217,7 +217,7 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         ))
 
         compare = asyncio.run(run_room_assistant(
-            "So sánh 2 phòng đầu tiên",
+            "So sánh giúp chị 2 căn đầu tiên để chị chọn nhanh",
             session_id=session_id,
             repository=repo,
             session_store=store,
