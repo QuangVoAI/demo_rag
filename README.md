@@ -1,859 +1,362 @@
-# Demo RAG Django + MongoDB Cho Website Cho Thuê Nhà Trọ
+# Nhatrovn — Room Assistant RAG
 
-## 1. Mục tiêu demo
+Chatbot tư vấn phòng trọ cho [nhatrovn.vn](https://nhatrovn.vn): hiểu yêu cầu tiếng Việt, lọc phòng theo tiêu chí cứng từ MongoDB, xếp hạng ngữ nghĩa qua Qdrant, trả lời theo giọng nhân viên sales và có kiểm duyệt chống bịa dữ liệu.
 
-Xây dựng một chatbot tìm nhà trọ cho website thương mại. Khi khách hàng chat như:
+Ví dụ hội thoại:
 
-- "Tìm phòng trọ 2 phòng ngủ gần Quận 7"
-- "Cần phòng giá dưới 5 triệu, có wifi và máy lạnh"
-- "Tìm nhà trọ gần Thủ Đức, phù hợp cho sinh viên"
+- *"Em lọc giúp chị vài căn quận 7 dưới 4 triệu, ưu tiên sạch sẽ nha"*
+- *"Phòng #62963aae137e2a3d7e03c9d0 — cho em hỏi thêm chi tiết ạ"*
+- *"So sánh giúp chị 2 căn đầu tiên để chị chọn nhanh"*
 
-hệ thống sẽ:
+---
 
-1. Hiểu yêu cầu của người dùng
-2. Truy xuất dữ liệu nhà trọ trong MongoDB
-3. Kết hợp filter có cấu trúc và RAG semantic search
-4. Trả về danh sách nhà trọ phù hợp nhất
-5. Sinh câu trả lời tự nhiên qua chatbot
+## 1. Kiến trúc tổng quan
 
-## 2. Kiến trúc hệ thống hiện tại (Multi-Agent RAG System)
-
-Hệ thống được thiết kế theo kiến trúc **Multi-Agent** kết hợp **RAG (Retrieval-Augmented Generation)**, sử dụng LangGraph để quản lý luồng hội thoại.
+Luồng production **không** đi qua LangGraph. Entry point thực tế là `python/room_assistant/workflow.py` (`run_room_assistant`), được Django API và `agents/graph.py` gọi trực tiếp.
 
 ```mermaid
-graph TD
-    User([Người dùng]) -->|Chat| DjangoAPI[Django API]
-    DjangoAPI -->|Kafka/Direct| Graph[LangGraph Agent Workflow]
-    
-    subgraph Agent Workflow ["LangGraph Workflow (python/agents/graph.py)"]
-        Router[Router / Intent Parser] -->|Xác định ý định| Tool[RAG Tools]
-        Tool -->|Tìm kiếm / Tính toán| Writer[Response Writer]
-        Writer -->|Draft Answer| Reviewer[Safety Reviewer]
-        Reviewer -->|Duyệt/Sửa| Output[Final Response]
+flowchart TB
+    subgraph Clients
+        WebUI[Demo chat UI / nhatrovn.vn]
     end
 
-    subgraph RAG Core ["Retrieval Engine"]
-        Tool -->|Semantic Search| Qdrant[(Qdrant Vector DB)]
-        Tool -->|Structured Filter| MongoDB[(MongoDB Atlas)]
+    subgraph Django["Django API (apps/rooms)"]
+        Query["POST /api/rag/query/"]
+        Stream["POST /api/rag/stream/"]
+        Health["GET /api/health/"]
     end
-    
-    Output --> DjangoAPI
-    DjangoAPI --> User
+
+    subgraph Assistant["Room Assistant (python/room_assistant)"]
+        WF[workflow.py]
+        Intent[intent.py<br/>regex + LLM + verifier]
+        Tools[tools.py<br/>read-only tools]
+        Session[session_store.py]
+        Staff[staff_knowledge.py]
+    end
+
+    subgraph LLM["Groq"]
+        Fast[llama-3.1-8b-instant<br/>routing / classify]
+        Smart[llama-3.3-70b<br/>response writer]
+    end
+
+    subgraph Data["Data layer"]
+        Mongo[(MongoDB<br/>rooms collection)]
+        Qdrant[(Qdrant<br/>rooms_v1 vectors)]
+        Redis[(Redis<br/>rate limit / cache)]
+    end
+
+    subgraph Models["Local models"]
+        Embed[BGE-M3 embedding]
+        Rerank[BGE reranker optional]
+        Mood[Sentiment centroids]
+    end
+
+    subgraph Observe["Observability"]
+        Langfuse[Langfuse traces]
+    end
+
+    WebUI --> Query
+    WebUI --> Stream
+    Query --> WF
+    Stream --> WF
+    WF --> Intent
+    Intent --> Fast
+    WF --> Tools
+    WF --> Session
+    Tools --> Mongo
+    Tools --> Qdrant
+    Tools --> Embed
+    Tools --> Rerank
+    WF --> Smart
+    WF --> Staff
+    WF --> Mood
+    WF --> Langfuse
+    Session --> Redis
+    Mongo -. sync/index .-> Qdrant
 ```
 
-## 3. Cấu trúc Source Code & Chức năng từng file
+### Vai trò từng thành phần
 
-### 3.1. `python/agents/` (Các Node/Agent trong LangGraph)
-Thư mục này chứa não bộ của hệ thống, quản lý luồng chạy của Multi-Agent:
-- **`graph.py`**: Cốt lõi của hệ thống, định nghĩa luồng state machine (LangGraph) liên kết các Agents lại với nhau.
-- **`state.py`**: Định nghĩa cấu trúc `AgentState` lưu trữ toàn bộ ngữ cảnh trong suốt một phiên chat.
-- **`prompts.py`**: Nơi tập trung toàn bộ System Prompts của các Agent (Giúp dễ tinh chỉnh persona của Bot).
-- **`router.py`**: Quyết định bước tiếp theo dựa vào intent (Ví dụ: Chạy RAG, Tính chi phí, hay trả lời trực tiếp).
-- **`response_writer.py`**: Agent đóng vai trò Sales, sinh câu trả lời tự nhiên, thấu cảm từ dữ liệu RAG và gọi Call-to-action.
-- **`reviewer.py`**: Agent kiểm duyệt an toàn, đảm bảo bot không bịa giá (hallucination) và không hứa lèo với khách.
-- **`rewriter.py`**: Agent viết lại câu truy vấn (Query Rewriter) để hệ thống RAG tìm kiếm chính xác hơn.
-- **`extractor.py`**: Trích xuất thông tin tài chính tĩnh từ text (Air-gapped extraction) an toàn.
-- **`sentiment_analyzer.py`**: Phân tích cảm xúc người dùng (Bực dọc, Gấp gáp, Bình thường) để đổi giọng điệu cho `response_writer`.
-- **`llm_client.py`**: Wrapper kết nối API LLM (Groq) với cơ chế Role-based API Keys (phân chia tải), Streaming SSE an toàn.
-- **`model_registry.py`**: Đăng ký các model LLM (Phân loại `SMART` cho tác vụ tạo text, `FAST` cho tác vụ phân tích ngầm).
+| Thành phần | Vai trò |
+|---|---|
+| **Django** | API REST/SSE, rate limit, CSRF cho UI nội bộ |
+| **MongoDB** | Nguồn sự thật: giá, quận, trạng thái phòng, `embedding_text` |
+| **Qdrant** | Hybrid dense + sparse search trên tập ứng viên đã lọc |
+| **Regex intent** | Xử lý nhanh intent/slot rõ ràng (~85% lượt) |
+| **Groq FAST** | LLM classify + router verifier khi regex không chắc |
+| **Groq SMART** | Sinh câu trả lời sales (khi bật async writer) |
+| **Reviewer** | Chặn hallucination, abstain khi thiếu grounding |
+| **Langfuse** | Trace từng lượt: intent, retrieval, generation |
 
-### 3.2. `python/room_assistant/` (Công cụ và Nghiệp vụ RAG)
-Xử lý các logic nghiệp vụ trước khi đưa vào Agent sinh câu trả lời:
-- **`intent.py`**: Phân tích ý định người dùng (SEARCH_ROOM, COMPARE_ROOMS, CALCULATE_COST, v.v) và trích xuất tham số (giá, quận) thông qua LLM.
-- **`workflow.py`**: Quản lý các công cụ, thực thi nghiệp vụ (ví dụ: Lấy so sánh phòng, tính chi phí thuê).
-- **`tools.py`**: Định nghĩa các Function Calling / Tools cho RAG để Agent tương tác.
+---
 
-### 3.3. `python/retrieval/` (Truy xuất Dữ liệu - RAG Engine)
-Chịu trách nhiệm tìm kiếm ngữ nghĩa và lọc dữ liệu:
-- **`search.py`**: Điểm truy cập chính cho tìm kiếm (Hybrid Search).
-- **`hybrid.py`**: Thuật toán gộp kết quả từ Vector và MongoDB bằng Reciprocal Rank Fusion (RRF).
-- **`vector.py` / `qdrant_client.py`**: Giao tiếp trực tiếp với Qdrant Vector DB.
-- **`embeddings.py`**: Khởi tạo và gọi Embedding Model (ví dụ: BGE-M3) để chuyển text thành vector.
+## 2. Luồng xử lý một lượt chat
 
-### 3.4. `python/indexing/` & `python/kafka_workers/` (Đồng bộ Realtime)
-- **`room_indexer.py`**: Kafka Consumer lắng nghe sự thay đổi (Thêm, Sửa, Xóa phòng) từ MongoDB Change Streams để cập nhật Qdrant.
-- **`pipeline.py`**: Luồng vectorize và chuẩn hóa dữ liệu phòng trọ trước khi index vào Qdrant.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Khách hàng
+    participant API as Django RAG API
+    participant WF as workflow.py
+    participant I as intent.py
+    participant S as session_store
+    participant T as tools.py
+    participant M as MongoDB
+    participant Q as Qdrant
+    participant W as response_writer
+    participant R as reviewer
 
-### 3.5. Hệ thống chung
-- **`python/config.py`**: File cấu hình tập trung (Đọc từ `.env`, Load thông số kết nối DB, LLM, Timeout).
+    U->>API: message + session_id
+    API->>WF: run_room_assistant()
+    WF->>S: load session state
+    WF->>I: parse_intent_async()
+    Note over I: regex trước → LLM nếu mơ hồ → verifier nếu conflict
+    I-->>WF: intent + constraint patch
+    WF->>S: merge operations (budget, quận, tiện ích...)
+    WF->>T: route theo intent
+    alt SEARCH / REFINE / FIND_SIMILAR
+        T->>M: search_by_constraints (hard filter)
+        T->>Q: semantic rank trên candidate_ids
+        T->>M: get_many_by_ids (authoritative prices)
+    else ASK_ABOUT_ROOM / CALCULATE_COST
+        T->>M: retrieve_room_context
+    else COMPARE_ROOMS
+        T->>M: compare_rooms
+  else REQUEST_FAQ
+        T->>WF: staff_knowledge FAQ
+    end
+    WF->>WF: grounding_check + compose_answer
+    opt LLM writer enabled
+        WF->>W: draft từ dữ liệu đã xác minh
+        W->>R: safety review
+    end
+    WF->>S: persist state + trace
+    WF-->>API: answer + rooms + session_state
+    API-->>U: JSON / SSE
+```
 
-## 4. Luồng dữ liệu indexing
+### Intent hỗ trợ
 
-Luồng này chạy khi thêm mới hoặc cập nhật bài đăng nhà trọ.
+| Intent | Mô tả |
+|---|---|
+| `SEARCH_ROOM` | Tìm/lọc phòng theo tiêu chí mới |
+| `REFINE_SEARCH` | Điều chỉnh tiêu chí đang có trong session |
+| `ASK_ABOUT_ROOM` | Hỏi chi tiết một phòng (giá, tiện ích, còn phòng…) |
+| `COMPARE_ROOMS` | So sánh 2–3 phòng trong list kết quả |
+| `CALCULATE_COST` | Ước tính chi phí thuê |
+| `FIND_SIMILAR` | Tìm phòng tương tự |
+| `REQUEST_FAQ` | Chính sách: cọc, pet, xem phòng, giảm giá… |
+| `REQUEST_ACTION` | Đặt lịch / thanh toán / giữ phòng → từ chối lịch sự |
+| `GENERAL_HELP` | Chào hỏi, off-topic, phản đối giá |
 
-1. Admin thêm/sửa nhà trọ trong hệ thống
-2. Django nhận document nhà trọ
-3. Tạo một trường text tổng hợp, ví dụ `embedding_text`
-4. Gọi embedding model để tạo vector
-5. Lưu vector vào vector DB kèm `room_id`
-6. Khi update document thì cập nhật lại vector
-7. Khi xóa document thì xóa vector tương ứng
+**Routing hai tầng** (`intent.py`):
 
-### Ví dụ `embedding_text`
+1. **Regex/domain parser** — room id, quận, budget, ordinal phòng, keyword tiếng Việt.
+2. **LLM classifier** (Groq FAST) — cứu trường hợp mơ hồ.
+3. **Router verifier** — khi regex và LLM conflict ở tín hiệu cứng; fallback rule-based nếu LLM trả prose thay vì JSON.
+
+Bot **read-only**: không tự đặt lịch, thu cọc, giữ phòng hay sửa tin đăng.
+
+---
+
+## 3. Hybrid retrieval
+
+Nguyên tắc: **MongoDB lọc cứng trước, Qdrant xếp hạng sau**.
+
+```mermaid
+flowchart LR
+    Q[Câu hỏi khách] --> Signals[metadata signals<br/>quận, mã phòng, landmark]
+    Q --> Constraints[session constraints<br/>budget, amenities, pets...]
+
+    Constraints --> MongoFilter[MongoDB<br/>build_mongo_query]
+    MongoFilter --> Candidates[Ứng viên ≤ 50 phòng]
+
+    Signals --> MetaSearch[search_by_metadata]
+    MetaSearch --> Candidates
+
+    Candidates --> QdrantRank[Qdrant hybrid search<br/>dense BGE-M3 + sparse BM25]
+    QdrantRank --> Rerank[Reranker optional]
+    Rerank --> Authoritative[get_many_by_ids<br/>giá từ Mongo]
+    Authoritative --> TopK[Top K phòng trả khách]
+```
+
+- Giá, quận, trạng thái còn phòng: **luôn** lấy từ Mongo sau khi rank.
+- `semantic_index=None` khi gọi `run_room_assistant`: chỉ Mongo (dùng trong unit test).
+- Không truyền `semantic_index`: tự kết nối Qdrant (`QDRANT_URL`).
+
+---
+
+## 4. Luồng indexing MongoDB → Qdrant
+
+```mermaid
+flowchart TD
+    Admin[Cập nhật phòng trên nhatrovn] --> Mongo[(MongoDB rooms)]
+    Mongo --> PathA[Batch: index_mongo_to_qdrant.py]
+    Mongo --> PathB[CDC: mongo_cdc_publisher.py]
+    Mongo --> PathC[Kafka: kafka_indexer.py]
+    PathA --> Embed[BGE-M3 encode embedding_text]
+    PathB --> Embed
+    PathC --> Embed
+    Embed --> Qdrant[(Qdrant rooms_v1)]
+```
+
+Script chính:
+
+```bash
+cd python
+python scripts/index_mongo_to_qdrant.py
+```
+
+---
+
+## 5. Cấu trúc mã nguồn
 
 ```text
-Phòng trọ 2 phòng ngủ tại Quận 7, gần Lotte Mart, giá 4.8 triệu,
-diện tích 28m2, có wifi, máy lạnh, chỗ để xe, phù hợp cho sinh viên.
+nhatrovn/
+├── apps/rooms/              # Django: RAG API, demo UI, Mongo helpers
+├── config/                  # Django settings, urls
+├── python/
+│   ├── room_assistant/      # ★ Core: workflow, intent, tools, retrieval
+│   ├── agents/              # LLM client, writer, reviewer, sentiment
+│   ├── retrieval/           # Qdrant client, hybrid search, reranker
+│   ├── kafka_workers/       # Optional realtime index consumers
+│   ├── scripts/             # Index sync, CDC, chat backend test
+│   └── tests/               # Unit + Mongo/Qdrant integration tests
+├── docker-compose.qdrant.yml
+├── RAG_API_CONTRACT.md      # Contract REST cho nhatrovn.vn
+└── README_DEPLOY.md         # Hướng dẫn deploy production
 ```
 
-## 5. Luồng chat RAG khi người dùng tìm nhà trọ
+### File quan trọng
 
-### Bước 1. Người dùng gửi câu hỏi
+| File | Chức năng |
+|---|---|
+| `python/room_assistant/workflow.py` | Orchestrator mỗi lượt chat |
+| `python/room_assistant/intent.py` | Regex + LLM intent & constraint extraction |
+| `python/room_assistant/repository.py` | Mongo adapter, `build_mongo_query` |
+| `python/room_assistant/retrieval.py` | Repository-first hybrid search |
+| `python/room_assistant/staff_knowledge.py` | Kịch bản FAQ / thương lượng giá |
+| `python/agents/response_writer.py` | Sinh câu trả lời sales |
+| `python/agents/reviewer.py` | Kiểm duyệt grounding / abstain |
+| `python/retrieval/qdrant_client.py` | Qdrant hybrid wrapper |
+| `apps/rooms/views.py` | `/api/rag/query`, `/api/rag/stream` |
 
-Ví dụ:
+---
 
-```text
-Tìm phòng trọ 2 phòng ngủ gần Thủ Đức, giá dưới 6 triệu, có wifi.
+## 6. Chạy local
+
+### Yêu cầu
+
+- Python 3.10+
+- MongoDB (Atlas hoặc local) có collection `rooms`
+- Qdrant (khuyến nghị cho search đầy đủ)
+- Groq API key (cho LLM classify/writer)
+- GPU tùy chọn (BGE-M3 embedding local)
+
+### 1. Cấu hình môi trường
+
+```bash
+cp .env.example .env
+# Điền MONGODB_URI, GROQ_API_KEY, QDRANT_URL, ...
 ```
 
-### Bước 2. Django nhận request
+### 2. Khởi động Qdrant
 
-API ví dụ:
-
-```http
-POST /api/chat/ask
+```bash
+docker compose -f docker-compose.qdrant.yml up -d
 ```
 
-Body:
+Kiểm tra: `http://localhost:6333/collections` → collection `rooms_v1`.
+
+### 3. Đồng bộ vector (lần đầu / sau khi Mongo đổi)
+
+```bash
+cd python
+python scripts/index_mongo_to_qdrant.py
+```
+
+### 4. Chạy Django demo
+
+```powershell
+.\scripts\run_local_demo.ps1
+# hoặc: python manage.py runserver 127.0.0.1:8000 --insecure
+```
+
+### 5. Chạy test
+
+```bash
+cd python
+python -m pytest tests/ -q
+```
+
+Bộ `tests/test_mongo_behavior_scenarios.py` chạy trên MongoDB thật, đối chiếu giá phòng và kiểm tra kịch bản sales (off-topic, đổi ý, thương lượng, hỏi chi tiết phòng).
+
+---
+
+## 7. API
+
+| Endpoint | Mục đích |
+|---|---|
+| `POST /api/rag/query/` | REST đồng bộ cho backend nhatrovn.vn |
+| `POST /api/rag/stream/` | SSE cho demo UI (same-origin + CSRF) |
+| `GET /api/health/` | Health check |
+
+Chi tiết request/response/error: [RAG_API_CONTRACT.md](./RAG_API_CONTRACT.md)
+
+Deploy production: [README_DEPLOY.md](./README_DEPLOY.md)
+
+---
+
+## 8. Schema MongoDB `rooms` (runtime)
+
+Collection production dùng bởi `MongoRoomRepository`:
 
 ```json
 {
-  "session_id": "abc123",
-  "message": "Tìm phòng trọ 2 phòng ngủ gần Thủ Đức, giá dưới 6 triệu, có wifi"
+  "_id": "62963aae137e2a3d7e03c9d0",
+  "room_id": "62963aae137e2a3d7e03c9d0",
+  "house_id": "...",
+  "embedding_text": "## Thông tin nhà\n- Địa chỉ: ...\n## Giá & phí\n...",
+  "tien_ich_xq": "Gần TDTU, tiện đi học",
+  "metadata": {
+    "house_name": "YUHOME 3",
+    "room_code": "203",
+    "district_name": "Quận 7",
+    "ward_name": "Phú Mỹ",
+    "price": 2300000,
+    "status_code": "0",
+    "status_desc": "Phòng trống"
+  }
 }
 ```
 
-### Bước 3. Phân tích ý định và tách filter
+`normalize_room()` trong `schemas.py` chuẩn hóa document này thành read model thống nhất cho tools và template trả lời.
 
-Cần tách ra 2 loại thông tin:
+---
 
-#### a. Filter có cấu trúc
+## 9. Observability
 
-- `location = Thu Duc`
-- `num_rooms = 2`
-- `price <= 6000000`
-- `amenities contains wifi`
+Mỗi lượt chat tạo span Langfuse `room_assistant_turn`, bao gồm:
 
-#### b. Nhu cầu semantic
+- `groq_chat_complete` — intent classify & router verifier
+- Metadata intent, retrieval confidence, processing time
 
-Nếu người dùng nói:
+Cấu hình qua biến môi trường Langfuse trong `.env` (xem `.env.example`).
 
-- "gần trường đại học"
-- "khu an ninh"
-- "phù hợp cho sinh viên"
-- "không gian yên tĩnh"
+---
 
-thì phần này khó query bằng filter cứng, nên dùng vector search.
+## 10. Nguyên tắc thiết kế
 
-### Bước 4. Structured retrieval từ MongoDB
+1. **Hybrid RAG, không vector-only** — filter cứng (giá, quận, còn phòng) trước semantic rank.
+2. **Grounded answers** — giá và tiện ích lấy từ Mongo; reviewer abstain khi thiếu context.
+3. **Sales tone có guardrail** — đồng cảm + CTA xem phòng, không hứa giảm giá / đặt cọc hộ.
+4. **Regex-first routing** — giảm latency và chi phí LLM; LLM chỉ cứu edge case.
+5. **Session-aware** — `REFINE_SEARCH` giữ ngữ cảnh budget/location qua nhiều lượt.
 
-Dùng các field rõ ràng để lọc trước:
+---
 
-- địa điểm
-- giá
-- số phòng
-- diện tích
-- tiện ích
+## Tài liệu liên quan
 
-Mục tiêu là loại bỏ các kết quả chắc chắn sai.
-
-### Bước 5. Semantic retrieval từ vector DB
-
-1. Embedding câu hỏi của người dùng
-2. Search vector DB
-3. Lấy top K document có nghĩa gần nhất
-
-Mục tiêu là tìm các bài đăng có mô tả phù hợp, dù người dùng không dùng đúng keyword.
-
-### Bước 6. Hybrid merge
-
-Gộp 2 nguồn kết quả:
-
-- kết quả filter MongoDB
-- kết quả vector DB
-
-Sau đó chấm điểm lại:
-
-- đúng địa điểm
-- đúng số phòng
-- đúng mức giá
-- phù hợp semantic
-
-Có thể ưu tiên:
-
-- document thỏa filter có cấu trúc
-- document có similarity score cao
-
-### Bước 7. Đưa context vào LLM
-
-Prompt gửi cho LLM gồm:
-
-- câu hỏi của người dùng
-- danh sách 3-5 nhà trọ phù hợp nhất
-- instruction: chỉ được trả lời dựa trên dữ liệu retrieve
-
-### Bước 8. Trả lời chatbot
-
-Chatbot trả lời ví dụ:
-
-```text
-Mình tìm được 3 phòng trọ phù hợp gần Thủ Đức, giá dưới 6 triệu.
-
-1. Phòng A - 5.5 triệu - 2 phòng ngủ - có wifi - cách Đại học SPKT 1.2 km
-2. Phòng B - 5.8 triệu - 2 phòng ngủ - có wifi, máy lạnh
-3. Phòng C - 4.9 triệu - 1 phòng ngủ lớn, phù hợp 2 người ở
-
-Bạn muốn ưu tiên phòng gần trường hay phòng rẻ hơn?
-```
-
-## 6. Nguyên tắc retrieval nên áp dụng
-
-Không nên chỉ dùng vector search.
-
-Nên dùng `hybrid retrieval`:
-
-1. Filter cứng bằng MongoDB cho các field rõ ràng
-2. Vector search cho nhu cầu mô tả tự nhiên
-3. Rerank để chọn top kết quả cuối
-
-Lý do:
-
-- `price`, `num_rooms`, `district` là dữ liệu có cấu trúc
-- `phù hợp cho sinh viên`, `gần trung tâm`, `yên tĩnh` là dữ liệu nên tìm theo ngữ nghĩa
-
-## 7. Thiết kế database MongoDB cho toàn bộ website
-
-Vì `nhatrovn.vn` có nhiều danh mục như phòng trọ, căn hộ, nhà phố, mặt bằng, giường nam, giường nữ, sleepbox, studio, CHDV và duplex, nên không nên thiết kế database chỉ cho một loại phòng.
-
-Nên dùng một collection chung tên là `rooms` với schema phòng, sau đó phân loại bằng `category` và `subtype`.
-
-### 7.1. Collection chính: `rooms`
-
-```json
-{
-  "_id": "room_6a37b10088ac4122462ef477",
-  "source": {
-    "site": "nhatrovn.vn",
-    "url": "https://nhatrovn.vn/cho-thue-phong-tro/ho-chi-minh/quan-10/chi-tiet/6a37b10088ac4122462ef477/",
-    "room_code": "102",
-    "crawl_time": "2026-06-22T10:00:00Z",
-    "status": "active"
-  },
-  "category": "phong_tro",
-  "subtype": "phong_thuong",
-  "title": "Phòng thường 102",
-  "property_name": null,
-  "description": "Giao Nguyễn Tri Phương, Nguyễn Chí Thanh, Nguyễn Duy Dương; đối diện ĐH UEH; thuận tiện đi các quận trung tâm.",
-  "summary": "Phòng thường tại Quận 10, giá 4.5 triệu, có wifi, máy lạnh, thang máy.",
-  "address": {
-    "full": "400/xx Ngô Gia Tự, Phường 04, Quận 10, Thành phố Hồ Chí Minh",
-    "street": "400/xx Ngô Gia Tự",
-    "ward": "Phường 04",
-    "district": "Quận 10",
-    "city": "Thành phố Hồ Chí Minh",
-    "region": "Miền Nam",
-    "country": "Việt Nam",
-    "slug_city": "ho-chi-minh",
-    "slug_district": "quan-10"
-  },
-  "price": {
-    "min": 4500000,
-    "max": 4500000,
-    "currency": "VND",
-    "period": "month",
-    "display_text": "4,500,000"
-  },
-  "property_info": {
-    "area_m2": 20,
-    "floor_position": "Lầu 1",
-    "num_rooms": null,
-    "num_bedrooms": null,
-    "num_bathrooms": null,
-    "max_people": null,
-    "max_vehicles": null,
-    "available_room_count": 3,
-    "total_room_count": 10
-  },
-  "amenities": [
-    "giuong",
-    "nem",
-    "tu_quan_ao",
-    "thang_may",
-    "wifi",
-    "may_lanh",
-    "ke_bep",
-    "nuoc_nong",
-    "tu_lanh",
-    "gac"
-  ],
-  "fees": {
-    "electricity": "4k/kWh",
-    "water": "100k/ng",
-    "management": "150k/ph",
-    "parking": "Free",
-    "wifi": "Free",
-    "washing_machine": "Không có"
-  },
-  "rules": {
-    "toilet": "Riêng",
-    "curfew": "Tự do",
-    "window": false,
-    "balcony": false,
-    "pet_allowed": false,
-    "shared_parking": true,
-    "electric_vehicle_allowed": false
-  },
-  "audience": {
-    "gender_restriction": null,
-    "student_friendly": true,
-    "family_friendly": null
-  },
-  "nearby_places": [
-    "Nguyễn Tri Phương",
-    "Nguyễn Chí Thanh",
-    "Nguyễn Duy Dương",
-    "ĐH UEH"
-  ],
-  "media": {
-    "cover_image": null,
-    "images": [],
-    "image_count": 0
-  },
-  "available_rooms": [
-    {
-      "room_code": "102",
-      "price": 4500000
-    },
-    {
-      "room_code": "103",
-      "price": 4500000
-    },
-    {
-      "room_code": "P.001",
-      "price": 4500000
-    }
-  ],
-  "tags": [
-    "da_xac_thuc",
-    "hot",
-    "gan_truong_dai_hoc"
-  ],
-  "embedding_text": "Phòng thường 102 tại Quận 10, Thành phố Hồ Chí Minh, giá 4.5 triệu mỗi tháng, diện tích 20m2, lầu 1, có wifi, máy lạnh, thang máy, gần ĐH UEH, thuận tiện đi các quận trung tâm.",
-  "search_text": "Phòng thường 102 Quận 10 Hồ Chí Minh 4.5 triệu wifi máy lạnh thang máy UEH"
-}
-```
-
-### 7.2. Các giá trị `category` nên chuẩn hóa
-
-- `phong_tro`
-- `can_ho`
-- `nha_pho`
-- `mat_bang`
-- `giuong_nam`
-- `giuong_nu`
-- `sleepbox_nam`
-- `sleepbox_nu`
-- `studio`
-- `chdv_1pn`
-- `chdv_2pn`
-- `chdv_3pn`
-- `duplex`
-
-### 7.3. Collection phụ nên có
-
-#### `crawl_jobs`
-
-Lưu mỗi lần crawl:
-
-- thời gian bắt đầu
-- thời gian kết thúc
-- số URL list đã crawl
-- số URL detail đã crawl
-- số bản ghi insert mới
-- số bản ghi update
-- số bản ghi lỗi
-
-#### `crawl_urls`
-
-Lưu hàng đợi URL:
-
-- `url`
-- `page_type`: `list` hoặc `detail`
-- `category`
-- `city`
-- `district`
-- `status`
-- `retry_count`
-
-#### `chat_logs`
-
-Lưu lịch sử chat để đánh giá RAG:
-
-- `session_id`
-- `user_message`
-- `filters_extracted`
-- `retrieved_room_ids`
-- `final_answer`
-
-## 8. Thiết kế crawl toàn site
-
-Mục tiêu là crawl đủ dữ liệu cho demo, nhưng vẫn có cấu trúc rõ ràng để sau này mở rộng.
-
-### 8.1. Crawl 2 tầng
-
-#### Tầng 1: trang danh sách theo thành phố/quận/danh mục
-
-Ví dụ:
-
-- danh sách theo thành phố
-- danh sách theo quận/huyện
-- danh sách theo danh mục
-
-Tầng này dùng để lấy:
-
-- URL detail
-- category
-- city
-- district
-- title ngắn
-- giá ngắn
-- số phòng trống
-- số phòng tổng
-- tag như `Hot`, `Mới`, `Đã xác thực`
-
-#### Tầng 2: trang chi tiết từng room/phòng
-
-Tầng này dùng để lấy:
-
-- địa chỉ đầy đủ
-- diện tích
-- giá chi tiết
-- vị trí lầu
-- tiện ích
-- chi phí điện nước
-- điều kiện thuê
-- mô tả tóm tắt
-- danh sách phòng trống
-- ảnh
-
-### 8.2. Thứ tự crawl nên áp dụng
-
-1. Crawl trang chủ để lấy danh sách thành phố
-2. Với mỗi thành phố, crawl danh sách quận/huyện
-3. Với mỗi quận/huyện, crawl theo từng danh mục
-4. Từ từng trang danh sách, lấy URL detail
-5. Crawl từng trang detail để tạo document đầy đủ
-6. Chuẩn hóa dữ liệu trước khi lưu MongoDB
-7. Tạo `embedding_text`
-8. Lưu vào Chroma
-
-### 8.3. Dữ liệu nào lấy từ list page, dữ liệu nào lấy từ detail page
-
-#### Lấy từ list page
-
-- `title`
-- `address.full`
-- `price.min`, `price.max`
-- `property_info.available_room_count`
-- `property_info.total_room_count`
-- `tags`
-- `source.url`
-
-#### Lấy từ detail page
-
-- `description`
-- `summary`
-- `amenities`
-- `fees`
-- `rules`
-- `nearby_places`
-- `media.images`
-- `available_rooms`
-- `property_info.area_m2`
-- `property_info.floor_position`
-
-## 9. Kế hoạch lấy mẫu dữ liệu đầy đủ cho demo
-
-Bạn yêu cầu mỗi danh mục khoảng 15 mẫu data và đủ nhiều địa điểm. Với demo đầu tiên, nên đặt chỉ tiêu như sau:
-
-### 9.1. Chỉ tiêu theo danh mục
-
-- `phong_tro`: 15 mẫu
-- `can_ho`: 15 mẫu
-- `nha_pho`: 15 mẫu
-- `mat_bang`: 15 mẫu
-- `giuong_nam`: 15 mẫu
-- `giuong_nu`: 15 mẫu
-- `sleepbox_nam`: 15 mẫu
-- `sleepbox_nu`: 15 mẫu
-- `studio`: 15 mẫu
-- `chdv_1pn`: 15 mẫu
-- `chdv_2pn`: 15 mẫu
-- `chdv_3pn`: 15 mẫu
-- `duplex`: 15 mẫu
-
-Tổng mục tiêu ban đầu: khoảng `195 room`.
-
-### 9.2. Chỉ tiêu phủ địa điểm
-
-Ít nhất nên có dữ liệu từ:
-
-- `Thành phố Hồ Chí Minh`
-- `Hà Nội`
-- `Đà Nẵng`
-- `Bình Dương`
-- `Cần Thơ`
-
-Nếu không đủ dữ liệu cho tất cả danh mục ở mọi địa phương, ưu tiên:
-
-1. Hồ Chí Minh
-2. Hà Nội
-3. Bình Dương
-4. Đà Nẵng
-5. Cần Thơ
-
-### 9.3. Quy tắc phân bổ mẫu
-
-Với mỗi `category`, cố gắng chia:
-
-- 6 mẫu ở Hồ Chí Minh
-- 3 mẫu ở Hà Nội
-- 2 mẫu ở Bình Dương
-- 2 mẫu ở Đà Nẵng
-- 2 mẫu ở Cần Thơ
-
-Nếu site không đủ dữ liệu ở một nơi, cho phép bù sang địa điểm khác nhưng vẫn phải có tối thiểu 3 địa phương khác nhau cho mỗi danh mục.
-
-### 9.4. Quy tắc dừng crawl
-
-Dừng khi đạt đủ một trong hai điều kiện:
-
-1. đủ `15 mẫu hợp lệ` cho một danh mục
-2. đã duyệt hết các quận/huyện của 5 địa phương ưu tiên
-
-## 10. Quy tắc làm sạch và chuẩn hóa dữ liệu
-
-### 10.1. Chuẩn hóa category
-
-Tên hiển thị trên web cần map về slug cố định:
-
-- `Phòng trọ` -> `phong_tro`
-- `Căn hộ` -> `can_ho`
-- `Nhà phố` -> `nha_pho`
-- `Mặt bằng` -> `mat_bang`
-- `Giường Nam` -> `giuong_nam`
-- `Giường Nữ` -> `giuong_nu`
-- `Sleepbox Nam` -> `sleepbox_nam`
-- `Sleepbox Nữ` -> `sleepbox_nu`
-- `Studio (Phòng có nội thất)` -> `studio`
-- `CHDV 1 Phòng ngủ` -> `chdv_1pn`
-- `CHDV 2 Phòng ngủ` -> `chdv_2pn`
-- `CHDV 3 Phòng ngủ` -> `chdv_3pn`
-- `Duplex (Phòng có gác và nội thất)` -> `duplex`
-
-### 10.2. Chuẩn hóa giá
-
-- bỏ dấu phẩy
-- đổi về `int`
-- tách `min` và `max`
-- nếu có dạng `Giá từ 3.3 đến 3.5 triệu` thì lưu:
-  - `min = 3300000`
-  - `max = 3500000`
-
-### 10.3. Chuẩn hóa địa chỉ
-
-Tách:
-
-- `street`
-- `ward`
-- `district`
-- `city`
-
-Ngoài ra giữ lại `full` để trả lời chatbot giống nguyên bản.
-
-### 10.4. Chuẩn hóa boolean
-
-Các field như:
-
-- `Có ban công`
-- `Có cửa sổ`
-- `Nuôi thú cưng`
-- `Nhận xe điện`
-- `Giờ tự do`
-
-nên lưu dạng boolean hoặc enum để filter dễ.
-
-### 10.5. Chuẩn hóa text cho RAG
-
-Tạo `embedding_text` theo format:
-
-```text
-{title}. Loại: {category}. Địa chỉ: {district}, {city}. Giá từ {price_min} đến {price_max}.
-Diện tích: {area_m2}m2. Tiện ích: {amenities}. Điều kiện: {rules}. Mô tả: {description}.
-Địa điểm gần đó: {nearby_places}.
-```
-
-## 11. Cấu trúc module Django gợi ý
-
-```text
-demo_rag/
-├─ apps/
-│  ├─ rooms/
-│  │  ├─ models.py
-│  │  ├─ serializers.py
-│  │  ├─ views.py
-│  │  └─ services.py
-│  ├─ crawler/
-│  │  ├─ seeds.py
-│  │  ├─ list_parser.py
-│  │  ├─ detail_parser.py
-│  │  ├─ normalizers.py
-│  │  ├─ jobs.py
-│  │  └─ management/commands/
-│  ├─ chat/
-│  │  ├─ views.py
-│  │  ├─ services.py
-│  │  └─ prompts.py
-│  ├─ search/
-│  │  ├─ filters.py
-│  │  ├─ retriever.py
-│  │  └─ reranker.py
-│  └─ embeddings/
-│     ├─ services.py
-│     └─ sync.py
-├─ config/
-└─ requirements.txt
-```
-
-## 12. API và command nên có
-
-### Command 1. Seed URL crawl
-
-```bash
-python manage.py seed_crawl_urls
-```
-
-Chức năng:
-
-- sinh URL list page theo city, district, category
-- đưa vào collection `crawl_urls`
-
-### Command 2. Crawl list page
-
-```bash
-python manage.py crawl_list_pages
-```
-
-Chức năng:
-
-- đọc `crawl_urls` loại `list`
-- lấy URL detail
-- upsert queue detail
-
-### Command 3. Crawl detail page
-
-```bash
-python manage.py crawl_detail_pages
-```
-
-Chức năng:
-
-- crawl trang chi tiết
-- parse dữ liệu đầy đủ
-- lưu `rooms`
-- tạo `embedding_text`
-- sync Chroma
-
-### API 1. Chat tìm nhà
-
-```http
-POST /api/chat/ask
-```
-
-Chức năng:
-
-1. nhận message
-2. extract filters
-3. structured query
-4. vector query
-5. merge + rerank
-6. gọi LLM
-7. trả response
-
-### API 2. Reindex vector
-
-```http
-POST /api/embeddings/reindex
-```
-
-Chức năng:
-
-- đọc tất cả room
-- tạo lại vector cho demo khi cần
-
-## 13. Pseudocode cho crawl và chat
-
-### 13.1. Pseudocode crawl
-
-```python
-def crawl_one_detail(url: str):
-    html = fetch_html(url)
-    room = parse_detail_page(html, url=url)
-    room = normalize_room(room)
-    room["embedding_text"] = build_embedding_text(room)
-    upsert_room(room)
-    sync_room_to_chroma(room)
-```
-
-### 13.2. Pseudocode chat
-
-```python
-def chat_search(message: str):
-    filters = extract_filters(message)
-
-    mongo_results = query_mongodb(filters)
-
-    query_vector = embed_text(message)
-    vector_results = search_vector_db(query_vector, top_k=10)
-
-    final_results = merge_and_rerank(
-        mongo_results=mongo_results,
-        vector_results=vector_results,
-        filters=filters
-    )
-
-    context = build_context(final_results[:5])
-    answer = generate_llm_answer(user_message=message, context=context)
-
-    return {
-        "answer": answer,
-        "results": final_results[:5]
-    }
-```
-
-## 14. Thứ tự làm demo để dễ thành công
-
-Nên làm theo 4 phase:
-
-### Phase 1. Thiết kế dữ liệu và crawler
-
-- tạo schema `rooms`
-- tạo queue crawl
-- crawl 2 tầng list/detail
-- thu đủ khoảng 15 mẫu cho mỗi danh mục
-
-Mục tiêu: có bộ dữ liệu thật, đủ rộng và đủ sạch.
-
-### Phase 2. Retrieval có cấu trúc
-
-- query theo `category`, `city`, `district`, `price`, `amenities`
-- tạo API lọc cơ bản
-
-Mục tiêu: người dùng có thể tìm đúng dữ liệu bằng filter cứng.
-
-### Phase 3. Thêm RAG
-
-- tạo `embedding_text`
-- tạo vector cho room
-- search Chroma
-- hybrid search với MongoDB
-
-Mục tiêu: chatbot hiểu được các query tự nhiên hơn.
-
-### Phase 4. Chatbot hoàn chỉnh
-
-- thêm LLM sinh câu trả lời
-- thêm memory session nếu cần
-- thêm câu hỏi gợi ý tiếp theo
-
-Mục tiêu: trả lời tự nhiên như trợ lý tìm nhà.
-
-## 15. Gợi ý kỹ thuật cho bạn
-
-Nếu bạn muốn demo nhanh và dễ:
-
-- Backend: Django REST Framework
-- Database: MongoDB Atlas
-- Vector DB: Chroma
-- Embedding: model embedding qua API
-- LLM: model chat để tổng hợp câu trả lời
-
-Stack đề xuất cho bản demo hiện tại:
-
-- `Django + MongoDB Atlas + Chroma + Railway`
-
-## 16. Kiến trúc triển khai đề xuất
-
-Để demo nhanh, dễ quản lý và dễ trình bày, nên triển khai theo kiến trúc sau:
-
-- `Django`: xử lý API, crawler, logic tìm kiếm và chatbot
-- `MongoDB Atlas`: lưu dữ liệu gốc của room, queue crawl, log chat
-- `Chroma`: lưu vector embedding để semantic search
-- `Railway`: deploy Django app và chạy cron crawl định kỳ
-
-### 16.1. Luồng triển khai
-
-```text
-Frontend / Chat UI
-    ->
-Railway (Django API)
-    |- MongoDB Atlas
-    |- Chroma
-    ->
-LLM / Embedding API
-```
-
-### 16.2. Vai trò từng thành phần
-
-#### Django
-
-- cung cấp API chat
-- crawl dữ liệu từ website nguồn
-- chuẩn hóa dữ liệu trước khi lưu
-- tạo `embedding_text`
-- gọi embedding model và LLM
-- truy vấn MongoDB Atlas và Chroma
-
-#### MongoDB Atlas
-
-- lưu `rooms`
-- lưu `crawl_urls`
-- lưu `crawl_jobs`
-- lưu `chat_logs`
-
-#### Chroma
-
-- lưu vector embedding của mỗi room
-- tìm top K room gần nghĩa nhất
-
-#### Railway
-
-- deploy backend Django
-- lưu biến môi trường
-- chạy web service
-- có thể cấu hình cron để crawl theo lịch
-
-### 16.3. Biến môi trường gợi ý
-
-```env
-MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/demo_rag_nhatro?retryWrites=true&w=majority
-MONGODB_DB=demo_rag_nhatro
-CHROMA_DIR=/app/data/chroma
-EMBEDDING_API_KEY=your_embedding_key
-LLM_API_KEY=your_llm_key
-DJANGO_SECRET_KEY=your_secret_key
-DEBUG=False
-ALLOWED_HOSTS=your-railway-domain.up.railway.app
-```
-
-## 17. Kết luận
-
-Đối với bài toán này, phần quan trọng nhất không chỉ là chatbot mà là:
-
-1. thiết kế schema đủ rộng cho nhiều danh mục
-2. crawl đủ dữ liệu thật từ nhiều địa điểm
-3. chuẩn hóa dữ liệu để query tốt
-4. tạo `embedding_text` để semantic search hoạt động đúng
-5. kết hợp MongoDB Atlas filter + Chroma retrieval + LLM answer
-
-Đây là một bài toán `hybrid RAG` dựa trên dữ liệu crawl thực tế, không phải chỉ vector search đơn thuần.
+- [RAG_API_CONTRACT.md](./RAG_API_CONTRACT.md) — contract tích hợp
+- [README_DEPLOY.md](./README_DEPLOY.md) — deploy & biến môi trường production
+- [.env.example](./.env.example) — template cấu hình
