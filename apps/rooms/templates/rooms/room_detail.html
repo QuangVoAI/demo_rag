@@ -1,4 +1,4 @@
-﻿{% extends "rooms/base.html" %}
+{% extends "rooms/base.html" %}
 
 {% block title %}nhatrovn - {{ room.title }}{% endblock %}
 
@@ -77,7 +77,7 @@
         {% for room in room.available_rooms %}
         <article>
           <strong>Phòng {{ room.room_code }}</strong>
-          <span>{{ room.price_text }} / tháng</span>
+          <span>{{ room.price_text }}</span>
         </article>
         {% empty %}
         <p style="color: var(--muted); font-size: 13px;">Chưa có dữ liệu phòng trống trong MongoDB.</p>

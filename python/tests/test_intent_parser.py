@@ -25,6 +25,45 @@ class IntentParserTests(unittest.TestCase):
         amenities = [op["value"] for op in ops if op["path"] == "amenities_required"]
         self.assertIn("mezzanine", amenities)
 
+    def test_problematic_parser_regressions(self):
+        state = default_session_state("s-problem")
+        state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["selected_room_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Đổi sang Bình Thạnh", state)
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+        self.assertIn({"op": "append", "path": "location.districts", "value": "binh thanh"}, parsed["operations"])
+        self.assertNotIn({"op": "append", "path": "amenities_preferred", "value": "bright"}, parsed["operations"])
+
+        parsed = parse_intent_and_constraint_patch("Thủ tục thuê phòng như thế nào?")
+        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
+
+        parsed = parse_intent_and_constraint_patch("Có được xem phòng trước không?")
+        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
+
+        parsed = parse_intent_and_constraint_patch("Nền tảng có thu phí người thuê không?")
+        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
+
+        parsed = parse_intent_and_constraint_patch("Có phòng nào giống vậy nhưng có máy lạnh không?", state)
+        self.assertEqual(parsed["intent"], "FIND_SIMILAR")
+        self.assertIn({"op": "append", "path": "amenities_required", "value": "air_conditioner"}, parsed["operations"])
+
+        parsed = parse_intent_and_constraint_patch("Có phòng giống vậy ở quận khác không?", state)
+        self.assertEqual(parsed["intent"], "FIND_SIMILAR")
+        self.assertNotIn({"op": "append", "path": "location.districts", "value": "khac"}, parsed["operations"])
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng gần giống nhưng có ban công", state)
+        self.assertEqual(parsed["intent"], "FIND_SIMILAR")
+        self.assertNotIn({"op": "append", "path": "location.near_landmarks", "value": "giong nhung"}, parsed["operations"])
+
+        parsed = parse_intent_and_constraint_patch("Phòng nào phù hợp hơn cho 2 người?", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+
+        parsed = parse_intent_and_constraint_patch("Phòng nào ở khu vực tốt hơn?", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+
     def test_extract_ev_charging_vs_parking(self):
         self.assertIn(
             "ev_charging",

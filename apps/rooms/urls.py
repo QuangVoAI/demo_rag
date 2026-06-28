@@ -13,4 +13,5 @@ urlpatterns = [
     path("api/chat/identity/", views.api_chat_identity, name="api_chat_identity"),
     path("api/chat/", views.api_chat, name="api_chat"),
     path("api/chat/history/", views.api_chat_history, name="api_chat_history"),
+    path("api/latency-telemetry/", views.api_latency_telemetry, name="api_latency_telemetry"),
 ]

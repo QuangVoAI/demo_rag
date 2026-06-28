@@ -70,9 +70,11 @@ FIXTURES = [
 class RecordingSemanticIndex:
     def __init__(self):
         self.candidate_ids = []
+        self.metadata_filters = []
 
     def search_rooms(self, query_text, candidate_ids, top_k, metadata_filter=None):
         self.candidate_ids.append(list(candidate_ids))
+        self.metadata_filters.append(dict(metadata_filter or {}))
         return [{"room_id": item, "score": 1.0} for item in reversed(candidate_ids[:top_k])]
 
 
@@ -205,6 +207,41 @@ class RoomAssistantWorkflowIndexingTests(unittest.TestCase):
         self.assertFalse(trace["retrieval_low_confidence"])
         self.assertEqual(trace["retrieval_feedback_retry_count"], 0)
         self.assertEqual(trace["retrieval_attempts"][0]["top_room_ids"][0], "B202")
+
+    def test_strict_location_does_not_relax_to_global_results(self):
+        repo = InMemoryRoomRepository(FIXTURES)
+        semantic = RecordingSemanticIndex()
+        trace = {}
+
+        results = search_rooms_with_hard_filters(
+            query_text="Tìm phòng ở quận 6",
+            constraints={"location": {"districts": ["quan 6"]}},
+            repository=repo,
+            semantic_index=semantic,
+            top_k=5,
+            trace=trace,
+        )
+
+        self.assertEqual(results, [])
+        self.assertEqual(trace["fallback_strategy"], "original")
+        self.assertEqual(trace["location_constraint_mode"], "strict")
+
+    def test_semantic_index_receives_location_metadata_filter(self):
+        repo = InMemoryRoomRepository(FIXTURES)
+        semantic = RecordingSemanticIndex()
+        trace = {}
+
+        search_rooms_with_hard_filters(
+            query_text="Tìm phòng quận 7 có ban công",
+            constraints={"location": {"districts": ["quan 7"]}},
+            repository=repo,
+            semantic_index=semantic,
+            top_k=5,
+            trace=trace,
+        )
+
+        self.assertEqual(semantic.metadata_filters[0], {"district": ["Quận 7"]})
+        self.assertEqual(trace["retrieval_attempts"][0]["metadata_filter"], {"district": ["Quận 7"]})
 
     def test_request_action_does_not_call_tools(self):
         result = asyncio.run(run_room_assistant(

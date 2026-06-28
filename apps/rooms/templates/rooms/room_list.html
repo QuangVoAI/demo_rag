@@ -1,4 +1,4 @@
-﻿{% extends "rooms/base.html" %}
+{% extends "rooms/base.html" %}
 
 {% block title %}nhatrovn - Danh sách phòng trọ, căn hộ cho thuê thực tế{% endblock %}
 
@@ -7,10 +7,6 @@
   <form action="{% url 'rooms:room_list' %}" method="GET" id="unifiedFilterForm">
     <input type="hidden" name="quick_filter" value="{{ current_quick_filter|default:'' }}">
     <section class="listing-search-wrap">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;color:#5b6472;font-size:13px;">
-        <span>{{ result_count }} kết quả phù hợp</span>
-        <span>Backend render: {{ backend_render_ms }} ms</span>
-      </div>
       <div class="shell">
         <div class="listing-search-card">
           <div class="search-primary-row">
@@ -42,7 +38,7 @@
         <div>
           <span class="eyebrow">Tìm thấy trọ thực</span>
           <h1>Cho thuê phòng trọ, căn hộ dịch vụ tốt nhất hiện nay</h1>
-          <p>Hệ thống tìm thấy <strong>{{ result_count }}</strong> phòng trọ, căn hộ có thông tin xác thực.</p>
+          <p>Hệ thống tìm thấy <strong>{{ result_count }}</strong> phòng trống có thông tin xác thực.</p>
         </div>
         <div class="results-meta">
           <span class="meta-pill">Cam kết tin trọ thật 100%</span>
@@ -202,6 +198,14 @@
   }
 
   document.addEventListener('DOMContentLoaded', function() {
+    if (typeof sendLatencyTelemetry === 'function') {
+      sendLatencyTelemetry('frontend_page_latency', {
+        page_backend_render_ms: {{ backend_render_ms|default:0 }},
+        result_count: {{ result_count|default:0 }},
+        query_string: window.location.search || ''
+      });
+    }
+
     const citySelect = document.querySelector('select[name="city"]');
     const districtSelect = document.querySelector('select[name="district"]');
     
@@ -235,6 +239,161 @@
       if (citySelect.value) {
         updateDistricts();
       }
+    }
+  });
+</script>
+
+<!-- Dev Telemetry Widget -->
+<div class="telemetry-widget-wrapper">
+  <button id="telemetryToggleBtn" class="telemetry-toggle-btn" title="View Telemetry">
+    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+    </svg>
+  </button>
+
+  <div id="telemetryPanel" class="telemetry-panel">
+    <div class="telemetry-header">
+      <div class="waveform">
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+      </div>
+      <span>System Telemetry</span>
+    </div>
+    <div class="telemetry-body">
+      <div class="stat-row">
+        <span class="stat-label">Results matching query</span>
+        <span class="stat-value">{{ result_count }}</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Backend render time</span>
+        <span class="stat-value">{{ backend_render_ms }} <small>ms</small></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .telemetry-widget-wrapper {
+    position: fixed;
+    bottom: 24px;
+    left: 24px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .telemetry-toggle-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: #1e293b;
+    color: #38bdf8;
+    border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .telemetry-toggle-btn:hover {
+    transform: scale(1.05);
+    background: #0f172a;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+  }
+  .telemetry-panel {
+    background: rgba(15, 23, 42, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px;
+    width: 260px;
+    padding: 16px;
+    color: #f8fafc;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(10px) scale(0.95);
+    transform-origin: bottom left;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+  }
+  .telemetry-panel.show {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0) scale(1);
+  }
+  .telemetry-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #94a3b8;
+  }
+  .telemetry-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .telemetry-body .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+  }
+  .telemetry-body .stat-label {
+    color: #cbd5e1;
+  }
+  .telemetry-body .stat-value {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: #38bdf8;
+  }
+  .telemetry-body .stat-value small {
+    font-size: 10px;
+    color: #94a3b8;
+  }
+  .telemetry-header .waveform {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 16px;
+  }
+  .telemetry-header .waveform .bar {
+    width: 3px;
+    background-color: #38bdf8;
+    border-radius: 2px;
+    animation: bounce 1s ease-in-out infinite;
+  }
+  .telemetry-header .waveform .bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
+  .telemetry-header .waveform .bar:nth-child(2) { height: 12px; animation-delay: 0.2s; }
+  .telemetry-header .waveform .bar:nth-child(3) { height: 16px; animation-delay: 0.3s; }
+  .telemetry-header .waveform .bar:nth-child(4) { height: 10px; animation-delay: 0.4s; }
+  .telemetry-header .waveform .bar:nth-child(5) { height: 8px; animation-delay: 0.5s; }
+  
+  @keyframes bounce {
+    0%, 100% { transform: scaleY(0.5); }
+    50% { transform: scaleY(1); }
+  }
+</style>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    const btn = document.getElementById('telemetryToggleBtn');
+    const panel = document.getElementById('telemetryPanel');
+    if(btn && panel) {
+      btn.addEventListener('click', function() {
+        panel.classList.toggle('show');
+      });
     }
   });
 </script>

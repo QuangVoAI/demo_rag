@@ -153,11 +153,11 @@ class MongoRoomRepository:
         for room_id in signals.get("room_id", []) or []:
             clauses.extend(_mongo_id_or_clauses(str(room_id)))
         for snippet in signals.get("district", []) or []:
-            escaped = re.escape(str(snippet))
+            pattern = _accent_flexible_regex(str(snippet))
             clauses.extend([
-                {"metadata.district_name": {"$regex": escaped, "$options": "i"}},
-                {"metadata.ward_name": {"$regex": escaped, "$options": "i"}},
-                {"embedding_text": {"$regex": escaped, "$options": "i"}},
+                {"metadata.district_name": {"$regex": pattern, "$options": "i"}},
+                {"metadata.ward_name": {"$regex": pattern, "$options": "i"}},
+                {"embedding_text": {"$regex": pattern, "$options": "i"}},
             ])
         if not clauses:
             return []
@@ -289,7 +289,7 @@ def _room_lookup_keys(raw: dict[str, Any], normalized: dict[str, Any]) -> set[st
 def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     query: dict[str, Any] = {
         "$and": [
-            {"metadata.status_code": "0"},  # Phòng trống
+            {"metadata.status_code": {"$in": ["0", ""]}},  # Phòng trống hoặc chưa có status
         ]
     }
 
@@ -307,10 +307,11 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
 
     location = constraints.get("location") or {}
     if location.get("province"):
+        pattern = _accent_flexible_regex(location["province"])
         query["$and"].append({
             "$or": [
-                {"metadata.province_name": {"$regex": location["province"], "$options": "i"}},
-                {"embedding_text": {"$regex": location["province"], "$options": "i"}},
+                {"metadata.province_name": {"$regex": pattern, "$options": "i"}},
+                {"embedding_text": {"$regex": pattern, "$options": "i"}},
             ]
         })
     if location.get("districts"):
@@ -323,9 +324,15 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     if location.get("wards"):
         ward_clauses = []
         for w in location["wards"]:
-            ward_clauses.append({"metadata.ward_name": {"$regex": w, "$options": "i"}})
-            ward_clauses.append({"embedding_text": {"$regex": w, "$options": "i"}})
+            for variant in _ward_query_variants(w):
+                ward_clauses.append({"metadata.ward_name": {"$regex": variant, "$options": "i"}})
         query["$and"].append({"$or": ward_clauses})
+    if location.get("near_landmarks"):
+        landmark_clauses = []
+        for landmark in location["near_landmarks"]:
+            pattern = _accent_flexible_regex(str(landmark))
+            landmark_clauses.append({"embedding_text": {"$regex": pattern, "$options": "i"}})
+        query["$and"].append({"$or": landmark_clauses})
 
     # Amenities/features — search within embedding_text
     required = constraints.get("amenities_required") or []
@@ -339,6 +346,16 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
         positive_pattern = _amenity_positive_pattern(feature)
         if positive_pattern:
             query["$and"].append({"embedding_text": {"$not": {"$regex": positive_pattern, "$options": "i"}}})
+
+    categories = constraints.get("categories") or []
+    if categories:
+        category_clauses = []
+        for category in categories:
+            pattern = _category_positive_pattern(category)
+            if pattern:
+                category_clauses.append({"embedding_text": {"$regex": pattern, "$options": "i"}})
+        if category_clauses:
+            query["$and"].append({"$or": category_clauses})
 
     return query
 
@@ -370,6 +387,20 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
         target_districts = {_normalize_location_value(item) for item in location["districts"]}
         if room_district and room_district not in target_districts:
             return False
+    if location.get("wards"):
+        room_ward = _normalize_location_value(room.get("ward"))
+        target_wards = {_normalize_location_value(item) for item in location["wards"]}
+        if room_ward and room_ward not in target_wards:
+            return False
+    if location.get("near_landmarks"):
+        searchable_text = " ".join(
+            str(part or "")
+            for part in (room.get("title"), room.get("address"), room.get("embedding_text"))
+        ).lower()
+        normalized_searchable = _normalize_location_value(searchable_text)
+        target_landmarks = {_normalize_location_value(item) for item in location["near_landmarks"]}
+        if target_landmarks and not any(item and item in normalized_searchable for item in target_landmarks):
+            return False
 
     # Check required amenities
     required = constraints.get("amenities_required") or []
@@ -391,6 +422,10 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
         if _room_has_positive_amenity(room, feature):
             return False
 
+    categories = constraints.get("categories") or []
+    if categories and not any(_room_matches_category(room, category) for category in categories):
+        return False
+
     return True
 
 
@@ -411,6 +446,24 @@ AMENITY_VIETNAMESE_MAP: dict[str, str] = {
     "wifi": "Wifi",
     "ev_charging": "Xe điện",
     "free_hours": "Giờ giấc.*Tự do",
+    "pool": "Hồ bơi",
+}
+
+CATEGORY_PATTERN_MAP: dict[str, str] = {
+    "studio": r"\bstudio\b",
+    "can_ho": r"\b(?:can ho|căn hộ)\b",
+    "chdv": r"\b(?:chdv|can ho dich vu|căn hộ dịch vụ)\b",
+    "mat_bang": r"\b(?:mat bang|mặt bằng)\b",
+    "phong_tro": r"\b(?:phong tro|phòng trọ|nha tro|nhà trọ)\b",
+    "duplex": r"\bduplex\b",
+    "sleepbox": r"\bsleepbox\b",
+    "sleepbox_nam": r"\bsleepbox nam\b",
+    "sleepbox_nu": r"\bsleepbox nu\b",
+    "giuong_tang": r"\b(?:giuong tang|giường tầng|ktx|ky tuc xa|ký túc xá)\b",
+    "giuong_nam": r"\bgiuong nam\b",
+    "giuong_nu": r"\bgiuong nu\b",
+    "nha_pho": r"\b(?:nha pho|nhà phố|nha nguyen can|nhà nguyên căn)\b",
+    "penthouse": r"\bpenthouse\b",
 }
 
 
@@ -448,12 +501,30 @@ def _room_has_canonical_amenity(room_amenities: list[Any], amenity: str) -> bool
     return any(str(item).strip().lower() == canonical for item in room_amenities)
 
 
+def _category_positive_pattern(category: str) -> str | None:
+    return CATEGORY_PATTERN_MAP.get(str(category).strip().lower())
+
+
+def _room_matches_category(room: dict[str, Any], category: str) -> bool:
+    import re
+
+    pattern = _category_positive_pattern(category)
+    if not pattern:
+        return False
+    searchable = " ".join(
+        str(part or "")
+        for part in (room.get("title"), room.get("embedding_text"), room.get("description"))
+    )
+    return bool(re.search(pattern, searchable, re.IGNORECASE))
+
+
 def _location_query_variants(value: Any) -> list[str]:
     import re
 
     text = str(value or "").strip()
     variants = [text]
-    match = re.fullmatch(r"(?:quan|q\.?)\s*(\d{1,2})", text, flags=re.IGNORECASE)
+    unaccented = _strip_accents(text)
+    match = re.fullmatch(r"(?:quan|q\.?)\s*(\d{1,2})", unaccented, flags=re.IGNORECASE)
     if match:
         number = match.group(1)
         variants.extend([f"Quận {number}", f"Q{number}", f"quan {number}"])
@@ -462,12 +533,40 @@ def _location_query_variants(value: Any) -> list[str]:
         if normalized and normalized != text:
             variants.append(normalized)
         if normalized and not re.fullmatch(r"\d{1,2}", normalized):
-            variants.extend([f"Quận {normalized}", f"Huyện {normalized}", f"Thành phố {normalized}"])
-        match = re.fullmatch(r"(?:huyen)\s+(.+)", text, flags=re.IGNORECASE)
-        if match:
-            variants.append(f"Huyện {match.group(1)}")
+            variants.extend([
+                f"Quận {normalized}",
+                f"Huyện {normalized}",
+                f"Thành phố {normalized}",
+                f"Thị xã {normalized}",
+            ])
     unique = list(dict.fromkeys(item for item in variants if item))
     return [_accent_flexible_regex(item) for item in unique]
+
+
+def _ward_query_variants(value: Any) -> list[str]:
+    import re
+
+    text = str(value or "").strip()
+    normalized = _normalize_location_value(text)
+    if not normalized:
+        return []
+
+    variants: list[str] = []
+    ward_prefix = _accent_flexible_regex("phuong")
+    xa_prefix = _accent_flexible_regex("xa")
+    thi_tran_prefix = _accent_flexible_regex("thi tran")
+    if re.fullmatch(r"\d{1,2}", normalized):
+        variants.extend([
+            rf"^(?:{ward_prefix}|p\.?\s*)\s*{re.escape(normalized)}$",
+            rf"^{re.escape(normalized)}$",
+        ])
+    else:
+        exact = _accent_flexible_regex(normalized)
+        variants.extend([
+            rf"^(?:{ward_prefix}|{xa_prefix}|{thi_tran_prefix})\s+{exact}$",
+            rf"^{exact}$",
+        ])
+    return list(dict.fromkeys(variants))
 
 
 def _accent_flexible_regex(value: str) -> str:
@@ -515,5 +614,10 @@ def _normalize_location_value(value: Any) -> str:
         ch for ch in unicodedata.normalize("NFD", text)
         if unicodedata.category(ch) != "Mn"
     )
-    text = re.sub(r"\b(?:quan|district|huyen)\s+|\bq\.?\s*(?=\d)", "", text)
+    text = text.replace("đ", "d")
+    text = re.sub(
+        r"\b(?:district|thanh pho|tp|thi xa|tx|thi tran|tt|quan|huyen|phuong|xa)\s+|\b(?:q|p)\.?\s*(?=\d)",
+        "",
+        text,
+    )
     return re.sub(r"\s+", " ", text).strip()

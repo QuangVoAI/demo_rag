@@ -187,6 +187,8 @@ async def run_room_assistant(
     context = ToolExecutionContext(repository=repo, semantic_index=semantic_index)
     tool_results: dict[str, Any] = {}
     error_category = None
+    retrieval_started = time.time()
+    retrieval_ms = 0
 
     try:
         tool_results = await asyncio.to_thread(
@@ -195,6 +197,8 @@ async def run_room_assistant(
     except ToolBudgetExceeded:
         error_category = "tool_budget_exceeded"
         tool_results = {"error": "tool_budget_exceeded"}
+    finally:
+        retrieval_ms = int((time.time() - retrieval_started) * 1000)
 
     rooms = _extract_rooms(tool_results)
     result_ids = [item["room_id"] for item in rooms if item.get("room_id")]
@@ -210,7 +214,8 @@ async def run_room_assistant(
     _update_summary(next_state, question, parsed["intent"])
     save_session_state(next_state, store, ttl_seconds)
 
-    grounding = _build_grounding_context(parsed, next_state, tool_results)
+    grounding = _build_grounding_context(parsed, next_state, tool_results, context.retrieval_trace)
+    llm_started = time.time()
     answer = await _compose_answer_async(
         question,
         parsed,
@@ -220,6 +225,7 @@ async def run_room_assistant(
         user_mood,
         stream_callback=stream_callback,
     )
+    llm_generate_ms = int((time.time() - llm_started) * 1000)
     suggested_questions = _suggest_questions(parsed["intent"], rooms, current_room_id)
     processing_time_ms = int((time.time() - started) * 1000)
 
@@ -236,6 +242,7 @@ async def run_room_assistant(
         "retrieval_confidence": context.retrieval_trace.get("retrieval_confidence"),
         "retrieval_low_confidence": context.retrieval_trace.get("retrieval_low_confidence"),
         "retrieval_feedback_retry_count": context.retrieval_trace.get("retrieval_feedback_retry_count", 0),
+        "retrieval_fallback_strategy": context.retrieval_trace.get("fallback_strategy", "original"),
         "retrieval_attempts": context.retrieval_trace.get("retrieval_attempts", []),
         "agent_trace": {
             "workflow": [
@@ -256,6 +263,8 @@ async def run_room_assistant(
             "error_category": error_category,
             "grounding_result": grounding["result"],
             "retrieval": context.retrieval_trace,
+            "retrieval_ms": retrieval_ms,
+            "llm_generate_ms": llm_generate_ms,
         },
         "processing_time_ms": processing_time_ms,
         "is_final": True,
@@ -331,7 +340,9 @@ def _execute_workflow(
 
     if intent == "FIND_SIMILAR":
         rooms = _tool_registry.execute(
-            "find_similar_rooms", {"room_id": current_room_id, "top_k": 5}, context,
+            "find_similar_rooms",
+            {"room_id": current_room_id, "top_k": 5, "question": question, "constraints": constraints},
+            context,
         )
         return {"rooms": rooms}
 
@@ -394,6 +405,7 @@ def _input_too_long_result(
 
 def _build_grounding_context(
     parsed: dict[str, Any], state: dict[str, Any], tool_results: dict[str, Any],
+    retrieval_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rooms = _extract_rooms(tool_results)
     sources = []
@@ -421,6 +433,7 @@ def _build_grounding_context(
         "unknown": sorted(set(unknown)),
         "rooms": rooms,
         "sources": sources,
+        "retrieval": dict(retrieval_trace or {}),
     }
 
 
@@ -501,7 +514,7 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
 
 
 def _compose_answer_template(
-    parsed: dict[str, Any], grounding: dict[str, Any], tool_results: dict[str, Any],
+    parsed: dict[str, Any], grounding: dict[str, Any], tool_results: dict[str, Any], question: str = "",
 ) -> str:
     intent = parsed["intent"]
     if tool_results.get("error") == "tool_budget_exceeded":
@@ -518,6 +531,9 @@ def _compose_answer_template(
         if not rooms:
             return "Mình chưa tìm thấy phòng phù hợp với điều kiện hiện tại. Bạn thử nới ngân sách, đổi khu vực hoặc bỏ bớt tiện ích bắt buộc nhé."
         lines = ["Dưới đây là các phòng phù hợp nhất theo dữ liệu đã xác nhận trên nhatrovn:"]
+        fallback_strategy = (grounding.get("retrieval") or {}).get("fallback_strategy")
+        if fallback_strategy in {"nearby_location", "relax_price_nearby_location"}:
+            lines.append("Lưu ý: hiện chưa còn phòng khớp khu vực gốc, nên đây là các phòng ở khu vực lân cận gần nhất.")
         for idx, room in enumerate(rooms[:5], 1):
             lines.append(
                 f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
@@ -582,12 +598,13 @@ def _compose_answer_template(
                 f"- **#{row.get('room_id')}**: {format_vnd(row.get('rent_price'))}/tháng, "
                 f"{row.get('area_m2') or 'chưa rõ'} m², {row.get('district') or 'chưa rõ khu vực'}."
             )
-        best = _best_room_from_comparison(rows, grounding.get("constraints", {}))
+        best = _best_room_from_comparison(rows, grounding.get("constraints", {}), question)
         if best:
             area = f", diện tích {best.get('area_m2')} m²" if best.get("area_m2") else ""
+            reason = _comparison_reason(best, question)
             lines.append(
                 f"\n**Gợi ý phù hợp nhất:** #{best.get('room_id')} "
-                f"với giá {format_vnd(best.get('rent_price'))}/tháng{area}."
+                f"với giá {format_vnd(best.get('rent_price'))}/tháng{area}{reason}."
             )
         missing = comparison.get("missing_room_ids") or []
         if missing:
@@ -618,24 +635,25 @@ async def _compose_answer_async(
         "REQUEST_ACTION",
         "CALCULATE_COST",
         "COMPARE_ROOMS",
-        "GENERAL_HELP",
-        "SEARCH_ROOM",
-        "REFINE_SEARCH",
-        "FIND_SIMILAR",
     } or tool_results.get("error"):
-        answer = _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results, question)
         if stream_callback is not None:
             await _stream_text_chunks(answer, stream_callback)
         return answer
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
-        answer = _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results, question)
+        if stream_callback is not None:
+            await _stream_text_chunks(answer, stream_callback)
+        return answer
+    if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and grounding.get("rooms"):
+        answer = _compose_answer_template(parsed, grounding, tool_results, question)
         if stream_callback is not None:
             await _stream_text_chunks(answer, stream_callback)
         return answer
     rooms = grounding.get("rooms", [])
     faq = tool_results.get("faq_results")
-    if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
-        answer = _compose_answer_template(parsed, grounding, tool_results)
+    if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ", "SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+        answer = _compose_answer_template(parsed, grounding, tool_results, question)
         if stream_callback is not None:
             await _stream_text_chunks(answer, stream_callback)
         return answer
@@ -645,25 +663,21 @@ async def _compose_answer_async(
         from agents.response_writer import (
             write_no_result_response,
             write_response,
-            write_response_streaming,
         )
         if not rooms and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
             constraints = grounding.get("constraints", {})
             answer = await write_no_result_response(question, constraints, user_mood)
-        elif stream_callback is not None:
-            answer = await write_response_streaming(
-                question=question,
-                verified_context=verified_data,
-                history=history,
-                mood=user_mood,
-                stream_callback=stream_callback,
-            )
+            if stream_callback is not None:
+                await _stream_text_chunks(answer, stream_callback)
         else:
             answer = await write_response(question=question, verified_context=verified_data, history=history, mood=user_mood)
-    except Exception:
-        pass
+            if stream_callback is not None:
+                await _stream_text_chunks(answer, stream_callback)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
     if not answer or len(answer.strip()) < 20:
-        answer = _compose_answer_template(parsed, grounding, tool_results)
+        answer = _compose_answer_template(parsed, grounding, tool_results, question)
         if stream_callback is not None:
             await _stream_text_chunks(answer, stream_callback)
         return answer
@@ -672,12 +686,12 @@ async def _compose_answer_async(
     try:
         from config import ENABLE_REVIEWER
         if not ENABLE_REVIEWER:
-            return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
+            return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results, question)
         from agents.reviewer import review_with_retry
         answer, _ = await review_with_retry(question=question, answer=answer, room_context=verified_data, max_retries=1)
     except Exception:
         pass
-    return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results)
+    return answer.strip() if answer.strip() else _compose_answer_template(parsed, grounding, tool_results, question)
 
 
 async def _stream_text_chunks(
@@ -860,16 +874,71 @@ def _first_or_none(values: list[Any]) -> Any | None:
     return values[0] if values else None
 
 
-def _best_room_from_comparison(rows: list[dict[str, Any]], constraints: dict[str, Any]) -> dict[str, Any] | None:
+def _comparison_text(question: str) -> str:
+    import unicodedata
+
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", str(question or "").lower())
+        if unicodedata.category(ch) != "Mn"
+    ).replace("đ", "d")
+
+
+def _location_quality_score(row: dict[str, Any]) -> float:
+    import re
+
+    score = 0.0
+    if row.get("district"):
+        score += 1.0
+    if row.get("ward"):
+        score += 1.0
+    if row.get("address"):
+        score += 1.0
+    nearby_text = str(row.get("tien_ich_xq") or "")
+    nearby_parts = [
+        part.strip()
+        for part in re.split(r"[\n,;/|-]+", nearby_text)
+        if part and part.strip()
+    ]
+    score += min(len(nearby_parts), 4)
+    score += min(float(row.get("amenities_count") or 0), 4.0) * 0.25
+    if row.get("available"):
+        score += 0.5
+    return score
+
+
+def _comparison_reason(row: dict[str, Any], question: str) -> str:
+    normalized = _comparison_text(question)
+    if "khu vuc tot hon" in normalized:
+        return ", khu vực có nhiều thông tin địa chỉ và tiện ích xung quanh hơn"
+    if any(phrase in normalized for phrase in ("rong hon", "lon hon", "dien tich lon hon")):
+        return ", phù hợp nếu bạn ưu tiên diện tích rộng hơn"
+    if any(phrase in normalized for phrase in ("re hon", "gia tot hon", "tiet kiem hon")):
+        return ", phù hợp nếu bạn ưu tiên mức giá tiết kiệm hơn"
+    return ""
+
+
+def _best_room_from_comparison(
+    rows: list[dict[str, Any]],
+    constraints: dict[str, Any],
+    question: str = "",
+) -> dict[str, Any] | None:
     if not rows:
         return None
     budget = constraints.get("budget") or {}
     max_price = budget.get("max")
     min_price = budget.get("min")
+    occupants = constraints.get("occupants")
+    normalized_question = _comparison_text(question)
+    wants_location = "khu vuc tot hon" in normalized_question
+    wants_cheaper = any(phrase in normalized_question for phrase in ("re hon", "gia tot hon", "tiet kiem hon"))
+    wants_larger = any(phrase in normalized_question for phrase in ("rong hon", "lon hon", "dien tich lon hon"))
+    wants_fit_people = "phu hop hon" in normalized_question and occupants
 
-    def score(row: dict[str, Any]) -> tuple[int, float, float]:
+    def score(row: dict[str, Any]) -> tuple[float, ...]:
         rent = row.get("rent_price")
         area = row.get("area_m2") or 0
+        location_score = _location_quality_score(row)
+        available = 1.0 if row.get("available") else 0.0
         in_budget = 1
         if rent is not None:
             if max_price is not None and rent > max_price:
@@ -877,7 +946,17 @@ def _best_room_from_comparison(rows: list[dict[str, Any]], constraints: dict[str
             if min_price is not None and rent < min_price:
                 in_budget = 0
         cheaper = -(float(rent) if rent is not None else float("inf"))
-        return (in_budget, float(area), cheaper)
+        if wants_location:
+            return (location_score, available, float(in_budget), float(area), cheaper)
+        if wants_larger or (constraints.get("area") or {}).get("preference") == "larger":
+            return (float(in_budget), float(area), available, location_score, cheaper)
+        if wants_cheaper:
+            return (float(in_budget), cheaper, available, location_score, float(area))
+        if wants_fit_people:
+            min_area = max(int(occupants or 1) * 8, 16)
+            occupant_fit = 1.0 if area >= min_area else 0.0
+            return (occupant_fit, float(in_budget), float(area), available, cheaper)
+        return (float(in_budget), available, location_score, float(area), cheaper)
 
     return max(rows, key=score)
 
@@ -1021,6 +1100,8 @@ def _log_turn_summary(result: dict[str, Any], question_hash: str) -> None:
         "retrieval_low_confidence": result.get("retrieval_low_confidence"),
         "error_category": trace.get("error_category"),
         "processing_time_ms": result.get("processing_time_ms"),
+        "retrieval_ms": trace.get("retrieval_ms"),
+        "llm_generate_ms": trace.get("llm_generate_ms"),
     }
     try:
         _logger.info("room_assistant_turn %s", json.dumps(record, ensure_ascii=False, sort_keys=True))

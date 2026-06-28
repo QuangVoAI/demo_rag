@@ -64,6 +64,7 @@ ALLOWED_OPERATION_PATHS: set[str] = {
     "budget.max",
     "budget.max_operator",
     "budget.type",
+    "area.preference",
     "categories",
     "occupants",
     "vehicles",
@@ -121,6 +122,9 @@ def default_constraints() -> dict[str, Any]:
             "max_operator": None,
             "type": "rent_only",
         },
+        "area": {
+            "preference": None,
+        },
         "occupants": None,
         "vehicles": [],
         "pets_required": [],
@@ -176,10 +180,12 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
 
     # Status: "0" = phòng trống (available)
     status_code = metadata.get("status_code")
-    if status_code is not None:
+    if status_code is not None and str(status_code) != "":
         is_available = str(status_code) == "0"
     else:
         is_available = raw.get("available") if "available" in raw else (raw.get("status") == "active")
+        if "available" not in raw and "status" not in raw:
+            is_available = True
 
     status_desc = metadata.get("status_desc", "Còn phòng" if is_available else "Hết phòng")
 

@@ -2127,26 +2127,20 @@ input:focus, select:focus, textarea:focus {
 
 /* Chat Cards (Matched Listings) */
 .chat-cards-grid {
-  display: flex;
-  gap: 10px;
-  margin: 2px 0 0;
-  overflow-x: auto;
-  padding-bottom: 6px;
-  scrollbar-width: thin;
-  scroll-snap-type: x proximity;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin: 4px 0 2px;
 }
 .chat-card-inline {
   background: rgba(255,255,255,0.96);
   border: 1px solid rgba(226, 232, 240, 0.94);
-  border-radius: 22px;
+  border-radius: 24px;
   overflow: hidden;
   display: grid;
-  grid-template-columns: 1fr;
-  width: 228px;
-  min-width: 228px;
+  grid-template-columns: 142px 1fr;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.03);
-  scroll-snap-align: start;
 }
 .chat-card-inline:hover {
   transform: translateY(-2px);
@@ -2154,15 +2148,15 @@ input:focus, select:focus, textarea:focus {
   border-color: rgba(37, 99, 235, 0.28);
 }
 .chat-card-inline img {
-  height: 128px;
-  min-height: 128px;
+  height: 100%;
+  min-height: 154px;
   width: 100%;
   object-fit: cover;
 }
 .chat-card-body {
-  padding: 12px 12px 14px;
+  padding: 16px 16px 16px 14px;
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 .chat-card-topline {
   display: flex;
@@ -2178,7 +2172,7 @@ input:focus, select:focus, textarea:focus {
 }
 .chat-card-body h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text);
   line-height: 1.4;
@@ -2190,11 +2184,11 @@ input:focus, select:focus, textarea:focus {
 .chat-card-body .price {
   color: #1d4ed8;
   font-weight: 800;
-  font-size: 13px;
+  font-size: 15px;
   margin: 0;
 }
 .chat-card-body .meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin: 0;
 }
@@ -2237,16 +2231,12 @@ input:focus, select:focus, textarea:focus {
 }
 .chat-card-cta {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: fit-content;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: white;
-  font-size: 11px;
+  margin-top: 4px;
+  font-size: 12px;
   font-weight: 700;
+  color: #2563eb;
+  align-items: center;
+  gap: 4px;
 }
 
 @media (max-width: 768px) {

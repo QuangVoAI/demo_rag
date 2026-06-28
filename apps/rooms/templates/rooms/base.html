@@ -181,6 +181,7 @@
     </div>
   </div>
 
+  <script src="{% static 'rooms/chat_latency.js' %}"></script>
   <script>
     let chatIdentity = null;
     let chatHistoryHydrated = false;
@@ -598,6 +599,25 @@
       return wrapper;
     }
 
+    function sendLatencyTelemetry(eventName, metrics) {
+      try {
+        fetch("{% url 'rooms:api_latency_telemetry' %}", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          keepalive: true,
+          body: JSON.stringify({
+            event: eventName,
+            path: window.location.pathname,
+            metrics: metrics || {}
+          })
+        }).catch(() => {});
+      } catch (_) {
+        // Best-effort telemetry only.
+      }
+    }
+
     async function handleChatSubmit(e) {
       e.preventDefault();
       if (!chatIdentity) return;
@@ -644,6 +664,7 @@
             conversation_id: chatIdentity.conversationId || ''
           })
         });
+        const headersReceivedAt = performance.now();
 
         const result = await response.json();
         if (!response.ok || !result.success) {
@@ -655,22 +676,23 @@
         botBubble.innerText = '';
         messagesWrap.appendChild(botBubble);
 
-        let finalResponseMs = performance.now() - requestStart;
+        let frontendTtfbMs = null;
+        let firstTokenMs = null;
+        let finalResponseMs = null;
         let backendProcessingMs = null;
+        let firstRenderedAt = null;
         const latencyMeta = document.createElement('div');
         latencyMeta.style.marginTop = '8px';
         latencyMeta.style.fontSize = '12px';
         latencyMeta.style.lineHeight = '1.4';
         latencyMeta.style.color = '#6b7280';
-        const formatLatency = (value) => {
-          if (value === null || value === undefined) return null;
-          return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`;
-        };
         const renderLatency = () => {
-          const parts = [];
-          if (finalResponseMs !== null) parts.push(`Hoàn tất: ${formatLatency(finalResponseMs)}`);
-          if (backendProcessingMs !== null) parts.push(`Backend: ${formatLatency(backendProcessingMs)}`);
-          latencyMeta.textContent = parts.join(' • ');
+          latencyMeta.textContent = window.RoomsChatLatency.buildLatencyText({
+            frontendTtfbMs,
+            firstTokenMs,
+            finalResponseMs,
+            backendProcessingMs,
+          });
         };
         if (botBubble.parentElement) {
           botBubble.parentElement.appendChild(latencyMeta);
@@ -697,6 +719,8 @@
               }
               renderConversationList();
             }
+            botBubble.innerText = result.reply || '';
+            firstRenderedAt = performance.now();
             botBubble.innerHTML = formatMarkdown(result.reply);
 
             if (result.rooms && result.rooms.length > 0) {
@@ -707,6 +731,7 @@
                 const card = document.createElement('a');
                 card.className = 'chat-card-inline';
                 card.href = `/tim-phong/${room.id}/`;
+                card.target = '_blank';
                 const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
                 const idLines = [
                   room.room_id ? `<span>room_id: ${room.room_id}</span>` : '',
@@ -746,7 +771,23 @@
         }
         backendProcessingMs = result.latency?.processing_time_ms ?? null;
         renderFinalPayload(result);
+        const metrics = window.RoomsChatLatency.computeChatLatencyMetrics({
+          requestStart,
+          headersReceivedAt,
+          firstRenderedAt,
+          finishedAt: performance.now(),
+        });
+        frontendTtfbMs = metrics.frontendTtfbMs;
+        firstTokenMs = metrics.firstTokenMs;
+        finalResponseMs = metrics.finalResponseMs;
         renderLatency();
+        sendLatencyTelemetry('frontend_chat_latency', {
+          conversation_id: result.conversation_id || '',
+          frontend_ttfb_ms: frontendTtfbMs,
+          first_token_ms: firstTokenMs,
+          final_response_ms: finalResponseMs,
+          backend_processing_ms: backendProcessingMs,
+        });
         messagesWrap.scrollTop = messagesWrap.scrollHeight;
       } catch (err) {
         if (typingBubble.isConnected) {

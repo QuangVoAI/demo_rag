@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 from datetime import datetime
@@ -12,10 +12,10 @@ import uuid
 
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
-from django.http import Http404, JsonResponse, StreamingHttpResponse
+from django.http import Http404, JsonResponse, StreamingHttpResponse, HttpRequest
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import csrf_protect
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.conf import settings
 
 # Add python path for RAG room assistant imports
@@ -25,6 +25,7 @@ if python_path not in sys.path:
 
 from agents.graph import run_streaming
 from asgiref.sync import async_to_sync
+from utils.latency_logger import log_latency_event
 
 # Force the workflow to re-initialize its MongoDB repository singleton using
 # the environment variables that Django loaded (avoids Django's 'config' package
@@ -163,7 +164,7 @@ def _load_filtered_rooms(
     amenity: str | None = None,
     quick_filter: str | None = None,
     search_query: str | None = None
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     query: dict[str, Any] = {"metadata.status_code": "0"}
     
     if category_slug:
@@ -236,18 +237,21 @@ def _load_filtered_rooms(
         query.setdefault("$and", []).extend(feature_conditions)
     
     try:
+        rooms_col = _get_rooms_collection()
+        total_count = rooms_col.count_documents(query)
         docs = list(
-            _get_rooms_collection()
+            rooms_col
             .find(query)
             .sort("metadata.price", 1)
             .limit(60)
         )
     except Exception:
         docs = []
+        total_count = 0
 
     rooms = [_normalize_room_from_rooms_collection(doc) for doc in docs]
     rooms.sort(key=lambda item: item["price_value"] or 0)
-    return rooms
+    return rooms, total_count
 
 
 def _extract_fee_rows(text: str) -> list[dict[str, str]]:
@@ -280,7 +284,7 @@ def room_list(request):
     quick_filter = request.GET.get("quick_filter")
     search_query = request.GET.get("q")
     
-    rooms = _load_filtered_rooms(
+    rooms, total_count = _load_filtered_rooms(
         city_slug=city_slug,
         district_slug=district_slug,
         category_slug=category_slug,
@@ -342,7 +346,7 @@ def room_list(request):
 
     context = {
         "rooms": rooms,
-        "result_count": len(rooms),
+        "result_count": total_count,
         "backend_render_ms": int((time.perf_counter() - render_started) * 1000),
         "categories": [
             "Phòng trọ",
@@ -373,6 +377,19 @@ def room_list(request):
         "current_search_query": search_query,
         "city_district_json": json.dumps(city_district_map, ensure_ascii=False)
     }
+    log_latency_event(
+        "page_latency",
+        route="/tim-phong/",
+        page_backend_render_ms=context["backend_render_ms"],
+        result_count=len(rooms),
+        city=city_slug or "",
+        district=district_slug or "",
+        category=category_slug or "",
+        price_range=price_range or "",
+        amenity=amenity or "",
+        quick_filter=quick_filter or "",
+        search_query=search_query or "",
+    )
     return render(request, "rooms/room_list.html", context)
 
 
@@ -658,16 +675,43 @@ def _ensure_conversation(contact: dict[str, Any], message: str, conversation_id:
         role_value = str(item.get("role", "")).strip()
         content = str(item.get("content", "")).strip()
         if role_value in {"user", "assistant"} and content:
-            history.append({"role": role_value, "content": content})
+            msg = {"role": role_value, "content": content}
+            
+            room_ids = item.get("room_ids")
+            if room_ids and isinstance(room_ids, list):
+                from bson.objectid import ObjectId
+                obj_ids = []
+                for rid in room_ids:
+                    try:
+                        obj_ids.append(ObjectId(rid))
+                    except Exception:
+                        pass
+                if obj_ids:
+                    rooms_col = _get_rooms_collection()
+                    docs = list(rooms_col.find({"_id": {"$in": obj_ids}}))
+                    doc_map = {str(d["_id"]): d for d in docs}
+                    rooms_data = []
+                    for rid in room_ids:
+                        if rid in doc_map:
+                            rooms_data.append(_normalize_room_from_rooms_collection(doc_map[rid]))
+                    if rooms_data:
+                        msg["rooms"] = rooms_data
+                        
+            history.append(msg)
     return resolved_conversation_id, history
 
 
-def _append_conversation_messages(conversation_id: str, user_message: str, assistant_message: str) -> None:
+def _append_conversation_messages(conversation_id: str, user_message: str, assistant_message: str, rooms: list | None = None) -> None:
     chat_history_col = get_chat_history_collection()
     now = _utcnow_iso()
+    
+    assistant_msg = {"role": "assistant", "content": assistant_message, "created_at": _utcnow_iso()}
+    if rooms:
+        assistant_msg["room_ids"] = [str(r.get("room_id")) for r in rooms if r.get("room_id")]
+        
     updates = [
         {"role": "user", "content": user_message, "created_at": now},
-        {"role": "assistant", "content": assistant_message, "created_at": _utcnow_iso()},
+        assistant_msg,
     ]
     chat_history_col.update_one(
         {"conversation_id": conversation_id},
@@ -916,7 +960,7 @@ def api_chat(request):
             stream_callback=None,
         )
         reply = response_dict.get("answer") or "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi."
-        _append_conversation_messages(resolved_conversation_id, message, reply)
+        _append_conversation_messages(resolved_conversation_id, message, reply, rooms=response_dict.get("rooms"))
         if session_identity:
             session_identity["conversation_id"] = resolved_conversation_id
             request.session["chat_identity"] = session_identity
@@ -928,13 +972,53 @@ def api_chat(request):
         )
         response_payload["latency"] = {
             "processing_time_ms": response_dict.get("processing_time_ms"),
+            "retrieval_ms": (response_dict.get("agent_trace") or {}).get("retrieval_ms"),
+            "llm_generate_ms": (response_dict.get("agent_trace") or {}).get("llm_generate_ms"),
         }
+        log_latency_event(
+            "backend_chat_latency",
+            session_id=session_id,
+            conversation_id=resolved_conversation_id,
+            intent=response_dict.get("intent"),
+            backend_processing_ms=response_dict.get("processing_time_ms"),
+            retrieval_ms=response_payload["latency"]["retrieval_ms"],
+            llm_generate_ms=response_payload["latency"]["llm_generate_ms"],
+            room_count=len(response_dict.get("rooms") or []),
+            error_category=(response_dict.get("agent_trace") or {}).get("error_category"),
+        )
         return JsonResponse(response_payload)
     except Exception as exc:
         return JsonResponse({
             "success": False,
             "message": _assistant_error_message(exc),
         })
+
+
+@csrf_exempt
+@require_POST
+def api_latency_telemetry(request):
+    try:
+        payload = json.loads(request.body or "{}")
+    except Exception:
+        return JsonResponse({"success": False, "message": "Invalid telemetry payload."}, status=400)
+
+    event_name = str(payload.get("event") or "").strip()
+    metrics = payload.get("metrics")
+    if not event_name or not isinstance(metrics, dict):
+        return JsonResponse({"success": False, "message": "Missing telemetry fields."}, status=400)
+
+    safe_metrics = {}
+    for key, value in metrics.items():
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            safe_metrics[str(key)] = value
+
+    log_latency_event(
+        event_name,
+        path=str(payload.get("path") or request.path),
+        session_id=request.session.session_key or "",
+        **safe_metrics,
+    )
+    return JsonResponse({"success": True})
 
 
 def api_chat_history(request):

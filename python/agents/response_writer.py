@@ -19,39 +19,10 @@ from config import ANSWER_MAX_TOKENS
 # System prompts theo từng mood
 # ---------------------------------------------------------------------------
 
-_BASE_RULES = """\
-Quy tắc bắt buộc:
-- CHỈ dùng thông tin trong [DỮ LIỆU ĐÃ XÁC MINH]. Không bịa thêm giá, tiện ích, địa chỉ.
-- Nếu không có dữ liệu → thành thật nói "chưa có dữ liệu".
-- KHÔNG hứa hẹn: đặt lịch, nhắn chủ nhà, giữ phòng, thanh toán.
-- Dùng "mình/bạn", không dùng "chúng tôi/quý khách".
-- Format giá: dùng triệu (VD: 4,5 triệu/tháng).
-- Ngắn gọn, dùng danh sách khi liệt kê nhiều phòng.
-- Nếu câu hỏi yêu cầu chọn giữa A hay B, chọn trực tiếp trước rồi giải thích bằng dữ liệu đã xác minh.
-- Nếu dữ liệu có so sánh giữa lựa chọn/baseline/phương án, tách rõ từng bên; không trộn thuộc tính.
-- Không tự bịa ví dụ, kết quả, hạn chế, tiện ích hoặc điều kiện thuê ngoài dữ liệu đã xác minh."""
-
-_SYSTEM_PROMPTS: dict[str, str] = {
-    "frustrated": (
-        "Bạn là trợ lý tìm phòng nhatrovn — thấu cảm và thực tế.\n"
-        "Người dùng đang bực bội vì chưa tìm được phòng phù hợp.\n"
-        "Hãy: (1) thừa nhận khó khăn của họ, (2) gợi ý điều chỉnh điều kiện "
-        "cụ thể (nới ngân sách, mở rộng khu vực, bỏ bớt tiện ích), "
-        "(3) đưa ra kết quả tốt nhất hiện có nếu có.\n\n"
-        + _BASE_RULES
-    ),
-    "urgent": (
-        "Bạn là trợ lý tìm phòng nhatrovn — nhanh chóng và thiết thực.\n"
-        "Người dùng cần phòng GẤP. Ưu tiên: phòng trống ngay, có thể dọn vào sớm.\n"
-        "Đưa thông tin súc tích, rõ ràng. Tránh dài dòng.\n\n"
-        + _BASE_RULES
-    ),
-    "normal": (
-        "Bạn là trợ lý tìm phòng nhatrovn — thân thiện và chuyên nghiệp.\n"
-        "Trả lời đầy đủ, rõ ràng dựa trên dữ liệu đã xác minh.\n\n"
-        + _BASE_RULES
-    ),
-}
+from room_assistant.prompts import (
+    NO_RESULT_SYSTEM_PROMPTS as _NO_RESULT_SYSTEM_PROMPTS,
+    RESPONSE_WRITER_SYSTEM_PROMPTS as _SYSTEM_PROMPTS,
+)
 
 
 def _remove_duplicate_lines(text: str) -> str:
@@ -147,7 +118,7 @@ async def write_no_result_response(
         f"Gợi ý điều chỉnh:\n" + "\n".join(f"- {s}" for s in suggestions) + "\n\n"
         f"Viết câu trả lời thân thiện, đồng cảm và gợi ý cụ thể:"
     )
-    system = _SYSTEM_PROMPTS.get(mood, _SYSTEM_PROMPTS["normal"])
+    system = _NO_RESULT_SYSTEM_PROMPTS.get(mood, _NO_RESULT_SYSTEM_PROMPTS["normal"])
     try:
         answer = await groq_chat_complete(
             messages=[

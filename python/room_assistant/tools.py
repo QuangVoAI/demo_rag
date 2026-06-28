@@ -225,13 +225,18 @@ def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[s
     rooms = context.repository.get_many_by_ids(room_ids)
     rows = []
     for room in rooms:
+        amenities = room.get("amenities") or []
         rows.append({
             "room_id": room.get("room_id"),
             "house_id": room.get("house_id"),
             "title": room.get("title"),
             "rent_price": room.get("rent_price"),
             "area_m2": room.get("area_m2"),
+            "address": room.get("address"),
             "district": room.get("district"),
+            "ward": room.get("ward"),
+            "tien_ich_xq": room.get("tien_ich_xq"),
+            "amenities_count": len(amenities),
             "available": room.get("available"),
             "unknown": _unknown_room_fields(room),
         })
@@ -244,10 +249,21 @@ def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[s
 
 
 def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
+    import re
+    import unicodedata
+
+    def norm(value: Any) -> str:
+        return "".join(
+            ch for ch in unicodedata.normalize("NFD", str(value or "").lower())
+            if unicodedata.category(ch) != "Mn"
+        ).replace("đ", "d")
+
     room_id = args.get("room_id")
     source = context.repository.get_by_id(str(room_id)) if room_id else None
     if not source:
         return []
+    question = norm(args.get("question"))
+    extra_constraints = args.get("constraints") or {}
     constraints = {
         "location": {"districts": [source.get("district")] if source.get("district") else []},
         "budget": {
@@ -257,7 +273,19 @@ def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> l
         },
         "amenities_required": [],
         "amenities_preferred": [],
+        "categories": extra_constraints.get("categories") or [],
+        "area": dict(extra_constraints.get("area") or {}),
     }
+    if "re hon" in question and source.get("rent_price"):
+        constraints["budget"]["max"] = max(int(source["rent_price"]) - 1, 0)
+    if "rong hon" in question and source.get("area_m2"):
+        constraints["area"]["preference"] = "larger"
+    if "may lanh" in question:
+        constraints["amenities_required"].append("air_conditioner")
+    if "ban cong" in question:
+        constraints["amenities_required"].append("balcony")
+    if "quan khac" in question or "quận khác" in str(args.get("question") or "").lower():
+        constraints["location"]["districts"] = []
     results = search_rooms_with_hard_filters(
         query_text=source.get("embedding_text") or source.get("title") or "",
         constraints=constraints,
@@ -266,7 +294,13 @@ def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> l
         top_k=int(args.get("top_k", 5)) + 1,
         trace=context.retrieval_trace,
     )
-    return [item for item in results if item.get("room_id") != room_id][:int(args.get("top_k", 5))]
+    filtered = [item for item in results if item.get("room_id") != room_id]
+    if "quan khac" in question or "quận khác" in str(args.get("question") or "").lower():
+        source_district = str(source.get("district") or "").strip().lower()
+        filtered = [item for item in filtered if str(item.get("district") or "").strip().lower() != source_district]
+    if "rong hon" in question and source.get("area_m2"):
+        filtered = [item for item in filtered if (item.get("area_m2") or 0) > (source.get("area_m2") or 0)]
+    return filtered[:int(args.get("top_k", 5))]
 
 
 def _unknown_room_fields(room: dict[str, Any]) -> list[str]:

@@ -120,7 +120,7 @@ STRICT_CONFIG_VALIDATION = _env_bool("STRICT_CONFIG_VALIDATION", False)
 # --- Upstash Redis Cache ---
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-REDIS_CACHE_TTL = int(os.getenv("REDIS_CACHE_TTL", str(7 * 24 * 3600)))
+
 REDIS_SESSION_TTL_SECONDS = int(os.getenv("REDIS_SESSION_TTL_SECONDS", str(24 * 3600)))
 
 # --- Langfuse Observability ---

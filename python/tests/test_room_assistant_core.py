@@ -11,7 +11,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from agents import sentiment_analyzer
-from retrieval.cache import get_cached_answer
+
 from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.repository import (
     InMemoryRoomRepository,
@@ -22,7 +22,7 @@ from room_assistant.repository import (
 from room_assistant.schemas import default_session_state, normalize_room
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
-from room_assistant.workflow import _build_llm_context, run_room_assistant
+from room_assistant.workflow import _best_room_from_comparison, _build_llm_context, run_room_assistant
 
 
 class FakeMongoCursor:
@@ -104,6 +104,191 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertTrue(
             any(re.search(pattern, "Quận Bình Thạnh", re.IGNORECASE) for pattern in district_patterns)
         )
+
+    def test_trailing_phrase_after_numeric_district_becomes_landmark(self):
+        parsed = parse_intent_and_constraint_patch("tìm phòng quận 6 phú lâm")
+        self.assertIn({"op": "append", "path": "location.districts", "value": "quan 6"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "location.near_landmarks", "value": "phu lam"}, parsed["operations"])
+
+    def test_general_admin_units_are_parsed_without_forcing_quan(self):
+        cases = [
+            ("Tìm phòng thành phố Dĩ An", {"op": "append", "path": "location.districts", "value": "di an"}),
+            ("Tìm phòng thị xã Bến Cát", {"op": "append", "path": "location.districts", "value": "ben cat"}),
+            ("Tìm phòng ở thị trấn Bến Lức huyện Bến Lức", {"op": "append", "path": "location.districts", "value": "ben luc"}),
+            ("Tìm phòng ở xã Phước Kiển huyện Nhà Bè", {"op": "append", "path": "location.districts", "value": "nha be"}),
+            ("Tìm phòng ở phường Bến Nghé quận 1", {"op": "append", "path": "location.districts", "value": "quan 1"}),
+        ]
+        for question, expected in cases:
+            parsed = parse_intent_and_constraint_patch(question, default_session_state("admin-test"))
+            self.assertIn(expected, parsed["operations"], question)
+
+    def test_ward_parser_handles_numeric_compact_and_named_forms(self):
+        cases = [
+            ("Tìm phòng ở phường 25 Bình Thạnh", "25"),
+            ("Tìm phòng ở Phường 25, quận Bình Thạnh", "25"),
+            ("Tìm phòng p25 Bình Thạnh", "25"),
+            ("Tìm phòng P.25 Bình Thạnh", "25"),
+            ("Có phòng nào ở phường Thảo Điền không", "thao dien"),
+            ("Tìm phòng gần phường 17 gò vấp", "17"),
+            ("Tìm phòng tại xã Vĩnh Lộc A", "vinh loc a"),
+            ("Tìm phòng ở xã Phước Kiển huyện Nhà Bè", "phuoc kien"),
+            ("Tìm phòng ở thị trấn Bến Lức huyện Bến Lức", "ben luc"),
+            ("Tìm phòng ở phường Bến Nghé quận 1", "ben nghe"),
+            ("Tìm phòng ở phường Quan Hoa quận Cầu Giấy", "quan hoa"),
+        ]
+        for question, expected_ward in cases:
+            parsed = parse_intent_and_constraint_patch(question, default_session_state("ward-test"))
+            self.assertIn(
+                {"op": "append", "path": "location.wards", "value": expected_ward},
+                parsed["operations"],
+                question,
+            )
+
+    def test_fresh_search_with_new_location_clears_old_session_location(self):
+        state = default_session_state("replace-location")
+        first = parse_intent_and_constraint_patch("Tìm phòng ở quận 6", state)
+        state, _ = apply_operations(state, first["operations"])
+        self.assertEqual(state["constraints"]["location"]["districts"], ["quan 6"])
+
+        second = parse_intent_and_constraint_patch("Tìm phòng ở phường Thảo Điền", state)
+        self.assertEqual(second["intent"], "SEARCH_ROOM")
+        self.assertIn({"op": "clear", "path": "location.districts"}, second["operations"])
+        self.assertIn({"op": "clear", "path": "location.wards"}, second["operations"])
+        self.assertIn({"op": "append", "path": "location.wards", "value": "thao dien"}, second["operations"])
+
+        state, _ = apply_operations(state, second["operations"])
+        self.assertEqual(state["constraints"]["location"]["districts"], [])
+        self.assertEqual(state["constraints"]["location"]["wards"], ["thao dien"])
+
+    def test_ward_query_matches_exact_ward_only(self):
+        query = build_mongo_query({
+            "location": {"districts": ["binh thanh"], "wards": ["25"]},
+        })
+        ward_patterns = []
+        for clause in query["$and"]:
+            for option in clause.get("$or", []):
+                if "metadata.ward_name" in option:
+                    ward_patterns.append(option["metadata.ward_name"]["$regex"])
+
+        self.assertTrue(ward_patterns)
+        self.assertTrue(any(re.search(pattern, "Phường 25", re.IGNORECASE) for pattern in ward_patterns))
+        self.assertFalse(any(re.search(pattern, "Phường 02", re.IGNORECASE) for pattern in ward_patterns))
+        self.assertFalse(any(re.search(pattern, "Phường 11", re.IGNORECASE) for pattern in ward_patterns))
+
+    def test_in_memory_room_filter_respects_exact_ward(self):
+        rooms = [
+            {"room_id": "A", "available": True, "district": "Quận Bình Thạnh", "ward": "Phường 25", "rent_price": 4_500_000, "amenities": []},
+            {"room_id": "B", "available": True, "district": "Quận Bình Thạnh", "ward": "Phường 02", "rent_price": 4_500_000, "amenities": []},
+        ]
+        repo = InMemoryRoomRepository(rooms)
+
+        results = repo.search_by_constraints({
+            "location": {"districts": ["binh thanh"], "wards": ["25"]},
+        })
+        self.assertEqual([item["room_id"] for item in results], ["A"])
+
+    def test_in_memory_room_filter_respects_near_landmark(self):
+        rooms = [
+            {"room_id": "A", "available": True, "district": "Quận 6", "ward": "Phường 13", "title": "Cư xá Phú Lâm", "address": "B6 Cư xá Phú Lâm B", "embedding_text": "Địa chỉ: B6 Cư xá Phú Lâm B, Phường 13, Quận 6", "rent_price": 4_500_000, "amenities": []},
+            {"room_id": "B", "available": True, "district": "Quận 6", "ward": "Phường 11", "title": "Khác", "address": "Đường 36", "embedding_text": "Địa chỉ: Đường 36, Phường 11, Quận 6", "rent_price": 4_500_000, "amenities": []},
+        ]
+        repo = InMemoryRoomRepository(rooms)
+
+        results = repo.search_by_constraints({
+            "location": {"districts": ["quan 6"], "near_landmarks": ["phu lam"]},
+        })
+        self.assertEqual([item["room_id"] for item in results], ["A"])
+
+    def test_in_memory_room_filter_respects_general_admin_units(self):
+        rooms = [
+            {"room_id": "A", "available": True, "district": "Thành phố Dĩ An", "ward": "Phường Dĩ An", "rent_price": 4_500_000, "amenities": []},
+            {"room_id": "B", "available": True, "district": "Thị xã Bến Cát", "ward": "Phường Mỹ Phước", "rent_price": 4_500_000, "amenities": []},
+            {"room_id": "C", "available": True, "district": "Huyện Bến Lức", "ward": "Thị trấn Bến Lức", "rent_price": 4_500_000, "amenities": []},
+        ]
+        repo = InMemoryRoomRepository(rooms)
+
+        self.assertEqual(
+            [item["room_id"] for item in repo.search_by_constraints({"location": {"districts": ["di an"], "wards": ["di an"]}})],
+            ["A"],
+        )
+        self.assertEqual(
+            [item["room_id"] for item in repo.search_by_constraints({"location": {"districts": ["ben cat"], "wards": ["my phuoc"]}})],
+            ["B"],
+        )
+        self.assertEqual(
+            [item["room_id"] for item in repo.search_by_constraints({"location": {"districts": ["ben luc"], "wards": ["ben luc"]}})],
+            ["C"],
+        )
+
+    def test_location_and_category_edge_cases_are_preserved(self):
+        parsed = parse_intent_and_constraint_patch("Tìm sleepbox ở Thảo Điền dưới 1 triệu")
+        self.assertIn({"op": "append", "path": "location.wards", "value": "thao dien"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "categories", "value": "sleepbox"}, parsed["operations"])
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng ở xã không tồn tại")
+        self.assertIn({"op": "append", "path": "location.wards", "value": "khong ton tai"}, parsed["operations"])
+
+    def test_category_and_new_amenity_filters_work_in_memory(self):
+        rooms = [
+            {"room_id": "S1", "available": True, "title": "Sleepbox Thảo Điền", "embedding_text": "sleepbox cao cấp", "district": "Quận 2", "ward": "Phường Thảo Điền", "rent_price": 900_000, "amenities": []},
+            {"room_id": "P1", "available": True, "title": "Penthouse Quận 1", "embedding_text": "penthouse full nội thất", "district": "Quận 1", "ward": "Phường Bến Nghé", "rent_price": 20_000_000, "amenities": []},
+            {"room_id": "POOL1", "available": True, "title": "Studio có hồ bơi", "embedding_text": "## Tiện ích\n- Hồ bơi: Có\n", "district": "Quận 1", "ward": "Phường Bến Nghé", "rent_price": 1_800_000, "amenities": []},
+        ]
+        repo = InMemoryRoomRepository(rooms)
+
+        sleepbox = repo.search_by_constraints({"categories": ["sleepbox"], "location": {"wards": ["thao dien"]}})
+        self.assertEqual([item["room_id"] for item in sleepbox], ["S1"])
+
+        pool = repo.search_by_constraints({"amenities_required": ["pool"], "budget": {"max": 2_000_000, "max_operator": "lt"}})
+        self.assertEqual([item["room_id"] for item in pool], ["POOL1"])
+
+    def test_comparison_prefers_stronger_location_when_user_asks(self):
+        rows = [
+            {
+                "room_id": "A",
+                "rent_price": 4_500_000,
+                "area_m2": 22,
+                "district": "Quận 2",
+                "ward": "Phường Thảo Điền",
+                "address": "12 Xa lộ Hà Nội",
+                "tien_ich_xq": "Metro, Vincom, công viên, trường học",
+                "amenities_count": 3,
+                "available": True,
+            },
+            {
+                "room_id": "B",
+                "rent_price": 4_300_000,
+                "area_m2": 24,
+                "district": "Quận 2",
+                "ward": None,
+                "address": "",
+                "tien_ich_xq": "",
+                "amenities_count": 1,
+                "available": True,
+            },
+        ]
+        best = _best_room_from_comparison(rows, {}, "Phòng nào ở khu vực tốt hơn?")
+        self.assertEqual(best["room_id"], "A")
+
+    def test_comparison_prefers_larger_room_when_user_asks_rong_hon(self):
+        rows = [
+            {
+                "room_id": "A",
+                "rent_price": 4_000_000,
+                "area_m2": 18,
+                "district": "Quận 7",
+                "available": True,
+            },
+            {
+                "room_id": "B",
+                "rent_price": 4_300_000,
+                "area_m2": 28,
+                "district": "Quận 7",
+                "available": True,
+            },
+        ]
+        best = _best_room_from_comparison(rows, {"budget": {"max": 5_000_000}}, "Phòng nào rộng hơn?")
+        self.assertEqual(best["room_id"], "B")
 
     def test_compact_district_matches_python_post_filter(self):
         room = {
@@ -339,7 +524,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertFalse(room_matches_constraints(unavailable, constraints))
 
         mongo_query = build_mongo_query(constraints)
-        self.assertIn({"metadata.status_code": "0"}, mongo_query["$and"])
+        self.assertIn({"metadata.status_code": {"$in": ["0", ""]}}, mongo_query["$and"])
 
     def test_mongo_repository_uses_object_id_for_native_room_documents(self):
         try:
@@ -515,8 +700,6 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("#Z999", result["answer"])
         self.assertIn("#Y888", result["answer"])
 
-    def test_dynamic_room_answer_cache_disabled_without_safe_context(self):
-        self.assertIsNone(get_cached_answer("Phòng này có nuôi mèo không?", context=None, dynamic_room=True))
 
 
 if __name__ == "__main__":
