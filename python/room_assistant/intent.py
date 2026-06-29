@@ -16,6 +16,7 @@ import unicodedata
 from typing import Any
 
 from .schemas import ALLOWED_OPERATION_PATHS, INTENTS, OP_TYPES, ParsedRequest
+from .landmark_aliases import normalize_landmark
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +686,7 @@ def _clean_landmark(value: str) -> str | None:
         return None
     if result in _LANDMARK_REFERENCE_ONLY:
         return None
-    return result
+    return normalize_landmark(result) or result
 
 
 def _extract_categories(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:

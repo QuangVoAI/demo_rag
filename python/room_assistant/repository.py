@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlsplit
 from typing import Any, Iterable, Protocol
 
 from .schemas import normalize_room
+from .landmark_aliases import expand_landmark_tokens, landmark_matches_text
 
 
 def _available_status_query() -> dict[str, Any]:
@@ -394,12 +395,14 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     if location.get("near_landmarks"):
         landmark_clauses = []
         for landmark in location["near_landmarks"]:
-            pattern = _accent_flexible_regex(str(landmark))
-            landmark_clauses.extend([
-                {"embedding_text": {"$regex": pattern, "$options": "i"}},
-                {"tien_ich_xq": {"$regex": pattern, "$options": "i"}},
-                {"metadata.house_name": {"$regex": pattern, "$options": "i"}},
-            ])
+            search_tokens = expand_landmark_tokens(str(landmark))
+            for token in search_tokens:
+                pattern = _accent_flexible_regex(token)
+                landmark_clauses.extend([
+                    {"embedding_text": {"$regex": pattern, "$options": "i"}},
+                    {"tien_ich_xq": {"$regex": pattern, "$options": "i"}},
+                    {"metadata.house_name": {"$regex": pattern, "$options": "i"}},
+                ])
         query["$and"].append({"$or": landmark_clauses})
 
     # Amenities/features — search within embedding_text
@@ -455,9 +458,8 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
                 room.get("title"),
             )
         )
-        searchable_norm = _normalize_location_value(searchable)
         for landmark in location["near_landmarks"]:
-            if _normalize_location_value(landmark) not in searchable_norm:
+            if not landmark_matches_text(str(landmark), searchable):
                 return False
 
     # Check required amenities

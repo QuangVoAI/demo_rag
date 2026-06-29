@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Callable, Awaitable
 
 from .intent import parse_intent_and_constraint_patch, parse_intent_async
+from .landmark_aliases import expand_landmark_tokens, primary_display_token
 from .repository import RoomRepository, create_room_repository
 from .retrieval import RoomSemanticIndex
 from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, public_session_state, unknown_room_fields
@@ -1257,9 +1258,17 @@ def _matching_landmark_hints(rooms: list[dict[str, Any]], constraints: dict[str,
         ).lower()
         matched = []
         for landmark in landmarks:
-            token = str(landmark).strip().lower()
-            if token and token in text and token not in matched:
-                matched.append(token.upper())
+            for token in expand_landmark_tokens(str(landmark)):
+                needle = str(token).strip().lower()
+                if needle and needle in text:
+                    label = needle.upper() if len(needle) <= 6 else needle.title()
+                    if label not in matched:
+                        matched.append(label)
+                    break
+        if not matched:
+            display = primary_display_token(str(landmarks[0]))
+            if display.lower() in text:
+                matched.append(display)
         if matched:
             hints[room_id] = f"gần {' / '.join(matched)}"
     return hints

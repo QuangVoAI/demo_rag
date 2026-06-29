@@ -284,12 +284,51 @@ python scripts/index_mongo_to_qdrant.py
 
 ### 5. Chạy test
 
+**Unit & regression (không cần MongoDB):**
+
 ```bash
 cd python
 python -m pytest tests/ -q
 ```
 
-Bộ `tests/test_mongo_behavior_scenarios.py` chạy trên MongoDB thật, đối chiếu giá phòng và kiểm tra kịch bản sales (off-topic, đổi ý, thương lượng, hỏi chi tiết phòng).
+**Django API + chat persistence:**
+
+```bash
+python manage.py test apps.rooms.tests
+```
+
+**Replay từng cặp Q&A (transcript production + kịch bản bổ sung):**
+
+```bash
+# In-memory fixture Q7 (nhanh, CI-friendly)
+python scripts/run_qa_audit.py --mode local
+
+# Stack thật qua agents.graph + MongoDB
+python scripts/run_qa_audit.py --mode live
+```
+
+**Kiểm tra data MongoDB trước demo:**
+
+```bash
+python scripts/pre_demo_mongo_audit.py
+```
+
+#### Cấu trúc test
+
+| File | Mục đích |
+|---|---|
+| `python/tests/test_room_assistant_core.py` | Workflow, intent, retrieval, session |
+| `python/tests/test_intent_parser.py` | Parse constraint / landmark / quận |
+| `python/tests/test_landmark_aliases.py` | Chuẩn hóa TDTU, TTTM, đường, trường… |
+| `python/tests/test_transcript_qa_regression.py` | Multi-turn Q&A transcript (in-memory) |
+| `python/tests/test_mongo_behavior_scenarios.py` | Integration MongoDB + Qdrant (skip nếu thiếu URI) |
+| `python/tests/test_production_integration.py` | Abstain / rerank guardrails |
+| `python/tests/test_sources.py` | Source attribution |
+| `apps/rooms/tests.py` | REST chat, RAG API, rate limit, persistence |
+| `scripts/run_qa_audit.py` | Audit từng lượt Q&A + báo cáo JSON |
+| `python/scripts/mine_landmark_phrases.py` | Dev: quét alias địa danh từ MongoDB |
+
+Bộ `test_mongo_behavior_scenarios.py` chạy trên MongoDB thật, đối chiếu giá phòng và kiểm tra kịch bản sales (off-topic, đổi ý, thương lượng, hỏi chi tiết phòng).
 
 ---
 

@@ -51,6 +51,14 @@ EXTRA_SCENARIOS = [
     "expect": lambda r: "so sánh" in r["answer"].lower() or "rẻ hơn" in r["answer"].lower() or "ưu điểm" in r["answer"].lower(),
     "note": "So sánh phòng sau khi đã có kết quả",
   },
+  {
+    "name": "landmark_tdt_full_name",
+    "turns": ["mình muốn tìm phòng ở gần trường đại học TDT"],
+    "expect": lambda r: bool(r.get("rooms")) and not any(
+        marker in (r.get("answer") or "").lower() for marker in NO_RESULT_MARKERS
+    ),
+    "note": "Tên đầy đủ 'trường đại học TDT' phải khớp phòng ghi Gan TDTU trong DB",
+  },
 ]
 
 NO_RESULT_MARKERS = (

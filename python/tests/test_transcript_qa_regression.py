@@ -134,6 +134,24 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         turn9_ids = [room.get("room_id") for room in results[7]["rooms"]]
         self.assertIn("62963aae137e2a3d7e03c9d0", turn9_ids)
 
+    def test_landmark_tdt_full_name_finds_tdtu_room(self):
+        result = asyncio.run(run_room_assistant(
+            "mình muốn tìm phòng ở gần trường đại học TDT",
+            session_id="landmark-tdt-full",
+            repository=InMemoryRoomRepository(_q7_rooms()),
+            session_store=InMemorySessionStore(),
+            semantic_index=None,
+        ))
+        rooms = result.get("rooms") or []
+        answer = (result.get("answer") or "").lower()
+        self.assertTrue(rooms, msg=answer[:200])
+        self.assertFalse(any(room.get("relaxed_search") for room in rooms))
+        self.assertFalse(any(marker in answer for marker in NO_RESULT_MARKERS))
+        room_ids = [room.get("room_id") for room in rooms]
+        self.assertIn("62963aae137e2a3d7e03c9d0", room_ids)
+        landmarks = result["session_state"]["constraints"]["location"].get("near_landmarks") or []
+        self.assertIn("tdtu", landmarks)
+
     def test_off_topic_and_empathy_short_paths(self):
         off_topic = asyncio.run(run_room_assistant(
             "Viết code Python giúp tôi",
