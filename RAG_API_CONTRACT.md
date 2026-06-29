@@ -158,5 +158,7 @@ Example final event:
 
 - `reply` and `answer` contain the same assistant text for client compatibility.
 - `session_id` should be stable per end-user conversation if the caller wants multi-turn memory.
+- `conversation_id` is accepted as an alias for `session_id` in the request body.
+- Rate limiting is applied **per conversation** when `session_id` or `conversation_id` is sent (recommended: Mongo `chat_history.conversation_id`). Without it, limits fall back to API key or client IP.
 - `history` is sanitized and bounded server-side; callers should still keep it concise.
 - `POST /api/rag/stream/` is for first-party UI experience only. Web team should integrate `POST /api/rag/query/`.

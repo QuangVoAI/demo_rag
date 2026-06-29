@@ -748,16 +748,31 @@ def _attach_rate_limit_headers(response, rate_state: dict[str, int]) -> None:
 
 
 def _rag_rate_limit_identity(request, session_id: str) -> str:
+    """Build a rate-limit bucket key.
+
+  Production callers should pass a stable ``session_id`` or ``conversation_id``
+  (Mongo ``chat_history.conversation_id``). Each conversation gets its own
+  quota instead of sharing one bucket for the whole API key.
+    """
+    normalized_session = str(session_id or "").strip()
     header_key = str(request.headers.get("X-API-Key", "") or "").strip()
     auth_header = str(request.headers.get("Authorization", "") or "").strip()
     if auth_header.lower().startswith("bearer "):
         header_key = auth_header[7:].strip() or header_key
+
+    if normalized_session:
+        session_key = normalized_session[:128]
+        if header_key:
+            key_hash = hashlib.sha256(header_key.encode("utf-8")).hexdigest()[:16]
+            return f"session:{key_hash}:{session_key}"
+        forwarded_for = str(request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
+        remote_addr = forwarded_for or str(request.META.get("REMOTE_ADDR", "") or "").strip() or "unknown"
+        return f"session:{remote_addr}:{session_key}"
+
     if header_key:
         return "api_key:" + hashlib.sha256(header_key.encode("utf-8")).hexdigest()[:16]
     forwarded_for = str(request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
     remote_addr = forwarded_for or str(request.META.get("REMOTE_ADDR", "") or "").strip() or "unknown"
-    if session_id:
-        return f"ip_session:{remote_addr}:{session_id[:64]}"
     return f"ip:{remote_addr}"
 
 

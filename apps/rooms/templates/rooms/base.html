@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'rooms/demo.css' %}">
+  <link rel="stylesheet" href="{% static 'rooms/demo.css' %}?v=20260629a">
 </head>
 <body>
   <header class="site-header">
@@ -127,18 +127,32 @@
       </div>
 
       <div class="chat-thread-bar" id="chatThreadBar" hidden>
+        <button
+          type="button"
+          class="chat-thread-chip chat-thread-menu-btn"
+          id="chatThreadToggle"
+          onclick="toggleChatThreadPanel()"
+          hidden
+          aria-label="Ẩn hoặc hiện lịch sử chat"
+          aria-controls="chatThreadPanel"
+          aria-expanded="false"
+        >
+          <svg class="chat-thread-menu-btn__icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 7.5h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M8 12h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M8 16.5h5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M5.5 7.5h.01M5.5 12h.01M5.5 16.5h.01" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+          </svg>
+          <span class="chat-thread-menu-btn__label">Lịch sử chat</span>
+          <svg class="chat-thread-menu-btn__caret" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m5.5 7.5 4.5 4.5 4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
         <span class="chat-thread-chip chat-thread-chip--role" id="chatRoleChip">Khách</span>
         <button type="button" class="chat-thread-chip chat-thread-chip--action" id="chatNewThreadChip" onclick="resetChatConversation()" hidden>Đoạn chat mới</button>
       </div>
 
       <div class="chat-body-layout" id="chatBodyLayout">
-        <aside class="chat-thread-panel" id="chatThreadPanel" hidden>
-          <div class="chat-thread-panel-head">
-            <strong>Lịch sử chat</strong>
-          </div>
-          <div class="chat-thread-list" id="chatThreadList"></div>
-        </aside>
-
         <div class="chat-conversation-pane">
           <div class="chat-messages-wrap" id="chatMessagesWrap">
             <div class="chat-content-column">
@@ -155,6 +169,21 @@
               <button type="submit" id="chatSendBtn" disabled>Gửi</button>
             </div>
           </form>
+        </div>
+
+        <div class="chat-thread-overlay" id="chatThreadOverlay" hidden aria-hidden="true">
+          <button type="button" class="chat-thread-panel-backdrop" id="chatThreadPanelBackdrop" aria-label="Đóng lịch sử chat"></button>
+          <aside class="chat-thread-panel" id="chatThreadPanel" role="dialog" aria-label="Lịch sử chat">
+            <div class="chat-thread-panel-head">
+              <strong>Lịch sử chat</strong>
+              <button type="button" class="chat-thread-panel-close" id="chatThreadPanelClose" aria-label="Đóng lịch sử chat">
+                <svg class="chat-thread-panel-close__icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" d="M7 7l10 10M17 7 7 17"/>
+                </svg>
+              </button>
+            </div>
+            <div class="chat-thread-list" id="chatThreadList"></div>
+          </aside>
         </div>
       </div>
     </div>
@@ -183,10 +212,14 @@
         input: document.getElementById('chatMessageInput'),
         sendBtn: document.getElementById('chatSendBtn'),
         threadBar: document.getElementById('chatThreadBar'),
+        threadToggle: document.getElementById('chatThreadToggle'),
         roleChip: document.getElementById('chatRoleChip'),
         newThreadChip: document.getElementById('chatNewThreadChip'),
         bodyLayout: document.getElementById('chatBodyLayout'),
+        threadOverlay: document.getElementById('chatThreadOverlay'),
         threadPanel: document.getElementById('chatThreadPanel'),
+        threadPanelBackdrop: document.getElementById('chatThreadPanelBackdrop'),
+        threadPanelClose: document.getElementById('chatThreadPanelClose'),
         threadList: document.getElementById('chatThreadList'),
         messagesWrap: document.getElementById('chatMessagesWrap'),
         form: document.getElementById('chatDrawerForm'),
@@ -378,17 +411,46 @@
       });
     }
 
+    function closeChatThreadPanel() {
+      const { threadOverlay, threadToggle } = getChatElements();
+      if (!threadOverlay) return;
+      threadOverlay.hidden = true;
+      threadOverlay.setAttribute('aria-hidden', 'true');
+      if (threadToggle) {
+        threadToggle.setAttribute('aria-expanded', 'false');
+      }
+    }
+
+    function openChatThreadPanel() {
+      const { threadOverlay, threadToggle } = getChatElements();
+      if (!threadOverlay || !isEmployeeIdentity()) return;
+      threadOverlay.hidden = false;
+      threadOverlay.setAttribute('aria-hidden', 'false');
+      if (threadToggle) {
+        threadToggle.setAttribute('aria-expanded', 'true');
+      }
+    }
+
+    function toggleChatThreadPanel() {
+      const { threadOverlay } = getChatElements();
+      if (!threadOverlay || !isEmployeeIdentity()) return;
+      if (threadOverlay.hidden) {
+        openChatThreadPanel();
+      } else {
+        closeChatThreadPanel();
+      }
+    }
+
     function renderThreadList() {
-      const { threadPanel, threadList } = getChatElements();
+      const { threadList } = getChatElements();
       threadList.innerHTML = '';
 
       if (!isEmployeeIdentity()) {
-        threadPanel.hidden = true;
+        closeChatThreadPanel();
         return;
       }
 
       const threads = chatIdentity.threads || [];
-      threadPanel.hidden = false;
 
       if (!threads.length) {
         const emptyState = document.createElement('div');
@@ -477,6 +539,7 @@
       drawer.classList.remove('open');
       backdrop.classList.remove('open');
       document.body.style.overflow = '';
+      closeChatThreadPanel();
     }
 
     function resetChatDrawer() {
@@ -514,6 +577,22 @@
 
     document.addEventListener('DOMContentLoaded', function() {
       selectChatRole('customer');
+      const { threadPanelBackdrop, threadPanelClose, threadPanel } = getChatElements();
+      if (threadPanelBackdrop) {
+        threadPanelBackdrop.addEventListener('click', closeChatThreadPanel);
+      }
+      if (threadPanelClose) {
+        threadPanelClose.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          closeChatThreadPanel();
+        });
+      }
+      if (threadPanel) {
+        threadPanel.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+      }
       const chatbotTriggers = document.querySelectorAll('a[href="#chatbot"], a[href="#chatbot-preview"]');
       chatbotTriggers.forEach(el => {
         el.addEventListener('click', function(e) {
@@ -553,7 +632,7 @@
     }
 
     function syncChatAccessState() {
-      const { overlay, main, input, sendBtn, threadBar, roleChip, newThreadChip, threadPanel, bodyLayout } = getChatElements();
+      const { overlay, main, input, sendBtn, threadBar, threadToggle, roleChip, newThreadChip } = getChatElements();
 
       if (chatIdentity) {
         overlay.classList.add('hidden');
@@ -566,12 +645,11 @@
         roleChip.dataset.role = isEmployee ? 'employee' : 'customer';
         newThreadChip.hidden = !isEmployee;
         newThreadChip.style.display = isEmployee ? 'inline-flex' : 'none';
-        if (bodyLayout) {
-          bodyLayout.classList.toggle('has-threads', isEmployee);
+        if (threadToggle) {
+          threadToggle.hidden = !isEmployee;
+          threadToggle.style.display = isEmployee ? 'inline-flex' : 'none';
         }
-        if (!isEmployee) {
-          threadPanel.hidden = true;
-        }
+        closeChatThreadPanel();
         renderThreadList();
         input.focus();
         return;
@@ -582,12 +660,12 @@
       input.disabled = true;
       sendBtn.disabled = true;
       threadBar.hidden = true;
+      if (threadToggle) {
+        threadToggle.hidden = true;
+      }
       newThreadChip.hidden = true;
       newThreadChip.style.display = 'none';
-      threadPanel.hidden = true;
-      if (bodyLayout) {
-        bodyLayout.classList.remove('has-threads');
-      }
+      closeChatThreadPanel();
     }
 
     async function handleChatIdentitySubmit(e) {
@@ -750,10 +828,12 @@
       if (!chatIdentity || !conversationId) return;
       if (conversationId === chatIdentity.conversationId) {
         renderThreadList();
+        closeChatThreadPanel();
         return;
       }
       try {
         await bootstrapChatSession({ conversationId });
+        closeChatThreadPanel();
       } catch (err) {
         appendChatBubble('assistant', 'Không tải được đoạn chat này. Vui lòng thử lại.', { extraClass: 'error' });
         console.error(err);

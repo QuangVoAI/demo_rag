@@ -151,8 +151,9 @@ Mọi JSON error response đều có envelope:
 Rate limit áp ở lớp HTTP ngoài cùng của `POST /api/rag/query/` và `POST /api/rag/stream/`.
 
 Nó giới hạn:
-- số lượt gọi API từ caller/web backend
-- theo `API key`, hoặc theo `IP + session_id` nếu không có API key
+- số lượt gọi **theo từng cuộc hội thoại** khi có `session_id` hoặc `conversation_id`
+- mỗi conversation có bucket riêng (khuyến nghị: dùng `conversation_id` từ Mongo `chat_history`)
+- nếu thiếu `session_id`/`conversation_id`: fallback theo `API key`, hoặc theo `IP`
 
 Nó không giới hạn:
 - các bước nội bộ trong cùng một request

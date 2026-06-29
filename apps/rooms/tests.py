@@ -801,6 +801,37 @@ class RagApiQueryTests(TestCase):
         self.assertTrue(second.json()["error"]["retryable"])
         self.assertTrue(second["Retry-After"])
 
+    @override_settings(
+        RAG_API_KEY="secret-key",
+        RAG_RATE_LIMIT_MAX_REQUESTS=1,
+        RAG_RATE_LIMIT_WINDOW_SECONDS=60,
+    )
+    def test_rag_query_rate_limit_is_per_conversation_with_api_key(self):
+        with patch("apps.rooms.views.run_streaming", new=self._response):
+            first_conv = self.client.post(
+                "/api/rag/query/",
+                data=json.dumps({"message": "Tim phong", "conversation_id": "conv_user_a"}),
+                content_type="application/json",
+                HTTP_X_API_KEY="secret-key",
+            )
+            second_conv = self.client.post(
+                "/api/rag/query/",
+                data=json.dumps({"message": "Tim phong", "conversation_id": "conv_user_b"}),
+                content_type="application/json",
+                HTTP_X_API_KEY="secret-key",
+            )
+            repeat_first_conv = self.client.post(
+                "/api/rag/query/",
+                data=json.dumps({"message": "Tim phong tiep", "conversation_id": "conv_user_a"}),
+                content_type="application/json",
+                HTTP_X_API_KEY="secret-key",
+            )
+
+        self.assertTrue(first_conv.json()["success"])
+        self.assertTrue(second_conv.json()["success"])
+        self.assertFalse(repeat_first_conv.json()["success"])
+        self.assertTrue(repeat_first_conv.json()["rate_limited"])
+
     def test_rag_stream_emits_status_and_final_events(self):
         body = {"message": "Tim phong duoi 5 trieu", "session_id": "stream-123"}
 
