@@ -163,6 +163,23 @@ class IntentParserTests(unittest.TestCase):
         self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
         self.assertEqual(parsed["current_room_id"], "C303")
 
+    def test_deictic_reference_resolves_last_result_ids(self):
+        state = default_session_state("s-deictic")
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        cases = [
+            ("Căn ở trên có máy lạnh không?", "A101"),
+            ("Phòng dưới giá bao nhiêu?", "B202"),
+            ("Cho em hỏi phòng cuối cùng trong list", "C303"),
+            ("So với phòng kia thì sao?", "B202"),
+        ]
+        for question, expected_id in cases:
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, state)
+                self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+                self.assertEqual(parsed["current_room_id"], expected_id)
+
     def test_compare_can_extract_two_bare_mongo_room_ids(self):
         parsed = parse_intent_and_constraint_patch(
             "so sánh 61ea636e3048d576be90729f với 62cc0e17ff6aae63cefbeda7 đi"

@@ -1,7 +1,7 @@
 """
 Redis Cache Layer — Upstash Serverless Redis (HTTP REST).
 
-Caching câu trả lời RAG để bypass LangGraph pipeline cho các query đã từng trả lời.
+Caching câu trả lời RAG để bypass room_assistant workflow cho các query đã từng trả lời.
 Sử dụng Upstash (serverless) → không cần cài Redis local, chỉ gọi HTTP.
 
 Cache Strategy:

@@ -167,7 +167,7 @@ def run_worker():
 
             stream_cb = make_stream_callback(session_id, producer)
 
-            # Run LangGraph pipeline (timeout 2 phút)
+            # Run room assistant workflow (timeout 2 phút)
             final_state = loop.run_until_complete(
                 asyncio.wait_for(
                     run_streaming(

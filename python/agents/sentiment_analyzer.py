@@ -16,7 +16,6 @@ import unicodedata
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from agents.state import NhatrovnAgentState
 from utils.console import console
 
 # Singleton centroids — tính một lần rồi cache
@@ -162,25 +161,3 @@ def _l2_normalize(vector: list[float]) -> list[float]:
 
 def _dot(left: list[float], right: list[float]) -> float:
     return float(sum(a * b for a, b in zip(left, right)))
-
-
-def sentiment_analyzer_node(state: NhatrovnAgentState) -> dict:
-    """LangGraph Node: Phân tích cảm xúc người dùng trong lượt hiện tại."""
-    t0 = time.time()
-    question = state["question"]
-
-    mood, score = analyze_mood(question)
-    elapsed = int((time.time() - t0) * 1000)
-
-    console.print(f"[dim]  Mood: {mood} (score={score:.3f}, {elapsed}ms)[/]")
-
-    return {
-        "user_mood": mood,
-        "user_mood_score": score,
-        "agent_trace": {
-            **(state.get("agent_trace") or {}),
-            "mood": mood,
-            "mood_score": score,
-            "mood_ms": elapsed,
-        },
-    }

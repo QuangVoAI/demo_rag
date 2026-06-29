@@ -27,7 +27,7 @@ from typing import Any, Callable, Awaitable
 from .intent import parse_intent_and_constraint_patch, parse_intent_async
 from .landmark_aliases import expand_landmark_tokens, primary_display_token
 from .repository import RoomRepository, create_room_repository
-from .retrieval import RoomSemanticIndex
+from .retrieval import RoomSemanticIndex, build_retrieval_explanation
 from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, public_session_state, unknown_room_fields
 from .session_store import (
     SessionStore,
@@ -234,6 +234,12 @@ async def run_room_assistant(
     verification = composed.get("verification") or {}
     suggested_questions = _suggest_questions(parsed["intent"], rooms, current_room_id)
     processing_time_ms = int((time.time() - started) * 1000)
+    retrieval_explanation = build_retrieval_explanation(
+        context.retrieval_trace,
+        next_state.get("constraints"),
+        relaxed_fields=tool_results.get("relaxed_fields") or [],
+        result_count=len(rooms),
+    )
 
     result = {
         "session_id": session_id,
@@ -252,6 +258,7 @@ async def run_room_assistant(
         "retrieval_low_confidence": context.retrieval_trace.get("retrieval_low_confidence"),
         "retrieval_feedback_retry_count": context.retrieval_trace.get("retrieval_feedback_retry_count", 0),
         "retrieval_attempts": context.retrieval_trace.get("retrieval_attempts", []),
+        "retrieval_explanation": retrieval_explanation,
         "agent_trace": {
             "workflow": [
                 "normalize_input", "parse_intent_async", "analyze_mood",
@@ -271,6 +278,7 @@ async def run_room_assistant(
             "error_category": error_category,
             "grounding_result": grounding["result"],
             "retrieval": context.retrieval_trace,
+            "retrieval_explanation": retrieval_explanation,
         },
         "processing_time_ms": processing_time_ms,
         "is_final": True,

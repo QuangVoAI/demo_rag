@@ -285,8 +285,9 @@ DETAIL_FIELD_KEYWORDS: tuple[str, ...] = (
 )
 
 ROOM_REFERENCE_KEYWORDS: tuple[str, ...] = (
-    "phong nay", "phong do", "phong tren", "dang xem", "can ho nay",
-    "cho nay", "nha nay", "muc nay", "tin nay",
+    "phong nay", "phong do", "phong tren", "phong kia", "can tren", "can kia",
+    "cai tren", "cai duoi", "cai kia", "cai vua roi", "vua roi", "vua noi",
+    "dang xem", "can ho nay", "cho nay", "nha nay", "muc nay", "tin nay",
 )
 
 COST_FIELD_KEYWORDS: tuple[str, ...] = (
@@ -876,6 +877,50 @@ def _selected_room_ids_from_ordinals(normalized: str, current_state: dict[str, A
     return resolved
 
 
+def _selected_room_id_from_deictic(normalized: str, current_state: dict[str, Any] | None) -> str | None:
+    """Resolve chỉ định ngữ cảnh: cái trên, phòng kia, căn vừa rồi…"""
+    if not current_state:
+        return None
+    ids = [str(item) for item in (current_state.get("last_result_ids") or []) if item]
+    if not ids:
+        return None
+
+    def _pick(index: int) -> str | None:
+        if index < 0:
+            index = len(ids) + index
+        if 0 <= index < len(ids):
+            return ids[index]
+        return None
+
+    if re.search(r"\b(?:can|phong|cai)\s+(?:o\s+)?tren\b", normalized):
+        return _pick(0)
+
+    if re.search(r"\b(?:can|phong|cai)\s+(?:o\s+)?duoi\b", normalized):
+        return _pick(1) if len(ids) > 1 else _pick(-1)
+
+    if re.search(r"\b(?:can|phong)\s+cuoi\b", normalized):
+        return _pick(-1)
+
+    if re.search(r"\b(?:can|phong)\s+kia\b", normalized):
+        current = str(current_state.get("current_room_id") or "").strip()
+        if current and current in ids and len(ids) >= 2:
+            current_index = ids.index(current)
+            other_index = 1 - current_index if len(ids) == 2 else (current_index + 1) % len(ids)
+            return ids[other_index]
+        return _pick(1) if len(ids) > 1 else _pick(0)
+
+    if re.search(r"\b(?:cai|can)\s+vua\s+(?:roi|noi|goi)\b", normalized) or re.search(
+        r"\bvua\s+(?:roi|noi)\b",
+        normalized,
+    ):
+        current = str(current_state.get("current_room_id") or "").strip()
+        if current and current in ids:
+            return current
+        return _pick(0)
+
+    return None
+
+
 def _maybe_replace_location_filters(
     normalized: str,
     current_state: dict[str, Any] | None,
@@ -1216,6 +1261,8 @@ def _regex_classify(
         return "COMPARE_ROOMS", 1.0
     if _selected_room_id_from_ordinal(normalized, current_state):
         return "ASK_ABOUT_ROOM", 1.0
+    if _selected_room_id_from_deictic(normalized, current_state):
+        return "ASK_ABOUT_ROOM", 1.0
     if _is_room_detail_question(normalized, ids, current_state):
         return "ASK_ABOUT_ROOM", 1.0
     if ids and _has_keyword(normalized, DETAIL_FIELD_KEYWORDS):
@@ -1388,6 +1435,8 @@ def parse_intent_and_constraint_patch(
 
     referenced_room_ids = [_normalize_room_reference(item) for item in _extract_room_ids(text)]
     selected_room_id = _selected_room_id_from_ordinal(normalized, current_state)
+    if not selected_room_id:
+        selected_room_id = _selected_room_id_from_deictic(normalized, current_state)
     compare_room_ids = _selected_room_ids_from_ordinals(normalized, current_state)
     if len(compare_room_ids) >= 2:
         referenced_room_ids = compare_room_ids

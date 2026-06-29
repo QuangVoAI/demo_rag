@@ -152,6 +152,19 @@ class TranscriptQaRegressionTests(unittest.TestCase):
         landmarks = result["session_state"]["constraints"]["location"].get("near_landmarks") or []
         self.assertIn("tdtu", landmarks)
 
+    def test_follow_up_deictic_after_search(self):
+        questions = [
+            "Em lọc giúp chị vài căn quận 7 dưới 5 triệu nha",
+            "Căn ở trên có ban công không em?",
+        ]
+        results = self._run_session(questions, session_id="deictic-follow-up")
+        self.assertTrue(results[0].get("rooms"))
+        second = results[1]
+        self.assertEqual(second.get("intent"), "ASK_ABOUT_ROOM")
+        first_room_id = results[0]["rooms"][0].get("room_id")
+        self.assertEqual(second["session_state"].get("current_room_id"), first_room_id)
+        self.assertTrue(second.get("retrieval_explanation"))
+
     def test_off_topic_and_empathy_short_paths(self):
         off_topic = asyncio.run(run_room_assistant(
             "Viết code Python giúp tôi",

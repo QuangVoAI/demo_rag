@@ -328,6 +328,8 @@ python scripts/pre_demo_mongo_audit.py
 | `scripts/run_qa_audit.py` | Audit từng lượt Q&A + báo cáo JSON |
 | `python/scripts/mine_landmark_phrases.py` | Dev: quét alias địa danh từ MongoDB |
 
+**Đã loại khỏi runtime (legacy LangGraph):** `agents/router.py`, `grader.py`, `rewriter.py`, `extractor.py` — không còn import trong luồng chính.
+
 Bộ `test_mongo_behavior_scenarios.py` chạy trên MongoDB thật, đối chiếu giá phòng và kiểm tra kịch bản sales (off-topic, đổi ý, thương lượng, hỏi chi tiết phòng).
 
 ---

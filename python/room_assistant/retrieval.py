@@ -385,3 +385,48 @@ def _write_feedback_log(query_text: str, trace: dict[str, Any]) -> None:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         return
+
+
+def build_retrieval_explanation(
+    trace: dict[str, Any] | None,
+    constraints: dict[str, Any] | None,
+    *,
+    relaxed_fields: list[str] | None = None,
+    result_count: int = 0,
+) -> list[str]:
+    """Tóm tắt vì sao retrieval trả kết quả như vậy (debug / audit)."""
+    lines: list[str] = []
+    location = (constraints or {}).get("location") or {}
+    budget = (constraints or {}).get("budget") or {}
+
+    districts = [str(item) for item in (location.get("districts") or []) if item]
+    landmarks = [str(item) for item in (location.get("near_landmarks") or []) if item]
+    if districts:
+        lines.append(f"Lọc quận: {', '.join(districts)}")
+    if landmarks:
+        lines.append(f"Lọc mốc gần: {', '.join(landmarks)}")
+    if budget.get("max") is not None:
+        lines.append(f"Ngân sách tối đa: {budget['max']:,} VND")
+    if budget.get("min") is not None:
+        lines.append(f"Ngân sách tối thiểu: {budget['min']:,} VND")
+
+    if trace:
+        candidate_count = int(trace.get("candidate_count") or 0)
+        metadata_hits = int(trace.get("metadata_hit_count") or 0)
+        confidence = trace.get("retrieval_confidence")
+        lines.append(f"Sau lọc cứng MongoDB: {candidate_count} phòng ứng viên")
+        if metadata_hits:
+            lines.append(f"Khớp metadata câu hỏi: {metadata_hits} phòng")
+        if confidence is not None:
+            lines.append(f"Độ tin cậy xếp hạng: {float(confidence):.3f}")
+        if trace.get("retrieval_low_confidence"):
+            lines.append("Xếp hạng ngữ nghĩa: độ tin cậy thấp")
+        retry_count = int(trace.get("retrieval_feedback_retry_count") or 0)
+        if retry_count:
+            lines.append(f"Đã thử lại truy vấn semantic: {retry_count} lần")
+
+    if relaxed_fields:
+        lines.append(f"Đã nới điều kiện: {', '.join(relaxed_fields)}")
+
+    lines.append(f"Kết quả trả về: {result_count} phòng")
+    return lines

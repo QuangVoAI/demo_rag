@@ -52,6 +52,15 @@ EXTRA_SCENARIOS = [
     "note": "So sánh phòng sau khi đã có kết quả",
   },
   {
+    "name": "follow_up_deictic",
+    "turns": [
+      "Tìm cho tôi phòng ở quận 7 dưới 5 triệu",
+      "Căn ở trên có máy lạnh không?",
+    ],
+    "expect": lambda r: r.get("intent") == "ASK_ABOUT_ROOM",
+    "note": "Follow-up chỉ định 'căn ở trên' phải trỏ về phòng đầu list vừa gợi ý",
+  },
+  {
     "name": "landmark_tdt_full_name",
     "turns": ["mình muốn tìm phòng ở gần trường đại học TDT"],
     "expect": lambda r: bool(r.get("rooms")) and not any(
