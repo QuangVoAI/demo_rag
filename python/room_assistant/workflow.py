@@ -37,6 +37,96 @@ from .session_store import (
     save_session_state,
     update_turn_state,
 )
+from .prompts import (
+    AMENITY_LABELS,
+    ASK_ROOM_AMENITIES,
+    ASK_ROOM_HEADER,
+    ASK_ROOM_LOCATION,
+    ASK_ROOM_MISSING_ID,
+    ASK_ROOM_UNKNOWN_FIELDS,
+    CALCULATE_COST_DEPOSIT,
+    CALCULATE_COST_LINE,
+    CALCULATE_COST_MISSING_INFO,
+    CALCULATE_COST_NOT_CALCULATED,
+    CALCULATE_COST_OPENING,
+    CALCULATE_COST_RECURRING_FEES,
+    CALCULATE_COST_RENTAL_PERIOD,
+    CALCULATE_COST_TOTAL_INITIAL,
+    CALCULATE_COST_TOTAL_PERIOD,
+    CALCULATE_COST_UNKNOWN,
+    COMPARE_BEST_PICK,
+    COMPARE_BEST_PICK_AREA_SUFFIX,
+    COMPARE_INSIGHT_CHEAPER,
+    COMPARE_INSIGHT_FIRST_ADVANTAGE,
+    COMPARE_INSIGHT_LARGER,
+    COMPARE_INSIGHT_SECOND_ADVANTAGE,
+    COMPARE_INSIGHT_TIE,
+    COMPARE_MISSING_DATA,
+    COMPARE_MISSING_ROOMS,
+    COMPARE_NEED_ROOM_IDS,
+    COMPARE_NOT_COMPARED,
+    COMPARE_OPENING,
+    COMPARE_ROW,
+    COMPARE_STATUS_AVAILABLE,
+    COMPARE_STATUS_UNKNOWN,
+    COMPARE_UNKNOWN_AREA,
+    COST_FIXED_FIELD_LABELS,
+    COST_ITEM_LABELS,
+    FEATURE_FACT_LABELS,
+    GENERAL_HELP_DEFAULT,
+    GENERAL_HELP_OFF_TOPIC,
+    GENERAL_HELP_PRICE_OBJECTION,
+    INPUT_TOO_LONG_ANSWER,
+    LANDMARK_HINT_SUFFIX,
+    LANDMARK_NEAR_HINT,
+    LLM_CONTEXT_COMPARE_HEADER,
+    LLM_CONTEXT_COMPARE_MISSING,
+    LLM_CONTEXT_COMPARE_NOT_COMPARED,
+    LLM_CONTEXT_COMPARE_ROW,
+    LLM_CONTEXT_COST_HEADER,
+    LLM_CONTEXT_COST_LINE,
+    LLM_CONTEXT_COST_NOT_CALCULATED,
+    LLM_CONTEXT_COST_TOTAL_INITIAL,
+    LLM_CONTEXT_COST_TOTAL_PERIOD,
+    LLM_CONTEXT_COST_UNKNOWN,
+    LLM_CONTEXT_EMPTY,
+    LLM_CONTEXT_FAQ_HEADER,
+    LLM_CONTEXT_FAQ_LINE,
+    LLM_CONTEXT_ROOM_FEATURES,
+    LLM_CONTEXT_ROOM_LIST_HEADER,
+    LLM_CONTEXT_ROOM_STATUS_AVAILABLE,
+    LLM_CONTEXT_ROOM_STATUS_UNAVAILABLE,
+    LLM_CONTEXT_UNKNOWN_FIELDS,
+    LLM_CONTEXT_VERIFIED_AMENITIES,
+    RELAXED_NOTE_DEFAULT,
+    RELAXED_NOTE_WITH_FIELDS,
+    RELAX_FIELD_LABELS,
+    REQUEST_ACTION_ANSWER,
+    REQUEST_ACTION_DEFAULT,
+    REQUEST_FAQ_FALLBACK,
+    SEARCH_ALTERNATIVE_CTA,
+    SEARCH_ALTERNATIVE_OPENING,
+    SEARCH_ALTERNATIVE_ROOM_LINE,
+    SEARCH_NO_RESULT_BUDGET_FRUSTRATED_PREFIX,
+    SEARCH_NO_RESULT_BUDGET_LINE,
+    SEARCH_NO_RESULT_BUDGET_ONLY,
+    SEARCH_NO_RESULT_BUDGET_ONLY_EMPATHY_PREFIX,
+    SEARCH_NO_RESULT_BUDGET_URGENT_PREFIX,
+    SEARCH_NO_RESULT_DEFAULT,
+    SEARCH_NO_RESULT_FRUSTRATED,
+    SEARCH_NO_RESULT_URGENT,
+    SEARCH_RELAXED_OPENING,
+    SEARCH_ROOM_LINE,
+    SEARCH_SUCCESS_CTA,
+    SEARCH_SUCCESS_OPENING,
+    SUGGESTED_QUESTIONS_GENERAL_HELP,
+    SUGGESTED_QUESTIONS_INPUT_TOO_LONG,
+    SUGGESTED_QUESTIONS_NO_RESULT,
+    SUGGESTED_QUESTIONS_WITH_ROOM,
+    TOOL_BUDGET_EXCEEDED_ANSWER,
+    UNKNOWN_DISTRICT,
+    UNKNOWN_LOCATION,
+)
 from .tools import ReadOnlyToolRegistry, ToolBudgetExceeded, ToolExecutionContext
 
 try:
@@ -443,20 +533,13 @@ def _input_too_long_result(
 ) -> dict[str, Any]:
     return {
         "session_id": session_id,
-        "answer": (
-            f"Câu hỏi hơi dài nên mình chưa xử lý để tránh sai lệch dữ liệu. "
-            f"Bạn rút gọn dưới {max_question_chars} ký tự và gửi lại giúp mình nhé."
-        ),
+        "answer": INPUT_TOO_LONG_ANSWER.format(max_chars=max_question_chars),
         "intent": "GENERAL_HELP",
         "session_state": public_session_state(state_before),
         "rooms": [],
         "cost_estimate": None,
         "comparison": None,
-        "suggested_questions": [
-            "Tìm phòng dưới 5 triệu ở Bình Thạnh",
-            "So sánh #A101 #B202",
-            "Phòng này có máy lạnh không?",
-        ],
+        "suggested_questions": list(SUGGESTED_QUESTIONS_INPUT_TOO_LONG),
         "sources": [],
         "retrieval_confidence": None,
         "retrieval_low_confidence": None,
@@ -518,69 +601,90 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
     rooms = grounding.get("rooms", [])
     constraints = grounding.get("constraints", {})
     if rooms:
-        parts.append("Danh sách phòng phù hợp:")
+        parts.append(LLM_CONTEXT_ROOM_LIST_HEADER)
         for room in rooms[:5]:
             rent = format_vnd(room.get("rent_price"))
             details = [
                 f"[{room.get('room_id')}] {room.get('title')}",
                 f"{rent}/tháng",
-                room.get("district") or "chưa rõ khu vực",
+                room.get("district") or UNKNOWN_DISTRICT,
                 f"Diện tích: {room.get('area_m2') or '?'} m²",
             ]
             amenities = _verified_amenity_labels(room, constraints)
             if amenities:
-                details.append(f"Tiện ích xác minh: {', '.join(amenities)}")
+                details.append(LLM_CONTEXT_VERIFIED_AMENITIES.format(amenities=", ".join(amenities)))
             feature_facts = _room_feature_facts(room)
             if feature_facts:
-                details.append(f"Thông tin phòng: {', '.join(feature_facts[:8])}")
+                details.append(LLM_CONTEXT_ROOM_FEATURES.format(features=", ".join(feature_facts[:8])))
             if room.get("available") is not None:
-                details.append("Trạng thái: còn phòng" if room.get("available") else "Trạng thái: hết phòng")
+                details.append(
+                    LLM_CONTEXT_ROOM_STATUS_AVAILABLE
+                    if room.get("available")
+                    else LLM_CONTEXT_ROOM_STATUS_UNAVAILABLE
+                )
             parts.append(
                 "- " + " | ".join(str(item) for item in details if item)
             )
 
     estimate = tool_results.get("cost_estimate")
     if estimate and estimate.get("available"):
-        parts.append("\nƯớc tính chi phí:")
+        parts.append(LLM_CONTEXT_COST_HEADER)
         for item in estimate.get("items", []):
-            parts.append(f"  - {item['name']}: {format_vnd(item.get('amount'))}")
-        parts.append(f"  Tổng: {format_vnd(estimate.get('total_initial_cost'))}")
+            parts.append(LLM_CONTEXT_COST_LINE.format(name=item["name"], amount=format_vnd(item.get("amount"))))
+        parts.append(LLM_CONTEXT_COST_TOTAL_INITIAL.format(amount=format_vnd(estimate.get("total_initial_cost"))))
         if estimate.get("rental_months"):
             for item in estimate.get("period_items", []):
-                parts.append(f"  - {item['name']}: {format_vnd(item.get('amount'))}")
-            parts.append(f"  Tổng {estimate['rental_months']} tháng: {format_vnd(estimate.get('total_period_cost'))}")
+                parts.append(LLM_CONTEXT_COST_LINE.format(name=item["name"], amount=format_vnd(item.get("amount"))))
+            parts.append(
+                LLM_CONTEXT_COST_TOTAL_PERIOD.format(
+                    months=estimate["rental_months"],
+                    amount=format_vnd(estimate.get("total_period_cost")),
+                )
+            )
         if estimate.get("unknown"):
-            parts.append(f"  Chưa có dữ liệu: {', '.join(estimate['unknown'])}")
+            parts.append(LLM_CONTEXT_COST_UNKNOWN.format(fields=", ".join(estimate["unknown"])))
         if estimate.get("not_calculated"):
             not_calculated = [
                 f"{item.get('name')}: {item.get('value')}"
                 for item in estimate["not_calculated"]
             ]
-            parts.append(f"  Có dữ liệu nhưng chưa tính vào tổng: {', '.join(not_calculated)}")
+            parts.append(LLM_CONTEXT_COST_NOT_CALCULATED.format(details=", ".join(not_calculated)))
 
     comparison = tool_results.get("comparison")
     if comparison and comparison.get("rows"):
-        parts.append("\nBảng so sánh:")
+        parts.append(LLM_CONTEXT_COMPARE_HEADER)
         for row in comparison["rows"]:
             parts.append(
-                f"  - #{row.get('room_id')}: {format_vnd(row.get('rent_price'))}/tháng, "
-                f"{row.get('area_m2') or '?'} m², {row.get('district') or 'chưa rõ'}"
+                LLM_CONTEXT_COMPARE_ROW.format(
+                    room_id=row.get("room_id"),
+                    rent=format_vnd(row.get("rent_price")),
+                    area=row.get("area_m2") or "?",
+                    district=row.get("district") or UNKNOWN_LOCATION,
+                )
             )
         if comparison.get("missing_room_ids"):
-            parts.append(f"  Chưa có dữ liệu: {', '.join('#' + item for item in comparison['missing_room_ids'])}")
+            parts.append(
+                LLM_CONTEXT_COMPARE_MISSING.format(
+                    room_ids=", ".join("#" + item for item in comparison["missing_room_ids"])
+                )
+            )
         if comparison.get("not_compared_room_ids"):
-            parts.append(f"  Chưa so sánh do giới hạn tối đa 3 phòng: {', '.join('#' + item for item in comparison['not_compared_room_ids'])}")
+            parts.append(
+                LLM_CONTEXT_COMPARE_NOT_COMPARED.format(
+                    room_ids=", ".join("#" + item for item in comparison["not_compared_room_ids"])
+                )
+            )
 
     faq = tool_results.get("faq_results")
     if faq:
-        parts.append("\nThông tin FAQ:")
+        parts.append(LLM_CONTEXT_FAQ_HEADER)
         for item in faq:
-            parts.append(f"  [{item.get('topic')}] {item.get('answer')}")
+            parts.append(LLM_CONTEXT_FAQ_LINE.format(topic=item.get("topic"), answer=item.get("answer")))
 
     if grounding.get("unknown"):
-        parts.append(f"\nCác trường chưa có dữ liệu: {', '.join(grounding['unknown'])}")
+        parts.append(LLM_CONTEXT_UNKNOWN_FIELDS.format(fields=", ".join(grounding["unknown"])))
 
-    context = "\n".join(parts) if parts else "Không có dữ liệu phù hợp."
+    context = "\n".join(parts) if parts else LLM_CONTEXT_EMPTY
     try:
         from config import EVIDENCE_MAX_CHARS
         return context[:EVIDENCE_MAX_CHARS]
@@ -599,59 +703,31 @@ def _search_no_result_message(
 
     if max_price and district_label:
         area = district_label.replace("_", " ")
-        budget_line = (
-            f"Dạ em tìm trong **{area}** với ngân sách **{format_vnd(max_price)}/tháng** "
-            f"mà chưa thấy căn trống khớp ạ. "
-            f"Anh/chị thử nới thêm khoảng 500k–1 triệu hoặc xem khu lân cận, em lọc lại ngay nha."
+        budget_line = SEARCH_NO_RESULT_BUDGET_LINE.format(
+            area=area,
+            budget=format_vnd(max_price),
         )
         if user_mood == "urgent":
-            return f"Dạ em hiểu mình cần gấp ạ. {budget_line}"
+            return SEARCH_NO_RESULT_BUDGET_URGENT_PREFIX.format(body=budget_line)
         if user_mood == "frustrated":
-            return f"Dạ em hiểu mình tìm mãi cũng mệt ạ. {budget_line}"
+            return SEARCH_NO_RESULT_BUDGET_FRUSTRATED_PREFIX.format(body=budget_line)
         return budget_line
 
     if max_price:
-        budget_only = (
-            f"Dạ em chưa thấy căn nào trong tầm **{format_vnd(max_price)}/tháng** ạ. "
-            "Anh/chị cho em biết khu vực ưu tiên hoặc nới ngân sách thêm chút, em lọc lại liền nha."
-        )
+        budget_only = SEARCH_NO_RESULT_BUDGET_ONLY.format(budget=format_vnd(max_price))
         if user_mood in {"urgent", "frustrated"}:
-            return f"Dạ em hiểu mà ạ. {budget_only}"
+            return SEARCH_NO_RESULT_BUDGET_ONLY_EMPATHY_PREFIX.format(body=budget_only)
         return budget_only
 
     if user_mood == "urgent":
-        return (
-            "Dạ em hiểu mình đang cần gấp ạ. Em chưa thấy căn khớp 100% ngay, "
-            "nhưng nếu mình nới ngân sách một chút hoặc mở rộng khu vực, em lọc lại liền "
-            "để tìm phòng còn trống sớm nhất cho mình nha."
-        )
+        return SEARCH_NO_RESULT_URGENT
     if user_mood == "frustrated":
-        return (
-            "Dạ em hiểu mình tìm mãi cũng hơi mệt ạ. Em chưa thấy căn khớp trọn điều kiện, "
-            "nhưng mình thử nới ngân sách hoặc bỏ bớt 1–2 tiêu chí, em lọc lại ngay — "
-            "chắc chắn sẽ có thêm lựa chọn phù hợp hơn ạ."
-        )
-    return (
-        "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ. "
-        "Anh/chị thử nới ngân sách hoặc mở rộng khu vực giúp em nhé, đảm bảo sẽ có nhiều căn đẹp lắm ạ!"
-    )
+        return SEARCH_NO_RESULT_FRUSTRATED
+    return SEARCH_NO_RESULT_DEFAULT
 
 
 def _search_alternative_opening(user_mood: str = "normal") -> str:
-    if user_mood == "frustrated":
-        return (
-            "Dạ em hiểu điều kiện hơi khó nên mình hơi mệt khi chưa thấy căn ưng ý ạ. "
-            "Em gợi ý mấy căn gần đúng nhất để mình tham khảo nha:"
-        )
-    if user_mood == "urgent":
-        return (
-            "Dạ em hiểu mình cần gấp ạ. Chưa có căn khớp 100% nhưng em tìm được vài căn "
-            "gần đúng nhất để mình xem trước nha:"
-        )
-    return (
-        "Dạ điều kiện hiện tại hơi khó nên em chưa thấy căn khớp 100% ạ. "
-        "Em gợi ý mấy căn gần đúng nhất để mình tham khảo nha:"
-    )
+    return SEARCH_ALTERNATIVE_OPENING.get(user_mood, SEARCH_ALTERNATIVE_OPENING["normal"])
 
 
 def _compose_answer_template(
@@ -664,14 +740,10 @@ def _compose_answer_template(
 ) -> str:
     intent = parsed["intent"]
     if tool_results.get("error") == "tool_budget_exceeded":
-        return "Mình cần giới hạn số lần đọc dữ liệu trong một lượt. Bạn thử hỏi lại hẹp hơn với tối đa 3 phòng hoặc một nhu cầu cụ thể nhé."
+        return TOOL_BUDGET_EXCEEDED_ANSWER
     if intent == "REQUEST_ACTION":
-        action = parsed.get("requested_action") or "thao tác nghiệp vụ"
-        return (
-            "Dạ tính năng thao tác tự động em chưa được học ạ. "
-            f"Với yêu cầu '{action}', anh/chị thao tác trực tiếp trên giao diện giúp em nha! "
-            "Nhưng nếu ưng phòng rồi, chiều nay ghé xem thực tế luôn cho tiện anh/chị nhỉ?"
-        )
+        action = parsed.get("requested_action") or REQUEST_ACTION_DEFAULT
+        return REQUEST_ACTION_ANSWER.format(action=action)
     rooms = grounding["rooms"]
     constraints = grounding.get("constraints", {})
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
@@ -681,41 +753,64 @@ def _compose_answer_template(
                 alt_lines = [_search_alternative_opening(user_mood)]
                 for idx, room in enumerate(alternative_rooms[:5], 1):
                     alt_lines.append(
-                        f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
-                        f"chỉ {format_vnd(room.get('rent_price'))}/tháng, "
-                        f"{room.get('district') or 'chưa rõ khu vực'}."
+                        SEARCH_ALTERNATIVE_ROOM_LINE.format(
+                            index=idx,
+                            title=room.get("title"),
+                            room_id=room.get("room_id"),
+                            rent=format_vnd(room.get("rent_price")),
+                            district=room.get("district") or UNKNOWN_DISTRICT,
+                        )
                     )
-                alt_lines.append("\nNếu mình nới ngân sách hoặc bỏ bớt 1–2 tiêu chí, em sẽ tìm được nhiều căn ưng hơn ạ 😊")
+                alt_lines.append(SEARCH_ALTERNATIVE_CTA)
                 return "\n".join(alt_lines)
             return _search_no_result_message(user_mood, constraints)
         if tool_results.get("relaxed_search"):
-            lines = [f"Dạ {_relaxed_note(tool_results.get('relaxed_fields') or [])} Mấy căn cùng khu vực vẫn ngon mà hợp lý nè:"]
+            lines = [
+                SEARCH_RELAXED_OPENING.format(
+                    relaxed_note=_relaxed_note(tool_results.get("relaxed_fields") or []),
+                )
+            ]
         else:
-            lines = ["Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây:"]
+            lines = [SEARCH_SUCCESS_OPENING]
         landmark_hints = _matching_landmark_hints(rooms, grounding.get("constraints", {}))
         for idx, room in enumerate(rooms[:5], 1):
-            landmark_suffix = f", {landmark_hints.get(room.get('room_id'))}" if room.get("room_id") in landmark_hints else ""
-            lines.append(
-                f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
-                f"chỉ {format_vnd(room.get('rent_price'))}/tháng, "
-                f"{room.get('district') or 'chưa rõ khu vực'}{landmark_suffix}."
+            landmark_suffix = (
+                LANDMARK_HINT_SUFFIX.format(hint=landmark_hints.get(room.get("room_id")))
+                if room.get("room_id") in landmark_hints
+                else ""
             )
-        lines.append("\nAnh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊")
+            lines.append(
+                SEARCH_ROOM_LINE.format(
+                    index=idx,
+                    title=room.get("title"),
+                    room_id=room.get("room_id"),
+                    rent=format_vnd(room.get("rent_price")),
+                    district=room.get("district") or UNKNOWN_DISTRICT,
+                    landmark_suffix=landmark_suffix,
+                )
+            )
+        lines.append(SEARCH_SUCCESS_CTA)
         return "\n".join(lines)
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         if not rooms:
-            return "Dạ em chưa rõ anh/chị đang quan tâm căn nào. Anh/chị gửi mã phòng cho em nha!"
+            return ASK_ROOM_MISSING_ID
         room = rooms[0]
         unknown = _unknown_fields(room)
         parts = [
-            f"**{room.get('title')}** (#{room.get('room_id')}) — giá {format_vnd(room.get('rent_price'))}/tháng.",
-            f"Khu vực: {room.get('address') or room.get('district') or 'chưa rõ'}.",
+            ASK_ROOM_HEADER.format(
+                title=room.get("title"),
+                room_id=room.get("room_id"),
+                rent=format_vnd(room.get("rent_price")),
+            ),
+            ASK_ROOM_LOCATION.format(
+                location=room.get("address") or room.get("district") or UNKNOWN_LOCATION,
+            ),
         ]
         feature_facts = _room_feature_facts(room)
         if feature_facts:
-            parts.append(f"Dạ tiện ích có đủ: {', '.join(feature_facts)}. Mình dọn vào là ở thoải mái luôn ạ.")
+            parts.append(ASK_ROOM_AMENITIES.format(features=", ".join(feature_facts)))
         if unknown:
-            parts.append(f"_Dữ liệu chưa xác nhận: {', '.join(unknown)}._")
+            parts.append(ASK_ROOM_UNKNOWN_FIELDS.format(fields=", ".join(unknown)))
         faq = tool_results.get("faq_results") or []
         if faq:
             parts.append(faq[0].get("answer", ""))
@@ -723,50 +818,62 @@ def _compose_answer_template(
     if intent == "CALCULATE_COST":
         estimate = tool_results.get("cost_estimate") or {}
         if not estimate.get("available"):
-            return "Dạ em chưa đủ thông tin tính chi phí căn này. Anh/chị cho em xin mã phòng nhé!"
-        lines = ["Dạ em tính sương sương chi phí dự kiến cho anh/chị nhé:"]
+            return CALCULATE_COST_MISSING_INFO
+        lines = [CALCULATE_COST_OPENING]
         fixed_items = estimate.get("fixed_items") or []
         if fixed_items:
-            field_labels = {
-                "monthly_rent": "Tiền thuê mỗi tháng",
-                "parking": "Phí gửi xe",
-                "management": "Phí quản lý",
-                "water": "Tiền nước",
-                "wifi": "Wifi",
-                "washing_machine": "Máy giặt",
-            }
             for item in fixed_items:
                 amount = item.get("amount")
                 if amount is None or amount == 0:
                     continue
-                label = field_labels.get(str(item.get("field")), _cost_item_label(f"fee_{item.get('field')}"))
+                label = COST_FIXED_FIELD_LABELS.get(str(item.get("field")), _cost_item_label(f"fee_{item.get('field')}"))
                 if item.get("field") == "monthly_rent":
-                    label = "Tiền thuê mỗi tháng"
-                lines.append(f"- {label}: {format_vnd(amount)}")
+                    label = COST_FIXED_FIELD_LABELS["monthly_rent"]
+                lines.append(CALCULATE_COST_LINE.format(label=label, amount=format_vnd(amount)))
         initial_options = estimate.get("initial_payment_options") or []
         if initial_options and initial_options[0].get("deposit") is not None:
-            lines.append(f"- Tiền cọc: {format_vnd(initial_options[0].get('deposit'))}")
+            lines.append(CALCULATE_COST_DEPOSIT.format(amount=format_vnd(initial_options[0].get("deposit"))))
         if estimate.get("rental_months"):
-            lines.append(f"- Thời gian thuê: {estimate['rental_months']} tháng")
+            lines.append(CALCULATE_COST_RENTAL_PERIOD.format(months=estimate["rental_months"]))
             for item in estimate.get("period_items", []):
-                lines.append(f"- {_cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
+                lines.append(
+                    CALCULATE_COST_LINE.format(
+                        label=_cost_item_label(item["name"]),
+                        amount=format_vnd(item.get("amount")),
+                    )
+                )
             if estimate.get("recurring_fees_for_period"):
-                lines.append(f"- Phí cố định {estimate['rental_months']} tháng: {format_vnd(estimate.get('recurring_fees_for_period'))}")
-            lines.append(f"\n**Tổng tạm tính {estimate['rental_months']} tháng:** {format_vnd(estimate.get('total_period_cost'))}")
+                lines.append(
+                    CALCULATE_COST_RECURRING_FEES.format(
+                        months=estimate["rental_months"],
+                        amount=format_vnd(estimate.get("recurring_fees_for_period")),
+                    )
+                )
+            lines.append(
+                CALCULATE_COST_TOTAL_PERIOD.format(
+                    months=estimate["rental_months"],
+                    amount=format_vnd(estimate.get("total_period_cost")),
+                )
+            )
         else:
             for item in estimate.get("items", []):
                 if item.get("amount") == 0:
                     continue
-                lines.append(f"- {_cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
-            lines.append(f"\n**Tổng tạm tính ban đầu:** {format_vnd(estimate.get('total_initial_cost'))}")
+                lines.append(
+                    CALCULATE_COST_LINE.format(
+                        label=_cost_item_label(item["name"]),
+                        amount=format_vnd(item.get("amount")),
+                    )
+                )
+            lines.append(CALCULATE_COST_TOTAL_INITIAL.format(amount=format_vnd(estimate.get("total_initial_cost"))))
         if estimate.get("unknown"):
-            lines.append(f"_Chưa có dữ liệu: {', '.join(estimate['unknown'])}._")
+            lines.append(CALCULATE_COST_UNKNOWN.format(fields=", ".join(estimate["unknown"])))
         if estimate.get("not_calculated"):
             details = [
                 f"{_cost_item_label('fee_' + str(item.get('name', '')).removeprefix('fees.'))}: {item.get('value')}"
                 for item in estimate["not_calculated"]
             ]
-            lines.append(f"_Có dữ liệu nhưng chưa tính vào tổng: {', '.join(details)}._")
+            lines.append(CALCULATE_COST_NOT_CALCULATED.format(details=", ".join(details)))
         return "\n".join(lines)
     if intent == "COMPARE_ROOMS":
         comparison = tool_results.get("comparison") or {}
@@ -774,32 +881,47 @@ def _compose_answer_template(
         if not rows:
             missing = comparison.get("missing_room_ids") or []
             if missing:
-                return f"Dạ em chưa tìm thấy dữ liệu phòng: {', '.join('#' + item for item in missing)} ạ. Anh/chị kiểm tra lại mã giúp em nha."
-            return "Dạ để em so sánh chuẩn xác, anh/chị gửi giúp em tối đa 3 mã phòng nha (ví dụ: `so sánh #A #B`)."
-        lines = ["Dạ em gửi anh/chị bảng so sánh chi tiết:"]
+                return COMPARE_MISSING_ROOMS.format(
+                    room_ids=", ".join("#" + item for item in missing),
+                )
+            return COMPARE_NEED_ROOM_IDS
+        lines = [COMPARE_OPENING]
         for row in rows:
             lines.append(
-                f"- **{row.get('title') or ('#' + str(row.get('room_id')))}** "
-                f"(#{row.get('room_id')}): {format_vnd(row.get('rent_price'))}/tháng, "
-                f"{row.get('area_m2') or 'chưa rõ'} m², "
-                f"{row.get('district') or 'chưa rõ khu vực'}, "
-                f"{row.get('status_desc') or ('Còn phòng' if row.get('available') else 'chưa rõ trạng thái')}."
+                COMPARE_ROW.format(
+                    title=row.get("title") or ("#" + str(row.get("room_id"))),
+                    room_id=row.get("room_id"),
+                    rent=format_vnd(row.get("rent_price")),
+                    area=row.get("area_m2") or COMPARE_UNKNOWN_AREA,
+                    district=row.get("district") or UNKNOWN_DISTRICT,
+                    status=row.get("status_desc") or (
+                        COMPARE_STATUS_AVAILABLE if row.get("available") else COMPARE_STATUS_UNKNOWN
+                    ),
+                )
             )
         for insight in _comparison_insights(rows):
             lines.append(insight)
         best = _best_room_from_comparison(rows, grounding.get("constraints", {}))
         if best:
-            area = f", diện tích {best.get('area_m2')} m²" if best.get("area_m2") else ""
+            area_suffix = (
+                COMPARE_BEST_PICK_AREA_SUFFIX.format(area=best.get("area_m2"))
+                if best.get("area_m2")
+                else ""
+            )
             lines.append(
-                f"\n✨ **Gợi ý cực hợp lý:** Căn **{best.get('title') or ('#' + str(best.get('room_id')))}** "
-                f"(#{best.get('room_id')}) với giá {format_vnd(best.get('rent_price'))}/tháng{area}."
+                COMPARE_BEST_PICK.format(
+                    title=best.get("title") or ("#" + str(best.get("room_id"))),
+                    room_id=best.get("room_id"),
+                    rent=format_vnd(best.get("rent_price")),
+                    area_suffix=area_suffix,
+                )
             )
         missing = comparison.get("missing_room_ids") or []
         if missing:
-            lines.append(f"_Chưa có dữ liệu cho: {', '.join('#' + item for item in missing)}._")
+            lines.append(COMPARE_MISSING_DATA.format(room_ids=", ".join("#" + item for item in missing)))
         not_compared = comparison.get("not_compared_room_ids") or []
         if not_compared:
-            lines.append(f"_Mình chỉ so sánh tối đa 3 phòng/lượt nên chưa so sánh: {', '.join('#' + item for item in not_compared)}._")
+            lines.append(COMPARE_NOT_COMPARED.format(room_ids=", ".join("#" + item for item in not_compared)))
         return "\n".join(lines)
     if intent == "REQUEST_FAQ":
         faq = tool_results.get("faq_results") or []
@@ -811,23 +933,12 @@ def _compose_answer_template(
                 return f"{body}\n\n{staff_cta_line()}"
             except Exception:
                 return body
-        return "Dạ anh/chị cần hỏi thêm về quy trình thuê, hợp đồng hay tiền cọc không ạ? Anh/chị cứ nhắn, em tư vấn kỹ cho nha."
+        return REQUEST_FAQ_FALLBACK
     if intent == "GENERAL_HELP" and _is_price_objection(question):
-        return (
-            "Dạ em hiểu mà ạ, tầm giá này với sinh viên thì mình phải cân lên đặt xuống dữ lắm. "
-            "Nếu mình ưu tiên tiết kiệm, em có thể lọc giúp các căn mềm hơn một chút hoặc tìm khu vực lân cận để giá dễ chịu hơn.\n"
-            "Mình nói em mức ngân sách dễ thở nhất với khu anh/chị muốn ở, em lọc lại ngay mấy căn hợp túi tiền cho mình nha 😊"
-        )
+        return GENERAL_HELP_PRICE_OBJECTION
     if intent == "GENERAL_HELP" and _is_off_topic_question(question):
-        return (
-            "Dạ em chỉ hỗ trợ tư vấn phòng trọ, giá thuê, chi phí, tiện ích và khu vực phù hợp thôi ạ. "
-            "Mấy việc như giải bài, viết code hay xử lý nội dung ngoài thuê phòng thì em chưa hỗ trợ được.\n"
-            "Nếu anh/chị đang cần tìm phòng, cứ nhắn khu vực, ngân sách hoặc tiện ích mong muốn, em lọc ngay cho mình nha 😊"
-        )
-    return (
-        "Dạ em có thể tìm phòng, so sánh giá, tư vấn chi phí và tiện ích chi tiết ạ. "
-        "Anh/chị đang cần tìm phòng quanh khu vực nào để em hỗ trợ gửi phòng đẹp ngay nhé 😊"
-    )
+        return GENERAL_HELP_OFF_TOPIC
+    return GENERAL_HELP_DEFAULT
 
 
 async def _compose_answer_async(
@@ -989,47 +1100,6 @@ def _current_room_from_results(intent: str, rooms: list[dict[str, Any]]) -> str 
 
 def _unknown_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
-
-
-AMENITY_LABELS: dict[str, str] = {
-    "air_conditioner": "Máy lạnh",
-    "balcony": "Ban công",
-    "window": "Cửa sổ",
-    "washing_machine": "Máy giặt",
-    "private_bathroom": "WC riêng",
-    "mezzanine": "Gác",
-    "kitchen": "Bếp",
-    "refrigerator": "Tủ lạnh",
-    "hot_water": "Nước nóng",
-    "bed": "Giường",
-    "mattress": "Nệm",
-    "wardrobe": "Tủ quần áo",
-    "elevator": "Thang máy",
-    "wifi": "Wifi",
-    "ev_charging": "Sạc xe điện",
-    "free_hours": "Giờ tự do",
-    "pets_allowed": "Cho nuôi thú cưng",
-}
-
-FEATURE_FACT_LABELS: tuple[str, ...] = (
-    "Máy lạnh",
-    "Ban công",
-    "Cửa sổ",
-    "Wifi",
-    "Gác",
-    "Toilet",
-    "Giờ giấc",
-    "Máy giặt",
-    "Thú cưng",
-    "Để xe",
-    "Thang máy",
-    "Kệ bếp",
-    "Nước nóng",
-    "Tủ lạnh",
-    "Giường",
-    "Nệm",
-    "Tủ quần áo",
-)
 
 
 def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) -> list[str]:
@@ -1196,8 +1266,11 @@ def _comparison_insights(rows: list[dict[str, Any]]) -> list[str]:
         cheaper, pricier = (first, second) if first_rent < second_rent else (second, first)
         diff = abs(int(first_rent) - int(second_rent))
         insights.append(
-            f"- **Giá:** {cheaper.get('title') or ('#' + str(cheaper.get('room_id')))} rẻ hơn "
-            f"{pricier.get('title') or ('#' + str(pricier.get('room_id')))} khoảng {format_vnd(diff)}/tháng."
+            COMPARE_INSIGHT_CHEAPER.format(
+                cheaper_title=cheaper.get("title") or ("#" + str(cheaper.get("room_id"))),
+                pricier_title=pricier.get("title") or ("#" + str(pricier.get("room_id"))),
+                diff=format_vnd(diff),
+            )
         )
 
     first_area = first.get("area_m2")
@@ -1207,8 +1280,11 @@ def _comparison_insights(rows: list[dict[str, Any]]) -> list[str]:
         diff_area = abs(float(first_area) - float(second_area))
         diff_text = int(diff_area) if diff_area.is_integer() else diff_area
         insights.append(
-            f"- **Diện tích:** {larger.get('title') or ('#' + str(larger.get('room_id')))} rộng hơn "
-            f"{smaller.get('title') or ('#' + str(smaller.get('room_id')))} khoảng {diff_text} m²."
+            COMPARE_INSIGHT_LARGER.format(
+                larger_title=larger.get("title") or ("#" + str(larger.get("room_id"))),
+                smaller_title=smaller.get("title") or ("#" + str(smaller.get("room_id"))),
+                diff=diff_text,
+            )
         )
 
     first_features = set(_comparison_feature_labels(first))
@@ -1216,12 +1292,22 @@ def _comparison_insights(rows: list[dict[str, Any]]) -> list[str]:
     first_only = sorted(first_features - second_features)
     second_only = sorted(second_features - first_features)
     if first_only:
-        insights.append(f"- **Ưu điểm {first_title}:** có thêm {', '.join(first_only[:5])}.")
+        insights.append(
+            COMPARE_INSIGHT_FIRST_ADVANTAGE.format(
+                title=first_title,
+                features=", ".join(first_only[:5]),
+            )
+        )
     if second_only:
-        insights.append(f"- **Ưu điểm {second_title}:** có thêm {', '.join(second_only[:5])}.")
+        insights.append(
+            COMPARE_INSIGHT_SECOND_ADVANTAGE.format(
+                title=second_title,
+                features=", ".join(second_only[:5]),
+            )
+        )
 
     if not insights:
-        insights.append("- Hai căn này khá ngang nhau về dữ liệu hiện có; nếu cần mình có thể đào sâu thêm vào phí, nội thất và tiện ích chi tiết.")
+        insights.append(COMPARE_INSIGHT_TIE)
     return insights
 
 
@@ -1278,7 +1364,7 @@ def _matching_landmark_hints(rooms: list[dict[str, Any]], constraints: dict[str,
             if display.lower() in text:
                 matched.append(display)
         if matched:
-            hints[room_id] = f"gần {' / '.join(matched)}"
+            hints[room_id] = LANDMARK_NEAR_HINT.format(landmarks=" / ".join(matched))
     return hints
 
 
@@ -1447,38 +1533,20 @@ def _filter_rooms_by_budget(
     return [room for room in rooms if _room_matches_budget(room, constraints)]
 
 
-_RELAX_FIELD_LABELS: dict[str, str] = {
-    "near_landmarks": "vị trí gần mốc bạn nói",
-    "wards": "phường bạn chọn",
-    "amenities_preferred": "vài tiện nghi ưu tiên",
-    "amenities_required": "đủ tiện nghi yêu cầu",
-    "excluded_features": "điều kiện loại trừ",
-    "budget": "mức ngân sách",
-}
-
-
 def _relaxed_note(dropped: list[str]) -> str:
-    labels = [_RELAX_FIELD_LABELS[item] for item in dropped if item in _RELAX_FIELD_LABELS]
+    labels = [RELAX_FIELD_LABELS[item] for item in dropped if item in RELAX_FIELD_LABELS]
     if not labels:
-        return "em chưa thấy căn khớp đúng 100% nên xin phép nới nhẹ tiêu chí cho mình ạ."
-    return (
-        "em chưa thấy căn khớp đúng "
-        + ", ".join(labels)
-        + " nên em xin phép gợi ý mấy căn gần đúng nhất nha."
-    )
+        return RELAXED_NOTE_DEFAULT
+    return RELAXED_NOTE_WITH_FIELDS.format(fields=", ".join(labels))
 
 
 def _suggest_questions(intent: str, rooms: list[dict[str, Any]], current_room_id: str | None) -> list[str]:
     if rooms:
         first = current_room_id or rooms[0].get("room_id")
-        return [
-            f"Tính tổng chi phí cho #{first}",
-            f"Tóm tắt ưu điểm và hạn chế của #{first}",
-            "Tìm phòng tương tự nhưng rẻ hơn",
-        ]
+        return [item.format(room_id=first) for item in SUGGESTED_QUESTIONS_WITH_ROOM]
     if intent == "GENERAL_HELP":
-        return ["Tìm phòng dưới 5 triệu ở quận Bình Thạnh", "So sánh #A #B #C", "Phòng này có cho nuôi mèo không?"]
-    return ["Nới ngân sách thêm 1 triệu", "Bỏ yêu cầu máy lạnh", "Đổi sang khu vực gần trường hơn"]
+        return list(SUGGESTED_QUESTIONS_GENERAL_HELP)
+    return list(SUGGESTED_QUESTIONS_NO_RESULT)
 
 
 def _update_summary(state: dict[str, Any], question: str, intent: str) -> None:
@@ -1600,22 +1668,12 @@ def format_vnd(value: Any) -> str:
 
 
 def _cost_item_label(name: str) -> str:
-    labels = {
-        "rent_first_month": "Tiền thuê tháng đầu",
-        "deposit": "Tiền cọc",
-        "fee_electricity": "Tiền điện",
-        "fee_water": "Tiền nước",
-        "fee_management": "Phí quản lý",
-        "fee_parking": "Phí gửi xe",
-        "fee_wifi": "Wifi",
-        "fee_washing_machine": "Máy giặt",
-    }
     if name.startswith("rent_") and name.endswith("_months"):
         parts = name.split("_")
         if len(parts) >= 2:
             return f"Tiền thuê {parts[1]} tháng"
-    if name in labels:
-        return labels[name]
+    if name in COST_ITEM_LABELS:
+        return COST_ITEM_LABELS[name]
     if name.startswith("fee_"):
         return "Phí " + name.removeprefix("fee_").replace("_", " ")
     return name
