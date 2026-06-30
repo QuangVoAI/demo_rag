@@ -483,12 +483,55 @@ class SufficiencyStatus(str, Enum):
 REQUIRED_FIELDS = {
     "price_query": {"monthly_rent"},
     "deposit_query": {"deposit", "hold_days"},
-    "room_detail": {"monthly_rent", "status", "location"}
+    "room_detail": {"monthly_rent", "status", "location"},
+    "availability_query": {"status"},
+    "pets_query": {"pets_policy"},
+    "utilities_query": {"utilities"},
 }
+
+_SENSITIVE_QUESTION_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("deposit_query", ("coc", "cọc", "dat coc", "đặt cọc")),
+    ("availability_query", ("con phong", "còn phòng", "phong trong", "phòng trống", "het phong", "hết phòng")),
+    ("pets_query", ("thu cung", "thú cưng", "nuoi meo", "nuôi mèo", "nuoi cho", "nuôi chó", "pet")),
+    ("utilities_query", ("dien", "điện", "nuoc", "nước", "phi ", "phí ", "wifi", "giu xe", "giữ xe", "gui xe", "gửi xe")),
+    ("price_query", ("gia", "giá", "bao nhieu", "bao nhiêu")),
+)
+
+
+def classify_sensitive_question(question: str) -> str | None:
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", (question or "").lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
+    for answer_type, tokens in _SENSITIVE_QUESTION_PATTERNS:
+        if any(token in text for token in tokens):
+            return answer_type
+    return None
+
 
 def check_sufficiency(room: dict[str, Any], answer_type: str) -> tuple[SufficiencyStatus, set[str]]:
     required = REQUIRED_FIELDS.get(answer_type)
     if not required:
+        return SufficiencyStatus.SUFFICIENT, set()
+
+    if answer_type == "pets_query":
+        from room_assistant.repository import room_allows_pets
+
+        if room_allows_pets(room):
+            return SufficiencyStatus.SUFFICIENT, set()
+        return SufficiencyStatus.INSUFFICIENT, {"pets_policy"}
+
+    if answer_type == "utilities_query":
+        fees = room.get("fees") or {}
+        embedding_text = str(room.get("embedding_text") or "")
+        has_fee_data = bool(fees) or "## Giá & phí" in embedding_text
+        if has_fee_data:
+            return SufficiencyStatus.SUFFICIENT, set()
+        return SufficiencyStatus.INSUFFICIENT, {"utilities"}
+
+    if answer_type == "availability_query":
+        if room.get("available") is None:
+            return SufficiencyStatus.INSUFFICIENT, {"status"}
         return SufficiencyStatus.SUFFICIENT, set()
         
     missing = set()

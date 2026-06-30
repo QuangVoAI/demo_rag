@@ -77,6 +77,7 @@ from .prompts import (
     GENERAL_HELP_OFF_TOPIC,
     GENERAL_HELP_PRICE_OBJECTION,
     INPUT_TOO_LONG_ANSWER,
+    INSUFFICIENT_VERIFIED_DATA,
     LANDMARK_HINT_SUFFIX,
     LANDMARK_NEAR_HINT,
     LLM_CONTEXT_COMPARE_HEADER,
@@ -795,6 +796,9 @@ def _compose_answer_template(
         if not rooms:
             return ASK_ROOM_MISSING_ID
         room = rooms[0]
+        insufficient = _verified_data_insufficient_message(question, room)
+        if insufficient:
+            return insufficient
         unknown = _unknown_fields(room)
         parts = [
             ASK_ROOM_HEADER.format(
@@ -1100,6 +1104,28 @@ def _current_room_from_results(intent: str, rooms: list[dict[str, Any]]) -> str 
 
 def _unknown_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
+
+
+def _verified_data_insufficient_message(question: str, room: dict[str, Any]) -> str | None:
+    from room_assistant.tools import SufficiencyStatus, check_sufficiency, classify_sensitive_question
+
+    answer_type = classify_sensitive_question(question)
+    if not answer_type:
+        return None
+    status, missing = check_sufficiency(room, answer_type)
+    if status != SufficiencyStatus.INSUFFICIENT:
+        return None
+    field_labels = {
+        "monthly_rent": "giá thuê",
+        "deposit": "tiền cọc",
+        "hold_days": "thời gian giữ cọc",
+        "status": "tình trạng còn phòng",
+        "pets_policy": "quy định thú cưng",
+        "utilities": "phí điện/nước/wifi",
+        "location": "địa chỉ",
+    }
+    labels = ", ".join(field_labels.get(item, item) for item in sorted(missing))
+    return INSUFFICIENT_VERIFIED_DATA.format(fields=labels)
 
 
 def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) -> list[str]:

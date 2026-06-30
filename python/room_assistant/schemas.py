@@ -189,6 +189,7 @@ def default_constraints() -> dict[str, Any]:
         "amenities_preferred": [],
         "excluded_features": [],
         "move_in_date": None,
+        "categories": [],
     }
 
 

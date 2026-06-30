@@ -423,6 +423,11 @@ class IntentParserTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("thêm điều kiện máy lạnh nha", state)
         self.assertEqual(parsed["intent"], "REFINE_SEARCH")
 
+    def test_extract_dotted_room_code_for_price_question(self):
+        parsed = parse_intent_and_constraint_patch("phòng P.305 giá bao nhiêu")
+        self.assertIn("P.305", parsed["referenced_room_ids"])
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+
 
 if __name__ == "__main__":
     unittest.main()

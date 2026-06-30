@@ -421,6 +421,97 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     return query
 
 
+def _room_searchable_text(room: dict[str, Any]) -> str:
+    return " ".join(
+        str(room.get(key) or "")
+        for key in ("embedding_text", "title", "description", "tien_ich_xq", "house_remark")
+    ).lower()
+
+
+CATEGORY_SEARCH_TERMS: dict[str, tuple[str, ...]] = {
+    "studio": ("studio",),
+    "phong_tro": ("phong tro", "phòng trọ", "nha tro", "nhà trọ"),
+    "can_ho": ("can ho", "căn hộ"),
+    "chdv": ("chdv", "can ho dich vu", "căn hộ dịch vụ"),
+    "1pn": ("1pn", "1 phong ngu", "1 phòng ngủ"),
+    "2pn": ("2pn", "2 phong ngu", "2 phòng ngủ"),
+    "3pn": ("3pn", "3 phong ngu", "3 phòng ngủ"),
+    "duplex": ("duplex",),
+    "giuong_nam": ("giuong nam", "giường nam"),
+    "giuong_nu": ("giuong nu", "giường nữ"),
+    "giuong_tang": ("giuong", "giường", "ktx", "ky tuc xa", "ký túc xá"),
+    "sleepbox": ("sleepbox",),
+    "sleepbox_nu": ("sleepbox nu", "sleepbox nữ"),
+    "sleepbox_nam": ("sleepbox nam",),
+    "nha_pho": ("nha pho", "nhà phố", "nguyen can", "nguyên căn"),
+    "mat_bang": ("mat bang", "mặt bằng"),
+}
+
+
+def _room_matches_category(room: dict[str, Any], category: str) -> bool:
+    terms = CATEGORY_SEARCH_TERMS.get(str(category).strip().lower())
+    if not terms:
+        return True
+    text = _normalize_location_value(_room_searchable_text(room))
+    return any(_normalize_location_value(term) in text for term in terms)
+
+
+def _room_allows_pets(room: dict[str, Any]) -> bool:
+    import re
+
+    text = str(room.get("embedding_text") or "")
+    if re.search(r"Thú cưng\s*:\s*Không", text, re.IGNORECASE):
+        return False
+    if re.search(r"Thú cưng\s*:\s*Có", text, re.IGNORECASE):
+        return True
+    if _room_has_positive_amenity(room, "pets_allowed"):
+        return True
+    if _room_has_canonical_amenity(room.get("amenities") or [], "pets_allowed"):
+        return True
+    return False
+
+
+def _room_max_occupants(room: dict[str, Any]) -> int | None:
+    import re
+
+    text = _room_searchable_text(room)
+    patterns = (
+        r"(?:toi da|tối đa|max)[^\d]{0,20}(\d{1,2})\s*(?:nguoi|người)",
+        r"(\d{1,2})\s*(?:nguoi|người)\s*(?:o|ở)\s*(?:toi da|tối đa|max)?",
+        r"so nguoi[^\d]{0,12}(\d{1,2})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _room_supports_occupants(room: dict[str, Any], occupants: int) -> bool:
+    max_occupants = _room_max_occupants(room)
+    if max_occupants is None:
+        return True
+    return occupants <= max_occupants
+
+
+def _room_supports_vehicle(room: dict[str, Any], vehicle: str) -> bool:
+    vehicle = str(vehicle).strip().lower()
+    if vehicle == "electric_bike":
+        return _room_has_positive_amenity(room, "ev_charging") or _room_has_canonical_amenity(
+            room.get("amenities") or [], "ev_charging"
+        )
+    if vehicle in {"motorbike", "car"}:
+        import re
+
+        text = _room_searchable_text(room)
+        if re.search(r"(?:de xe|gui xe|giu xe|cho de xe)\s*:\s*(?:co|có|riêng|tự do)", text, re.IGNORECASE):
+            return True
+        if re.search(r"(?:xe|o to|oto)\s*:\s*(?:co|có)", text, re.IGNORECASE):
+            return True
+        return _room_has_positive_amenity(room, "parking")
+    return True
+
+
 def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) -> bool:
     if not room.get("available"):
         return False
@@ -482,6 +573,22 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
         if _room_has_positive_amenity(room, feature):
             return False
 
+    for category in constraints.get("categories") or []:
+        if not _room_matches_category(room, category):
+            return False
+
+    pets_required = constraints.get("pets_required") or []
+    if pets_required and not _room_allows_pets(room):
+        return False
+
+    occupants = constraints.get("occupants")
+    if isinstance(occupants, int) and occupants > 0 and not _room_supports_occupants(room, occupants):
+        return False
+
+    for vehicle in constraints.get("vehicles") or []:
+        if not _room_supports_vehicle(room, vehicle):
+            return False
+
     return True
 
 
@@ -532,6 +639,10 @@ def _room_has_positive_amenity(room: dict[str, Any], amenity: str) -> bool:
         if re.search(readable, str(item), re.IGNORECASE):
             return True
     return bool(re.search(pattern, str(room.get("embedding_text") or ""), re.IGNORECASE))
+
+
+def room_allows_pets(room: dict[str, Any]) -> bool:
+    return _room_allows_pets(room)
 
 
 def _room_has_canonical_amenity(room_amenities: list[Any], amenity: str) -> bool:

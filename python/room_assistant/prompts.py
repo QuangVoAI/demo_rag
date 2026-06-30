@@ -314,4 +314,9 @@ FEATURE_FACT_LABELS: tuple[str, ...] = (
     "Tủ quần áo",
 )
 
+INSUFFICIENT_VERIFIED_DATA = (
+    "Dạ em chưa có dữ liệu xác minh đủ cho phần này ạ ({fields}). "
+    "Anh/chị xem thêm chi tiết trên tin đăng hoặc nhắn em mã phòng khác để kiểm tra lại giúp mình nha."
+)
+
 LANDMARK_NEAR_HINT = "gần {landmarks}"

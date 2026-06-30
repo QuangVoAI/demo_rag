@@ -411,12 +411,14 @@ def _append_unique(ops: list[dict[str, Any]], op: str, path: str, value: Any = N
 
 
 def _extract_room_ids(text: str) -> list[str]:
-    """Trích xuất mã phòng từ nội dung câu hỏi (VD: #A101, phòng B202)."""
+    """Trích xuất mã phòng từ nội dung câu hỏi (VD: #A101, phòng B202, P.305)."""
     ids: list[str] = []
     patterns = [
-        r"#([A-Za-z0-9][A-Za-z0-9_-]{1,40})",
-        r"\b(?:phòng|phong|mã|ma)\s+([A-Za-z0-9][A-Za-z0-9_-]{1,40})\b",
+        r"#([A-Za-z0-9][A-Za-z0-9_.-]{1,40})",
+        r"\b(?:phòng|phong|mã|ma)\s+([A-Za-z0-9][A-Za-z0-9_.-]{1,40})\b",
         r"\b([a-f0-9]{24})\b",
+        r"\b([A-Za-z]\.\d{2,5})\b",
+        r"\b([A-Za-z]{1,3}\d{2,5})\b",
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):

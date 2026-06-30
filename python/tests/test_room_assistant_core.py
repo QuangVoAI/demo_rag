@@ -1032,6 +1032,61 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(location["near_landmarks"], [])
         self.assertEqual(location["wards"], [])
 
+    def test_repository_enforces_studio_category(self):
+        studio_room = {
+            "room_id": "s1",
+            "available": True,
+            "embedding_text": "Studio gọn, giá tốt",
+            "rent_price": 4_000_000,
+        }
+        normal_room = {
+            "room_id": "n1",
+            "available": True,
+            "embedding_text": "Phòng trọ tiện nghi",
+            "rent_price": 3_000_000,
+        }
+        constraints = {"categories": ["studio"]}
+        self.assertTrue(room_matches_constraints(studio_room, constraints))
+        self.assertFalse(room_matches_constraints(normal_room, constraints))
+
+    def test_repository_enforces_pets_required(self):
+        pet_room = {
+            "room_id": "p1",
+            "available": True,
+            "embedding_text": "## Tiện ích\n- Thú cưng: Có",
+            "rent_price": 4_000_000,
+        }
+        no_pet_room = {
+            "room_id": "np1",
+            "available": True,
+            "embedding_text": "## Tiện ích\n- Thú cưng: Không",
+            "rent_price": 3_500_000,
+        }
+        constraints = {"pets_required": ["cat"]}
+        self.assertTrue(room_matches_constraints(pet_room, constraints))
+        self.assertFalse(room_matches_constraints(no_pet_room, constraints))
+
+    def test_ask_room_pets_without_verified_data_is_insufficient(self):
+        parsed = {"intent": "ASK_ABOUT_ROOM"}
+        grounding = {
+            "rooms": [{
+                "room_id": "r1",
+                "title": "Phòng A",
+                "rent_price": 4_000_000,
+                "district": "Quận 7",
+                "embedding_text": "## Tiện ích\n- Wifi: Có",
+            }],
+            "constraints": {},
+        }
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {},
+            question="Phòng này có cho nuôi mèo không?",
+        )
+        self.assertIn("chưa có dữ liệu xác minh", answer.lower())
+        self.assertIn("thú cưng", answer.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
