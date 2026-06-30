@@ -33,7 +33,7 @@ from .formatters import (
     verified_amenity_labels,
 )
 from .intent import parse_intent_and_constraint_patch, parse_intent_async
-from .repository import RoomRepository, create_room_repository
+from .repository import RoomRepository, create_room_repository, room_matches_constraints
 from .retrieval import RoomSemanticIndex
 from .schemas import (
     MAX_READ_TOOL_CALLS_PER_TURN,
@@ -218,7 +218,13 @@ async def run_room_assistant(
     finally:
         retrieval_ms = int((time.time() - retrieval_started) * 1000)
 
-    rooms = _extract_rooms(tool_results)
+    rooms = _sanitize_result_rooms(
+        parsed["intent"],
+        _extract_rooms(tool_results),
+        merged_state.get("constraints", {}),
+        context.retrieval_trace,
+    )
+    tool_results["rooms"] = rooms
     result_ids = [item["room_id"] for item in rooms if item.get("room_id")]
     current_room_id = parsed.get("current_room_id") or _current_room_from_results(parsed["intent"], rooms)
 
@@ -317,6 +323,7 @@ def _execute_workflow(
             {"query_text": question, "constraints": constraints, "top_k": 5},
             context,
         )
+        followup_room_question = _resolve_inline_room_followup(question, constraints, context.repository)
         if not rooms and _has_soft_preferences(constraints) and context.read_tool_calls < MAX_READ_TOOL_CALLS_PER_TURN:
             retry_constraints = dict(constraints)
             retry_constraints["amenities_preferred"] = []
@@ -325,17 +332,17 @@ def _execute_workflow(
                 {"query_text": question, "constraints": retry_constraints, "top_k": 5},
                 context,
             )
-            return {"rooms": rooms, "retrieval_retry": True}
-        return {"rooms": rooms}
+            return {"rooms": rooms, "retrieval_retry": True, "followup_room_question": followup_room_question}
+        return {"rooms": rooms, "followup_room_question": followup_room_question}
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         detail = _tool_registry.execute(
-            "retrieve_room_context", {"room_id": current_room_id}, context,
+            "retrieve_room_context", {"room_id": current_room_id, "query_text": question}, context,
         )
         return {"room_context": detail, "rooms": [detail["room"]] if detail.get("room") else []}
 
     if intent == "CALCULATE_COST":
-        room = _tool_registry.execute("get_room_detail", {"room_id": current_room_id}, context)
+        room = _tool_registry.execute("get_room_detail", {"room_id": current_room_id, "query_text": question}, context)
         estimate = _tool_registry.execute(
             "calculate_cost_estimate",
             {"room": room, "rental_months": _extract_rental_months(question), "constraints": constraints},
@@ -535,45 +542,69 @@ def _compose_answer_template(
     parsed: dict[str, Any], grounding: dict[str, Any], tool_results: dict[str, Any], question: str = "",
 ) -> str:
     intent = parsed["intent"]
+    constraints = grounding.get("constraints", {}) or {}
     if tool_results.get("error") == "tool_budget_exceeded":
         return "Mình cần giới hạn số lần đọc dữ liệu trong một lượt. Bạn thử hỏi lại hẹp hơn với tối đa 3 phòng hoặc một nhu cầu cụ thể nhé."
     if intent == "REQUEST_ACTION":
         action = parsed.get("requested_action") or "thao tác nghiệp vụ"
+        if action == "dat_lich":
+            return (
+                "Dạ được ạ. Em chưa tự chốt lịch ngay trong chat, nhưng nếu anh/chị đã ưng căn nào thì mình bấm "
+                "`Đặt lịch xem phòng` để mở form booking sẵn trên giao diện. "
+                "Anh/chị tiện đi xem buổi sáng hay buổi chiều để em gợi ý bước tiếp theo cho nhanh ạ?"
+            )
         return (
-            "Mình chỉ có thể tư vấn và đọc dữ liệu — không thể tự thực hiện: đặt lịch, "
+            "Dạ em có thể tư vấn và đọc dữ liệu giúp mình, nhưng chưa tự thao tác thay anh/chị như đặt lịch, "
             "nhắn chủ nhà, lưu phòng, giữ chỗ hay thanh toán. "
-            f"Với yêu cầu '{action}', bạn vui lòng thao tác trực tiếp trên giao diện nhatrovn."
+            f"Với yêu cầu '{action}', anh/chị vui lòng thao tác trực tiếp trên giao diện nhatrovn giúp em nhé."
         )
     rooms = grounding["rooms"]
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
         if not rooms:
-            return "Mình chưa tìm thấy phòng phù hợp với điều kiện hiện tại. Bạn thử nới ngân sách, đổi khu vực hoặc bỏ bớt tiện ích bắt buộc nhé."
-        lines = ["Dưới đây là các phòng phù hợp nhất theo dữ liệu đã xác nhận trên nhatrovn:"]
+            return (
+                "Dạ em chưa tìm thấy căn nào khớp hoàn toàn với điều kiện hiện tại ạ. "
+                "Anh/chị muốn em lọc lại theo hướng nới nhẹ ngân sách, đổi sang khu lân cận, hay bớt 1 tiện ích bắt buộc để ra phòng sát hơn ạ?"
+            )
+        if _is_broad_new_lead(question, constraints):
+            first = rooms[0]
+            return (
+                f"Dạ bên em vẫn còn phòng ạ 😊 Hiện có căn từ khoảng {format_vnd(first.get('rent_price'))}/tháng theo dữ liệu đang còn trống. "
+                "Anh/chị đang ưu tiên khu vực nào và khoảng mấy người ở để em lọc đúng căn hợp nhất cho mình ạ?"
+            )
+        lines = ["Dạ em lọc được vài căn đang còn phòng theo dữ liệu đã xác minh trên nhatrovn:"]
         fallback_strategy = (grounding.get("retrieval") or {}).get("fallback_strategy")
         if fallback_strategy in {"nearby_location", "relax_price_nearby_location"}:
-            lines.append("Lưu ý: hiện chưa còn phòng khớp khu vực gốc, nên đây là các phòng ở khu vực lân cận gần nhất.")
-        for idx, room in enumerate(rooms[:5], 1):
+            lines.append("Khu anh/chị chọn hiện chưa còn căn khớp hoàn toàn, nên em lấy thêm các căn khu lân cận gần nhất để mình cân nhắc ạ.")
+        for idx, room in enumerate(rooms[:3], 1):
             lines.append(
                 f"{idx}. **{room.get('title')}** (#{room.get('room_id')}) — "
                 f"{format_vnd(room.get('rent_price'))}/tháng, "
                 f"{room.get('district') or 'chưa rõ khu vực'}."
             )
         lines.append("\n_Giá và trạng thái còn phòng được lấy trực tiếp từ dữ liệu phòng._")
+        lines.append("Nếu anh/chị thấy căn nào ổn, mình bấm `Đặt lịch xem phòng` để qua bước xem thực tế nhanh hơn nha. Anh/chị thích căn số mấy nhất ạ?")
+        followup_text = _compose_inline_followup_answer(tool_results.get("followup_room_question") or {})
+        if followup_text:
+            lines.append("")
+            lines.append(followup_text)
         return "\n".join(lines)
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         if not rooms:
-            return "Mình chưa xác định được phòng đang xem. Bạn gửi mã phòng hoặc chọn phòng từ kết quả tìm kiếm nhé."
+            return "Dạ em chưa xác định được đúng phòng mình đang hỏi. Anh/chị gửi mã phòng hoặc chọn lại từ danh sách để em tư vấn chính xác hơn nha."
         room = rooms[0]
         unknown = _unknown_fields(room)
         parts = [
+            "Dạ em gửi anh/chị thông tin đã xác minh của căn này ạ:",
             f"**{room.get('title')}** (#{room.get('room_id')}) — giá {format_vnd(room.get('rent_price'))}/tháng.",
             f"Khu vực: {room.get('address') or room.get('district') or 'chưa rõ'}.",
+            f"Diện tích: {room.get('area_m2') or 'chưa rõ'} m².",
         ]
         feature_facts = room_feature_facts(room)
         if feature_facts:
             parts.append(f"Tiện ích và thông tin phòng đã xác minh: {', '.join(feature_facts)}.")
         if unknown:
             parts.append(f"_Dữ liệu chưa xác nhận: {', '.join(unknown)}._")
+        parts.append("Nếu căn này đang khá hợp nhu cầu, anh/chị có thể bấm `Đặt lịch xem phòng` để qua xem thực tế cho yên tâm ạ.")
         return "\n".join(parts)
     if intent == "CALCULATE_COST":
         estimate = tool_results.get("cost_estimate") or {}
@@ -634,8 +665,11 @@ def _compose_answer_template(
     if intent == "REQUEST_FAQ":
         faq = tool_results.get("faq_results") or []
         if faq:
-            return "\n".join(f"**[{item.get('topic')}]** {item.get('answer')}" for item in faq)
-        return "Mình có thể hỗ trợ thông tin về: quy trình thuê phòng, hợp đồng thuê nhà, tiền cọc tiêu chuẩn, và các thủ tục liên quan. Bạn hỏi cụ thể hơn nhé."
+            lines = ["Dạ em trả lời theo thông tin hiện có ạ:"]
+            lines.extend(f"**[{item.get('topic')}]** {item.get('answer')}" for item in faq)
+            lines.append("Nếu anh/chị đã ưng căn nào rồi, mình có thể bấm `Đặt lịch xem phòng` để qua bước xem thực tế nhé.")
+            return "\n".join(lines)
+        return "Dạ em có thể hỗ trợ thông tin về quy trình thuê, hợp đồng, tiền cọc và các thủ tục liên quan. Anh/chị muốn hỏi cụ thể phần nào để em trả lời đúng ý hơn ạ?"
     return (
         "Mình có thể giúp tìm phòng, lọc điều kiện, hỏi đáp về phòng đang xem, "
         "tính chi phí, so sánh tối đa 3 phòng và gợi ý phòng tương tự trên nhatrovn. "
@@ -729,11 +763,9 @@ def _should_use_template_response(
     tool_results: dict[str, Any],
     faq: list[dict[str, Any]] | None,
 ) -> bool:
-    if intent in {"REQUEST_ACTION", "CALCULATE_COST", "COMPARE_ROOMS"}:
+    if intent in {"REQUEST_ACTION", "CALCULATE_COST", "COMPARE_ROOMS", "ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
         return True
     if tool_results.get("error"):
-        return True
-    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
         return True
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and grounding.get("rooms"):
         return True
@@ -832,13 +864,208 @@ def _suggest_questions(intent: str, rooms: list[dict[str, Any]], current_room_id
     if rooms:
         first = current_room_id or rooms[0].get("room_id")
         return [
-            f"Tính tổng chi phí cho #{first}",
-            f"Tóm tắt ưu điểm và hạn chế của #{first}",
-            "Tìm phòng tương tự nhưng rẻ hơn",
+            f"Chi phí tháng đầu của #{first} khoảng bao nhiêu?",
+            f"Phòng #{first} hợp mấy người ở?",
+            "Nếu ổn thì mình xem phòng buổi sáng hay chiều?",
         ]
     if intent == "GENERAL_HELP":
-        return ["Tìm phòng dưới 5 triệu ở quận Bình Thạnh", "So sánh #A #B #C", "Phòng này có cho nuôi mèo không?"]
-    return ["Nới ngân sách thêm 1 triệu", "Bỏ yêu cầu máy lạnh", "Đổi sang khu vực gần trường hơn"]
+        return ["Tìm phòng dưới 5 triệu ở quận Bình Thạnh", "Phòng này có cho nuôi mèo không?", "Nếu hợp thì mình đặt lịch xem luôn được không?"]
+    return ["Mình ưu tiên gần hơn hay rẻ hơn ạ?", "Nới ngân sách thêm 500k được không?", "Em lọc sang khu lân cận cho mình nhé?"]
+
+
+def _resolve_inline_room_followup(
+    question: str,
+    constraints: dict[str, Any],
+    repository: RoomRepository,
+) -> dict[str, Any] | None:
+    import re
+
+    normalized = _normalize_sales_text(question)
+    match = re.search(
+        r"phong\s+(duong\s+so\s+\d+[a-z]?)\s+co\s+(may\s+lanh|ban\s+cong|cua\s+so|wifi|gac)\s+khong",
+        normalized,
+    )
+    if not match:
+        return None
+
+    amenity_map = {
+        "may lanh": "air_conditioner",
+        "ban cong": "balcony",
+        "cua so": "window",
+        "wifi": "wifi",
+        "gac": "mezzanine",
+    }
+    street_ref = match.group(1).strip()
+    amenity = amenity_map.get(match.group(2).strip())
+    if not amenity:
+        return None
+
+    location = constraints.get("location") or {}
+    followup_constraints = {
+        "location": {
+            "province": location.get("province"),
+            "districts": list(location.get("districts") or []),
+            "wards": list(location.get("wards") or []),
+            "near_landmarks": [street_ref],
+            "max_distance_km": None,
+        },
+        "budget": {"min": None, "min_operator": None, "max": None, "max_operator": None, "type": "rent_only"},
+        "area": {"preference": None},
+        "occupants": None,
+        "vehicles": [],
+        "pets_required": [],
+        "amenities_required": [],
+        "amenities_preferred": [],
+        "excluded_features": [],
+        "move_in_date": None,
+    }
+    candidates = repository.search_by_constraints(followup_constraints, limit=5, offset=0)
+    if not candidates:
+        candidates = _search_inline_followup_candidates(repository, street_ref, location)
+    return {"street_ref": street_ref, "amenity": amenity, "candidates": candidates}
+
+
+def _compose_inline_followup_answer(followup: dict[str, Any]) -> str:
+    if not followup:
+        return ""
+    street_ref = followup.get("street_ref") or "địa chỉ này"
+    amenity = followup.get("amenity") or ""
+    candidates = followup.get("candidates") or []
+    amenity_labels = {
+        "air_conditioner": "máy lạnh",
+        "balcony": "ban công",
+        "window": "cửa sổ",
+        "wifi": "wifi",
+        "mezzanine": "gác",
+    }
+    amenity_label = amenity_labels.get(amenity, amenity)
+    if not candidates:
+        return f"Về ý sau, em chưa xác định được phòng {street_ref} cụ thể nào trong dữ liệu hiện có để xác nhận {amenity_label} cho mình ạ."
+
+    positive = next((room for room in candidates if _room_has_positive_amenity(room, amenity)), None)
+    if positive:
+        return (
+            f"Về ý sau, em có thấy căn gần {street_ref}: **{positive.get('title')}** "
+            f"(#{positive.get('room_id')}) và căn này **có {amenity_label}** ạ."
+        )
+
+    room = candidates[0]
+    return (
+        f"Về ý sau, em có thấy căn gần {street_ref}: **{room.get('title')}** "
+        f"(#{room.get('room_id')}) nhưng dữ liệu xác minh hiện tại cho thấy căn này **không có {amenity_label}** ạ."
+    )
+
+
+def _room_has_positive_amenity(room: dict[str, Any], amenity: str) -> bool:
+    import re
+
+    pattern_map = {
+        "air_conditioner": r"Máy lạnh\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)",
+        "balcony": r"Ban công\s*:\s*(?:Có|True|Yes)",
+        "window": r"Cửa sổ\s*:\s*(?:Có|True|Yes)",
+        "wifi": r"Wifi\s*:\s*(?:Có|Free|True|Yes)",
+        "mezzanine": r"Gác\s*:\s*(?:Có|True|Yes)",
+    }
+    pattern = pattern_map.get(amenity)
+    if not pattern:
+        return False
+    searchable = " ".join(
+        str(part or "")
+        for part in (room.get("embedding_text"), room.get("description"), " ".join(room.get("amenities") or []))
+    )
+    return bool(re.search(pattern, searchable, re.IGNORECASE))
+
+
+def _search_inline_followup_candidates(
+    repository: RoomRepository,
+    street_ref: str,
+    location: dict[str, Any],
+) -> list[dict[str, Any]]:
+    import re
+
+    collection = getattr(repository, "_collection", None)
+    if collection is None:
+        return []
+
+    street_number_match = re.search(r"(\d+[a-z]?)", street_ref, re.IGNORECASE)
+    if not street_number_match:
+        return []
+    street_number = street_number_match.group(1)
+
+    clauses: list[dict[str, Any]] = [
+        {"metadata.house_name": {"$regex": street_number, "$options": "i"}},
+        {"metadata.room_code": {"$regex": street_number, "$options": "i"}},
+        {"embedding_text": {"$regex": rf"(?:duong|đường)\\s*(?:so|số)?\\s*{re.escape(street_number)}", "$options": "i"}},
+    ]
+
+    area_filters: list[dict[str, Any]] = []
+    for ward in location.get("wards") or []:
+        area_filters.append({"metadata.ward_name": {"$regex": _accent_flexible_location_pattern(ward), "$options": "i"}})
+    for district in location.get("districts") or []:
+        area_filters.append({"metadata.district_name": {"$regex": _accent_flexible_location_pattern(district), "$options": "i"}})
+
+    query = {
+        "$and": [
+            {"metadata.status_code": {"$in": ["0", ""]}},
+            {"$or": clauses},
+        ]
+    }
+    if area_filters:
+        query["$and"].append({"$or": area_filters})
+
+    docs = list(collection.find(query).limit(5))
+    normalizer = globals().get("normalize_room")
+    if normalizer is None:
+        from .schemas import normalize_room as normalizer
+    return [item for item in (normalizer(doc) for doc in docs) if item]
+
+
+def _accent_flexible_location_pattern(value: str) -> str:
+    from .repository import _accent_flexible_regex, _normalize_location_value
+
+    normalized = _normalize_location_value(value)
+    if not normalized:
+        return ""
+    return _accent_flexible_regex(normalized)
+
+
+def _sanitize_result_rooms(
+    intent: str,
+    rooms: list[dict[str, Any]],
+    constraints: dict[str, Any],
+    retrieval_trace: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if intent not in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} or not rooms:
+        return rooms
+    trace = retrieval_trace or {}
+    fallback_strategy = trace.get("fallback_strategy")
+    if fallback_strategy in {"nearby_location", "relax_price_nearby_location"}:
+        return rooms
+    matched = [room for room in rooms if room_matches_constraints(room, constraints)]
+    return matched
+
+
+def _is_broad_new_lead(question: str, constraints: dict[str, Any]) -> bool:
+    normalized = _normalize_sales_text(question)
+    budget = constraints.get("budget") or {}
+    location = constraints.get("location") or {}
+    has_budget = budget.get("min") is not None or budget.get("max") is not None
+    has_location = bool(location.get("province") or location.get("districts") or location.get("wards") or location.get("near_landmarks"))
+    has_required_amenities = bool(constraints.get("amenities_required"))
+    if has_budget or has_location or has_required_amenities:
+        return False
+    return any(
+        phrase in normalized
+        for phrase in ("con phong khong", "con phong trong khong", "xin gia", "phong o dau", "gia bao nhieu")
+    )
+
+
+def _normalize_sales_text(text: str) -> str:
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFD", str(text or "").lower())
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return normalized.replace("đ", "d")
 
 
 def _update_summary(state: dict[str, Any], question: str, intent: str) -> None:

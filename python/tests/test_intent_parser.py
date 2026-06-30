@@ -207,6 +207,43 @@ class IntentParserTests(unittest.TestCase):
             parsed = asyncio.run(parse_intent_async("Quy trình bên mình ra sao?", None))
         self.assertEqual(parsed["intent"], "REQUEST_FAQ")
 
+    def test_new_search_with_explicit_filters_does_not_stick_to_current_room(self):
+        state = default_session_state("s-new-search")
+        state["current_room_id"] = "A101"
+        state["selected_room_ids"] = ["A101", "B202", "C303"]
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        parsed = parse_intent_and_constraint_patch(
+            "Tôi cần phòng ở quận Tân Bình giá dưới 3 triệu, có máy lạnh.",
+            state,
+        )
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+        self.assertEqual(parsed["current_room_id"], None)
+        self.assertIn({"op": "append", "path": "location.districts", "value": "tan binh"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "amenities_required", "value": "air_conditioner"}, parsed["operations"])
+
+    def test_ghe_xem_request_is_treated_as_booking_action(self):
+        state = default_session_state("s-booking")
+        state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Ok, vậy chiều mai ghé xem được không?", state)
+        self.assertEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertEqual(parsed["requested_action"], "dat_lich")
+
+    def test_search_request_does_not_turn_follow_up_room_question_into_required_landmark(self):
+        parsed = parse_intent_and_constraint_patch(
+            "Mình xin thông tin phòng ạ,2 người lớn 1 bé nhỏ 1 xe đầu tháng 12 ạ,Em dự kiến kinh phí 2tr3 trở lại thôi ạ, cảm ơn anh,tiện di chuyển đến đường số 49 p.Tân tạo là dc ạ , phòng đường số 57 có máy lạnh không ạ.",
+            None,
+        )
+        landmark_values = [op["value"] for op in parsed["operations"] if op.get("path") == "location.near_landmarks" and "value" in op]
+        ward_values = [op["value"] for op in parsed["operations"] if op.get("path") == "location.wards" and "value" in op]
+        self.assertIn("tan tao", ward_values)
+        self.assertEqual(landmark_values, [])
+        self.assertNotIn("duong so 57", landmark_values)
+
 
 if __name__ == "__main__":
     unittest.main()

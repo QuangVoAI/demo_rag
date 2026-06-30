@@ -22,7 +22,16 @@ from room_assistant.repository import (
 from room_assistant.schemas import default_session_state, normalize_room, unknown_room_fields
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
-from room_assistant.workflow import _best_room_from_comparison, _build_llm_context, _stream_text_chunks, run_room_assistant
+from room_assistant.workflow import (
+    _accent_flexible_location_pattern,
+    _best_room_from_comparison,
+    _build_llm_context,
+    _compose_answer_template,
+    _compose_inline_followup_answer,
+    _sanitize_result_rooms,
+    _stream_text_chunks,
+    run_room_assistant,
+)
 
 
 class FakeMongoCursor:
@@ -72,7 +81,195 @@ class FakeMongoCollection:
         return True
 
 
+class ReferenceLookupRepository:
+    def __init__(self, rooms):
+        self.rooms = list(rooms)
+
+    def get_by_id(self, room_id):
+        for room in self.rooms:
+            if room.get("room_id") == room_id:
+                return dict(room)
+        return None
+
+    def find_by_reference(self, query_text, limit=5):
+        import re
+
+        query = str(query_text or "").lower()
+        tokens = [tok for tok in re.split(r"[^a-z0-9]+", query) if tok]
+        scored = []
+        for room in self.rooms:
+            haystack = " ".join(
+                str(room.get(key, "") or "")
+                for key in ("room_id", "title", "address", "house_name", "room_code", "embedding_text")
+            ).lower()
+            if query and (query in haystack or any(tok in haystack for tok in tokens)):
+                scored.append(dict(room))
+        return scored[:limit]
+
+
 class RoomAssistantCoreTests(unittest.TestCase):
+    def test_request_action_booking_template_points_to_ui_booking_flow(self):
+        answer = _compose_answer_template(
+            {"intent": "REQUEST_ACTION", "requested_action": "dat_lich"},
+            {"rooms": [], "constraints": {}},
+            {"requested_action": "dat_lich"},
+            "Chiều mai mình ghé xem phòng được không?",
+        )
+        self.assertIn("Đặt lịch xem phòng", answer)
+        self.assertIn("buổi sáng hay buổi chiều", answer)
+
+    def test_broad_search_template_asks_back_for_need_instead_of_dumping_list(self):
+        room = {
+            "room_id": "A101",
+            "title": "Phòng A101",
+            "rent_price": 3_200_000,
+            "district": "Quận Tân Bình",
+            "available": True,
+            "amenities": [],
+        }
+        answer = _compose_answer_template(
+            {"intent": "SEARCH_ROOM"},
+            {"rooms": [room], "constraints": {}},
+            {"rooms": [room]},
+            "Còn phòng không?",
+        )
+        self.assertIn("vẫn còn phòng", answer)
+        self.assertIn("mấy người ở", answer)
+
+    def test_broad_search_template_still_asks_back_with_default_empty_constraints(self):
+        room = {
+            "room_id": "A101",
+            "title": "Phòng A101",
+            "rent_price": 3_200_000,
+            "district": "Quận Tân Bình",
+            "available": True,
+            "amenities": [],
+        }
+        answer = _compose_answer_template(
+            {"intent": "SEARCH_ROOM"},
+            {"rooms": [room], "constraints": default_session_state("s-broad")["constraints"]},
+            {"rooms": [room]},
+            "Còn phòng không?",
+        )
+        self.assertIn("vẫn còn phòng", answer)
+        self.assertIn("mấy người ở", answer)
+
+    def test_sanitize_result_rooms_drops_items_that_violate_hard_constraints(self):
+        rooms = [
+            {
+                "room_id": "BAD1",
+                "title": "Sai khu vực",
+                "available": True,
+                "district": "Huyện Nhà Bè",
+                "ward": "Xã Phước Kiển",
+                "rent_price": 3_400_000,
+                "amenities": [],
+                "embedding_text": "Máy lạnh: Không",
+            }
+        ]
+        constraints = {
+            "location": {"districts": ["tan binh"]},
+            "budget": {"max": 3_000_000, "max_operator": "lt"},
+            "amenities_required": ["air_conditioner"],
+        }
+        self.assertEqual(
+            _sanitize_result_rooms("SEARCH_ROOM", rooms, constraints, {}),
+            [],
+        )
+
+    def test_inline_followup_answer_mentions_unidentified_street_room_separately(self):
+        answer = _compose_inline_followup_answer(
+            {"street_ref": "duong so 57", "amenity": "air_conditioner", "candidates": []}
+        )
+        self.assertIn("Về ý sau", answer)
+        self.assertIn("chưa xác định được phòng duong so 57", answer)
+
+    def test_search_template_appends_inline_followup_answer(self):
+        room = {
+            "room_id": "A101",
+            "title": "Phòng A101",
+            "rent_price": 2_000_000,
+            "district": "Quận Bình Tân",
+            "available": True,
+            "amenities": [],
+        }
+        answer = _compose_answer_template(
+            {"intent": "SEARCH_ROOM"},
+            {"rooms": [room], "constraints": {}},
+            {
+                "rooms": [room],
+                "followup_room_question": {
+                    "street_ref": "duong so 57",
+                    "amenity": "air_conditioner",
+                    "candidates": [],
+                },
+            },
+            "tim phong ... , phong duong so 57 co may lanh khong?",
+        )
+        self.assertIn("Phòng A101", answer)
+        self.assertIn("Về ý sau", answer)
+
+    def test_detail_template_includes_verified_price_area_and_amenities(self):
+        room = {
+            "room_id": "664443c46ebeb31a0a0a7b4f",
+            "title": "30-32 ĐƯỜNG 57A TÂN TẠO - 207",
+            "rent_price": 2_800_000,
+            "area_m2": 20,
+            "district": "Quận Bình Tân",
+            "address": "30-32 ĐƯỜNG 57A TÂN TẠO, Phường Tân Tạo, Quận Bình Tân, Thành phố Hồ Chí Minh",
+            "available": True,
+            "amenities": ["wifi", "air_conditioner"],
+            "embedding_text": "## Tiện ích\n- Máy lạnh: Có\n- Wifi: Có\n- Cửa sổ: Có\n- Gác: Có",
+        }
+        answer = _compose_answer_template(
+            {"intent": "ASK_ABOUT_ROOM"},
+            {"rooms": [room], "constraints": {}},
+            {"room_context": {"room": room, "context": "", "unknown": []}, "rooms": [room]},
+            "cho tôi xem căn 30-32 ĐƯỜNG 57A TÂN TẠO - 207",
+        )
+        self.assertIn("2.800.000 VND/tháng", answer)
+        self.assertIn("20 m²", answer)
+        self.assertIn("Máy lạnh", answer)
+        self.assertNotIn("em chưa có dữ liệu", answer.lower())
+
+    def test_repository_can_lookup_room_by_title_or_address_reference(self):
+        from room_assistant.tools import get_room_detail, ToolExecutionContext
+
+        repo = ReferenceLookupRepository([
+            {
+                "room_id": "664443c46ebeb31a0a0a7b4f",
+                "title": "30-32 ĐƯỜNG 57A TÂN TẠO - 207",
+                "address": "30-32 ĐƯỜNG 57A TÂN TẠO, Phường Tân Tạo, Quận Bình Tân, Thành phố Hồ Chí Minh",
+            }
+        ])
+        room = get_room_detail(
+            {"room_id": None, "query_text": "cho tôi xem 30-32 ĐƯỜNG 57A TÂN TẠO - 207"},
+            ToolExecutionContext(repository=repo),
+        )
+        self.assertIsNotNone(room)
+        self.assertEqual(room["room_id"], "664443c46ebeb31a0a0a7b4f")
+
+    def test_query_text_takes_priority_over_stale_room_id(self):
+        from room_assistant.tools import get_room_detail, ToolExecutionContext
+
+        repo = ReferenceLookupRepository([
+            {
+                "room_id": "664443c46ebeb31a0a0a7b4f",
+                "title": "30-32 ĐƯỜNG 57A TÂN TẠO - 207",
+                "address": "30-32 ĐƯỜNG 57A TÂN TẠO, Phường Tân Tạo, Quận Bình Tân, Thành phố Hồ Chí Minh",
+            },
+        ])
+        room = get_room_detail(
+            {"room_id": "old-room", "query_text": "cho tôi xem căn 30-32 ĐƯỜNG 57A TÂN TẠO - 207"},
+            ToolExecutionContext(repository=repo),
+        )
+        self.assertIsNotNone(room)
+        self.assertEqual(room["room_id"], "664443c46ebeb31a0a0a7b4f")
+
+    def test_accent_flexible_location_pattern_matches_accented_ward_name(self):
+        pattern = _accent_flexible_location_pattern("tan tao")
+        self.assertTrue(re.search(pattern, "Phường Tân Tạo", re.IGNORECASE))
+
     def test_unknown_room_fields_does_not_report_unmapped_available_from(self):
         room = {
             "room_id": "A101",

@@ -817,11 +817,8 @@ def _sse_heartbeat() -> str:
 def _assistant_error_message(exc: Exception) -> str:
     message = str(exc or "").strip()
     lowered = message.lower()
-    if (
-        "connection refused" in lowered
-        and ("6333" in lowered or "qdrant" in lowered or "localhost" in lowered or "127.0.0.1" in lowered)
-    ):
-        return "Qdrant chưa chạy hoặc không kết nối được tại localhost:6333."
+    if "connection refused" in lowered:
+        return "Dịch vụ nội bộ (Qdrant/MongoDB/Redis) chưa chạy hoặc không kết nối được (Connection refused)."
     return f"Lỗi hệ thống trợ lý ảo: {message}" if message else "Lỗi hệ thống trợ lý ảo."
 
 

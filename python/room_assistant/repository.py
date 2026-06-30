@@ -26,6 +26,9 @@ class RoomRepository(Protocol):
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         ...
 
+    def find_by_reference(self, query_text: str, limit: int = 5) -> list[dict[str, Any]]:
+        ...
+
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
         ...
 
@@ -48,6 +51,9 @@ class EmptyRoomRepository:
 
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         return None
+
+    def find_by_reference(self, query_text: str, limit: int = 5) -> list[dict[str, Any]]:
+        return []
 
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
         return []
@@ -91,6 +97,20 @@ class InMemoryRoomRepository:
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         room = self._rooms.get(str(room_id))
         return dict(room) if room else None
+
+    def find_by_reference(self, query_text: str, limit: int = 5) -> list[dict[str, Any]]:
+        variants = _reference_query_variants(query_text)
+        if not variants:
+            return []
+        scored: list[dict[str, Any]] = []
+        for room in self._rooms.values():
+            score = max(_score_room_reference(room, query) for query in variants)
+            if score > 0:
+                item = dict(room)
+                item["_reference_score"] = score
+                scored.append(item)
+        scored.sort(key=lambda item: item.get("_reference_score", 0), reverse=True)
+        return scored[:max(limit, 1)]
 
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
         found = []
@@ -180,6 +200,76 @@ class MongoRoomRepository:
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         doc = self._collection.find_one({"$or": _mongo_id_or_clauses(str(room_id))})
         return normalize_room(doc)
+
+    def find_by_reference(self, query_text: str, limit: int = 5) -> list[dict[str, Any]]:
+        import re
+
+        query = str(query_text or "").strip()
+        if not query:
+            return []
+        variants = _reference_query_variants(query)
+        if not variants:
+            return []
+        tokens = _reference_query_tokens(variants)
+        house_phrase, room_code = _reference_house_and_code(query)
+
+        exact_query = None
+        if house_phrase and room_code:
+            house_pattern = _accent_flexible_regex(house_phrase)
+            exact_query = {
+                "$and": [
+                    {"metadata.status_code": {"$in": ["0", ""]}},
+                    {"metadata.house_name": {"$regex": house_pattern, "$options": "i"}},
+                    {"$or": [
+                        {"metadata.room_code": {"$regex": re.escape(room_code), "$options": "i"}},
+                        {"room_id": {"$regex": re.escape(room_code), "$options": "i"}},
+                        {"embedding_text": {"$regex": re.escape(room_code), "$options": "i"}},
+                    ]},
+                ]
+            }
+            exact_cursor = self._collection.find(exact_query).limit(max(limit * 10, 50))
+            exact_results = [item for item in (normalize_room(doc) for doc in exact_cursor) if item]
+            if exact_results:
+                exact_results.sort(key=lambda item: _score_room_reference(item, house_phrase + " " + room_code), reverse=True)
+                return exact_results[:max(limit, 1)]
+
+        clauses = []
+        if house_phrase:
+            house_pattern = _accent_flexible_regex(house_phrase)
+            clauses.extend([
+                {"metadata.house_name": {"$regex": house_pattern, "$options": "i"}},
+                {"embedding_text": {"$regex": house_pattern, "$options": "i"}},
+                {"address": {"$regex": house_pattern, "$options": "i"}},
+                {"title": {"$regex": house_pattern, "$options": "i"}},
+            ])
+        if room_code:
+            room_pattern = re.escape(room_code)
+            clauses.extend([
+                {"metadata.room_code": {"$regex": room_pattern, "$options": "i"}},
+                {"room_id": {"$regex": room_pattern, "$options": "i"}},
+            ])
+        for token in tokens:
+            clauses.extend([
+                {"room_id": {"$regex": _accent_flexible_regex(token), "$options": "i"}},
+                {"metadata.house_name": {"$regex": _accent_flexible_regex(token), "$options": "i"}},
+                {"metadata.room_code": {"$regex": _accent_flexible_regex(token), "$options": "i"}},
+                {"embedding_text": {"$regex": _accent_flexible_regex(token), "$options": "i"}},
+                {"address": {"$regex": _accent_flexible_regex(token), "$options": "i"}},
+                {"title": {"$regex": _accent_flexible_regex(token), "$options": "i"}},
+            ])
+        cursor = self._collection.find({
+            "$and": [
+                {"metadata.status_code": {"$in": ["0", ""]}},
+                {"$or": clauses},
+            ]
+        }).limit(max(limit * 10, 50))
+        results = []
+        for item in (normalize_room(doc) for doc in cursor):
+            if item:
+                item["_reference_score"] = max(_score_room_reference(item, variant) for variant in variants)
+                results.append(item)
+        results.sort(key=lambda item: item.get("_reference_score", 0), reverse=True)
+        return results
 
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
         ids = [str(item) for item in room_ids]
@@ -284,6 +374,112 @@ def _room_lookup_keys(raw: dict[str, Any], normalized: dict[str, Any]) -> set[st
         raw.get("_id"),
     }
     return {str(key) for key in keys if key}
+
+
+def _reference_query_variants(query_text: str) -> list[str]:
+    import re
+
+    raw = str(query_text or "").strip()
+    if not raw:
+        return []
+    variants = [raw]
+    digit_match = re.search(r"\d[\d\w\s./-]{4,80}", raw, re.IGNORECASE)
+    if digit_match:
+        variants.append(digit_match.group(0).strip(" ,.;:"))
+    after_lookup = re.search(r"\b(?:xem|cho toi xem|cho tôi xem|xem giúp|xem giup)\b\s*(.+)$", raw, re.IGNORECASE)
+    if after_lookup:
+        variants.append(after_lookup.group(1).strip(" ,.;:"))
+    normalized = _normalize_location_value(raw)
+    if normalized:
+        variants.append(normalized)
+    return list(dict.fromkeys(item for item in variants if item))
+
+
+def _reference_house_and_code(query_text: str) -> tuple[str, str]:
+    import re
+
+    text = str(query_text or "").strip()
+    if not text:
+        return "", ""
+    candidate = text
+    after_lookup = re.search(r"\b(?:xem|cho toi xem|cho tôi xem|xem giúp|xem giup)\b\s*(.+)$", candidate, re.IGNORECASE)
+    if after_lookup:
+        candidate = after_lookup.group(1).strip()
+    candidate = re.sub(r"^(?:căn|can|phòng|phong)\s+", "", candidate, flags=re.IGNORECASE).strip()
+    house_part = candidate
+    room_code = ""
+    match = re.search(r"^(.*?)(?:\s*[-–—]\s*(\d+[a-z]?))\s*$", candidate, re.IGNORECASE)
+    if match:
+        house_part = match.group(1).strip()
+        room_code = match.group(2).strip().lower()
+    else:
+        trailing_digit = re.search(r"(\d+[a-z]?)\s*$", candidate, re.IGNORECASE)
+        if trailing_digit:
+            room_code = trailing_digit.group(1).strip().lower()
+    return house_part.strip(" ,.;:"), room_code
+
+
+def _reference_query_tokens(variants: list[str]) -> list[str]:
+    import re
+
+    stopwords = {
+        "cho", "toi", "tôi", "xem", "giup", "giúp", "phong", "phòng", "can", "căn", "nha", "nhà",
+        "xem", "hay", "là", "la", "co", "có", "anh", "chi", "chị", "em", "mình", "minh",
+    }
+    tokens: list[str] = []
+    for variant in variants:
+        for token in re.split(r"[^a-z0-9]+", _normalize_location_value(variant)):
+            token = token.strip()
+            if len(token) >= 2 and token not in stopwords and token not in tokens:
+                tokens.append(token)
+        digits = re.findall(r"\d+[a-z]?", variant, flags=re.IGNORECASE)
+        for token in digits:
+            token = token.lower()
+            if token not in stopwords and token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def _score_room_reference(room: dict[str, Any], query: str) -> int:
+    import re
+
+    normalized = _normalize_location_value(query)
+    score = 0
+    if not normalized:
+        return 0
+    if normalized == _normalize_location_value(room.get("room_id")):
+        score += 100
+    title_norm = _normalize_location_value(room.get("title"))
+    address_norm = _normalize_location_value(room.get("address"))
+    district_norm = _normalize_location_value(room.get("district"))
+    ward_norm = _normalize_location_value(room.get("ward"))
+    searchable = " ".join(
+        str(part or "")
+        for part in (
+            room.get("room_id"),
+            room.get("title"),
+            room.get("address"),
+            room.get("district"),
+            room.get("ward"),
+            room.get("embedding_text"),
+            room.get("tien_ich_xq"),
+            room.get("house_id"),
+        )
+    ).lower()
+    if normalized and normalized in title_norm:
+        score += 80
+    if normalized and normalized in address_norm:
+        score += 70
+    if normalized and normalized in district_norm:
+        score += 20
+    if normalized and normalized in ward_norm:
+        score += 20
+    tokens = [tok for tok in re.split(r"[^a-z0-9]+", normalized) if tok]
+    token_hits = sum(1 for tok in tokens if tok in searchable)
+    score += min(token_hits, 8) * 5
+    if normalized and normalized in searchable:
+        score += 10
+    return score
 
 
 def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:

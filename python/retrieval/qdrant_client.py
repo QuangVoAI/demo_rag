@@ -58,7 +58,7 @@ class QdrantWrapper:
     ):
         self.collection_name = collection_name
 
-        kwargs = {"url": url, "timeout": 60}
+        kwargs = {"url": url, "timeout": 60, "check_compatibility": False}
         if api_key:
             kwargs["api_key"] = api_key
 

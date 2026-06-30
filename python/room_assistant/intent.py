@@ -27,6 +27,7 @@ ACTION_KEYWORDS = {
         "xem phòng giúp", "lịch hẹn", "lich hen",
         "đặt phòng", "dat phong", "book phòng", "book phong",
         "booking phòng", "booking phong",
+        "ghé xem", "ghe xem", "qua xem", "xem truc tiep", "xem trực tiếp",
     ),
     "message_owner": (
         "nhắn chủ", "nhan chu", "gửi tin", "gui tin",
@@ -417,6 +418,24 @@ def _extract_room_ids(text: str) -> list[str]:
     return ids
 
 
+def _strip_followup_room_detail_clause(text: str) -> str:
+    raw = str(text or "")
+    patterns = (
+        r"[,.;]\s*ph[oòóỏõọôồốổỗộơờớởỡợ]ng\s+(?:[^\n]{0,80}?)\b(?:co|có|khong|không|bao nhieu|bao nhiêu|the nao|thế nào)\b.*$",
+    )
+    trimmed = raw
+    for pattern in patterns:
+        trimmed = re.sub(pattern, "", trimmed, flags=re.IGNORECASE)
+    return trimmed.strip() or raw
+
+
+def _normalize_location_shorthand(text: str) -> str:
+    normalized = str(text or "")
+    normalized = re.sub(r"\bp\.\s*([A-Za-zÀ-ỹà-ỹ][A-Za-zÀ-ỹà-ỹ\s]{1,30})", r"phường \1", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bq\.\s*(\d{1,2})\b", r"quận \1", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
 def _looks_like_room_id(value: str) -> bool:
     return any(ch.isdigit() for ch in value)
 
@@ -643,8 +662,18 @@ def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
     )
     for pattern in street_patterns:
         for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            prefix_window = normalized[max(0, match.start() - 12):match.start()]
+            suffix_window = normalized[match.end():match.end() + 30]
+            if re.search(r"\bphong\s*$", prefix_window, flags=re.IGNORECASE) and re.search(
+                r"\b(co|có|khong|không|bao nhieu|bao nhiêu|the nao|thế nào)\b",
+                suffix_window,
+                flags=re.IGNORECASE,
+            ):
+                continue
             value = match.group(0).strip()
-            value = re.split(r"\b(?:duoi|tren|co|va|gia|,|\.)\b", value)[0].strip()
+            value = re.sub(r"\bphuong\s+[a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]+\b.*$", "", value, flags=re.IGNORECASE).strip()
+            value = re.sub(r"\bp\.?\s+[a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]+\b.*$", "", value, flags=re.IGNORECASE).strip()
+            value = re.split(r"\b(?:duoi|tren|co|va|gia|la|là|dc|đc|duoc|được|,|\.)\b", value)[0].strip()
             if value:
                 _append_unique(ops, "append", "location.near_landmarks", value)
 
@@ -655,7 +684,7 @@ def _normalize_ward_candidate(value: str) -> str:
         return ""
 
     value = re.split(
-        r"\b(?:gan|gần|duoi|dưới|tren|trên|co|có|va|và|gia|giá|khong can|không cần|ko can|hok can|khoang|khoảng|tam|tầm|ngan sach|ngân sách|muc|mức)\b|,|\.",
+        r"\b(?:gan|gần|duoi|dưới|tren|trên|co|có|va|và|gia|giá|la|là|dc|đc|duoc|được|khong can|không cần|ko can|hok can|khoang|khoảng|tam|tầm|ngan sach|ngân sách|muc|mức)\b|,|\.",
         value,
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -925,6 +954,37 @@ def _has_current_room(current_state: dict[str, Any] | None) -> bool:
     return bool(current_state.get("current_room_id") or current_state.get("selected_room_ids") or current_state.get("last_result_ids"))
 
 
+def _has_search_filter_operations(operations: list[dict[str, Any]]) -> bool:
+    search_paths = {
+        "budget.min",
+        "budget.max",
+        "location.province",
+        "location.districts",
+        "location.wards",
+        "location.near_landmarks",
+        "move_in_date",
+        "occupants",
+        "amenities_required",
+        "categories",
+    }
+    return any(str(item.get("path")) in search_paths for item in operations)
+
+
+def _soften_commute_landmark_constraints(normalized: str, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if "tien di chuyen" not in normalized and "tiện di chuyển" not in normalized:
+        return operations
+    has_admin_location = any(
+        item.get("path") in {"location.districts", "location.wards"} and item.get("op") == "append"
+        for item in operations
+    )
+    if not has_admin_location:
+        return operations
+    return [
+        item for item in operations
+        if not (item.get("path") == "location.near_landmarks" and item.get("op") == "append")
+    ]
+
+
 def _has_keyword(normalized: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in normalized for keyword in keywords)
 
@@ -1140,15 +1200,18 @@ def parse_intent_and_constraint_patch(
     """
     text = question or ""
     normalized = _norm(text)
+    location_text = _normalize_location_shorthand(_strip_followup_room_detail_clause(text))
+    normalized_for_location = _norm(location_text)
     operations: list[dict[str, Any]] = []
 
     _extract_budget(text, normalized, operations, current_state)
-    _extract_location(normalized, operations)
+    _extract_location(normalized_for_location, operations)
     _extract_move_in_date(normalized, operations)
     _extract_people_and_pets(normalized, operations)
     _extract_area_preferences(normalized, operations)
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
+    operations = _soften_commute_landmark_constraints(normalized, operations)
 
     referenced_room_ids = _extract_room_ids(text)
     selected_room_id = _selected_room_id_from_ordinal(normalized, current_state)
@@ -1163,7 +1226,9 @@ def parse_intent_and_constraint_patch(
         and not referenced_room_ids
         and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS)
         and (
-            _has_keyword(normalized, _INTENT_KEYWORDS["SEARCH_ROOM"])
+            _has_search_filter_operations(operations)
+            or re.search(r"\b(?:tim|can|muon|thue|o)\b", normalized)
+            or _has_keyword(normalized, _INTENT_KEYWORDS["SEARCH_ROOM"])
             or not _is_room_detail_question(normalized, referenced_room_ids, current_state)
         )
     ):
@@ -1200,15 +1265,18 @@ async def parse_intent_async(
     """
     text = question or ""
     normalized = _norm(text)
+    location_text = _normalize_location_shorthand(_strip_followup_room_detail_clause(text))
+    normalized_for_location = _norm(location_text)
     operations: list[dict[str, Any]] = []
 
     _extract_budget(text, normalized, operations, current_state)
-    _extract_location(normalized, operations)
+    _extract_location(normalized_for_location, operations)
     _extract_move_in_date(normalized, operations)
     _extract_people_and_pets(normalized, operations)
     _extract_area_preferences(normalized, operations)
     _extract_amenities(text, normalized, operations)
     _extract_categories(text, normalized, operations)
+    operations = _soften_commute_landmark_constraints(normalized, operations)
 
     referenced_room_ids = _extract_room_ids(text)
     selected_room_id = _selected_room_id_from_ordinal(normalized, current_state)
@@ -1225,7 +1293,9 @@ async def parse_intent_async(
         and not referenced_room_ids
         and not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS)
         and (
-            _has_keyword(normalized, _INTENT_KEYWORDS["SEARCH_ROOM"])
+            _has_search_filter_operations(operations)
+            or re.search(r"\b(?:tim|can|muon|thue|o)\b", normalized)
+            or _has_keyword(normalized, _INTENT_KEYWORDS["SEARCH_ROOM"])
             or not _is_room_detail_question(normalized, referenced_room_ids, current_state)
         )
     ):

@@ -113,6 +113,20 @@ async def write_no_result_response(
     if not suggestions:
         suggestions.append("Thử mô tả nhu cầu theo cách khác")
 
+    normalized_question = question.lower()
+    if "xa quá" in normalized_question or "xa qua" in normalized_question:
+        return (
+            "Dạ em hiểu mình ngại đi xa ạ. Hiện khu mình đang chốt hơi căng điều kiện nên chưa còn căn khớp hoàn toàn. "
+            "Mình chọn giúp em 1 trong 2 hướng nhé: giữ ngân sách để em lọc khu lân cận gần hơn, hoặc tăng nhẹ ngân sách để lấy căn sát nhu cầu hơn. "
+            "Anh/chị ưu tiên gần hơn hay rẻ hơn ạ?"
+        )
+    if "đắt quá" in normalized_question or "dat qua" in normalized_question:
+        return (
+            "Dạ em hiểu mình đang cân đối chi phí ạ. Với mức giá hiện tại, khu và tiện ích mình chọn đang hơi khó khớp hoàn toàn. "
+            "Em có thể lọc lại theo 2 hướng: giữ khu vực nhưng nới nhẹ ngân sách, hoặc giữ ngân sách và bớt 1 tiện ích bắt buộc. "
+            "Anh/chị muốn em đi theo hướng nào để em lọc sát hơn ạ?"
+        )
+
     prompt = (
         f"Người dùng tìm phòng với điều kiện: {question}\n"
         f"Kết quả: Không tìm được phòng phù hợp.\n"

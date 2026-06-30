@@ -66,10 +66,23 @@ def search_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[di
 
 
 def get_room_detail(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any] | None:
+    query_text = str(args.get("query_text") or "").strip()
+    if query_text:
+        matches = context.repository.find_by_reference(query_text, limit=1)
+        if matches:
+            return matches[0]
     room_id = args.get("room_id")
     if not room_id:
         return None
-    return context.repository.get_by_id(str(room_id))
+    room = context.repository.get_by_id(str(room_id))
+    if room:
+        return room
+    if not query_text:
+        return None
+    matches = context.repository.find_by_reference(query_text, limit=1)
+    if matches:
+        return matches[0]
+    return context.repository.find_by_reference(str(room_id), limit=1)[0] if context.repository.find_by_reference(str(room_id), limit=1) else None
 
 
 def retrieve_room_context(args: dict[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
@@ -96,7 +109,7 @@ def retrieve_faq(args: dict[str, Any], context: ToolExecutionContext) -> list[di
         {
             "topic": "booking",
             "keywords": ("đặt lịch", "dat lich", "xem phòng", "xem phong"),
-            "answer": "Bạn cần tự thao tác đặt lịch hoặc xem thông tin liên hệ trên giao diện nhatrovn nếu tính năng đó có sẵn.",
+            "answer": "Bạn cần tự thao tác trên giao diện nhatrovn. Nếu đã thấy căn phù hợp, hãy bấm nút Đặt lịch xem phòng để mở form booking và chọn thời gian phù hợp.",
         },
         {
             "topic": "deposit",
