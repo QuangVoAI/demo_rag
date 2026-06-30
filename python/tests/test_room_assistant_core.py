@@ -19,10 +19,10 @@ from room_assistant.repository import (
     build_mongo_query,
     room_matches_constraints,
 )
-from room_assistant.schemas import default_session_state, normalize_room
+from room_assistant.schemas import default_session_state, normalize_room, unknown_room_fields
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
-from room_assistant.workflow import _best_room_from_comparison, _build_llm_context, run_room_assistant
+from room_assistant.workflow import _best_room_from_comparison, _build_llm_context, _stream_text_chunks, run_room_assistant
 
 
 class FakeMongoCursor:
@@ -73,6 +73,26 @@ class FakeMongoCollection:
 
 
 class RoomAssistantCoreTests(unittest.TestCase):
+    def test_unknown_room_fields_does_not_report_unmapped_available_from(self):
+        room = {
+            "room_id": "A101",
+            "rent_price": 4_500_000,
+            "deposit": 4_500_000,
+            "area_m2": 24,
+        }
+        self.assertEqual(unknown_room_fields(room), [])
+
+    def test_stream_text_chunks_preserves_markdown_and_line_breaks(self):
+        chunks = []
+
+        async def collector(chunk: str) -> None:
+            chunks.append(chunk)
+
+        text = "**Tiện ích**\n- Máy lạnh: Có\n- Ban công: Có"
+        asyncio.run(_stream_text_chunks(text, collector, words_per_chunk=2))
+
+        self.assertEqual("".join(chunks), text)
+
     def test_parse_refine_budget_and_remove_amenity(self):
         parsed = parse_intent_and_constraint_patch(
             "Tăng ngân sách lên 5 triệu và bỏ yêu cầu máy lạnh."

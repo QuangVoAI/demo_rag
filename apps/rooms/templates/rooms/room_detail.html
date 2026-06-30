@@ -111,11 +111,11 @@
         <div class="booking-form-grid">
           <label>
             <span>Họ và tên của bạn *</span>
-            <input type="text" name="name" required placeholder="Nhập họ tên đầy đủ">
+            <input type="text" name="name" required placeholder="Nhập họ tên đầy đủ" value="{{ booking_prefill.name|default:'' }}">
           </label>
           <label>
             <span>Số điện thoại liên hệ *</span>
-            <input type="tel" name="phone" required placeholder="Nhập số điện thoại" inputmode="numeric" pattern="^0\d{9}$" title="Nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0">
+            <input type="tel" name="phone" required placeholder="Nhập số điện thoại" inputmode="numeric" pattern="^0\d{9}$" title="Nhập số điện thoại gồm đúng 10 chữ số và bắt đầu bằng 0" value="{{ booking_prefill.phone|default:'' }}">
           </label>
           <label>
             <span>Ngày giờ hẹn xem phòng *</span>
@@ -212,6 +212,14 @@
     const bookingForm = document.getElementById('viewingBookingForm');
     const bookingAlert = document.getElementById('bookingAlert');
     const submitBtn = document.getElementById('submitBookingBtn');
+    const bookingSection = document.getElementById('booking-section');
+    const bookingDatetimeInput = bookingForm?.querySelector('[name="datetime"]');
+    const hasBookingHint = {{ booking_hint_active|yesno:"true,false" }};
+
+    if (hasBookingHint && bookingSection) {
+      bookingSection.scrollIntoView({ behavior: 'auto', block: 'start' });
+      bookingDatetimeInput?.focus();
+    }
     
     if (bookingForm) {
       bookingForm.addEventListener('submit', async function(e) {

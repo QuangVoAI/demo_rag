@@ -438,6 +438,7 @@ def _write_feedback_log(query_text: str, trace: dict[str, Any]) -> None:
     cfg = _retrieval_config()
     path = cfg.get("feedback_log_path")
     if not path:
+        _logger.debug("retrieval_feedback_log_skipped feedback_log_path_not_configured")
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -453,5 +454,5 @@ def _write_feedback_log(query_text: str, trace: dict[str, Any]) -> None:
         }
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        return
+    except Exception as exc:
+        _logger.warning("retrieval_feedback_log_failed %s", exc)

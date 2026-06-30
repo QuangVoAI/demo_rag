@@ -730,7 +730,7 @@
               result.rooms.forEach(room => {
                 const card = document.createElement('a');
                 card.className = 'chat-card-inline';
-                card.href = `/tim-phong/${room.id}/`;
+                card.href = `/tim-phong/${room.id}/?booking_hint=1#booking-section`;
                 card.target = '_blank';
                 const metaParts = [room.area_text, room.category, room.status_text].filter(Boolean);
                 const idLines = [
@@ -749,7 +749,7 @@
                     <p class="meta">${metaParts.join(' • ')}</p>
                     <div class="chat-card-amenities">${(room.amenities || []).slice(0,4).map(item => `<span>${item}</span>`).join('')}</div>
                     <p class="address">${room.address}</p>
-                    <span class="chat-card-cta">Xem chi tiết</span>
+                    <span class="chat-card-cta">Đặt lịch xem phòng</span>
                   </div>
                 `;
                 cardsContainer.appendChild(card);

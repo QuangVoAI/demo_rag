@@ -52,6 +52,7 @@ READ_ONLY_TOOLS: tuple[str, ...] = (
 )
 
 MAX_READ_TOOL_CALLS_PER_TURN = 3
+RECENT_HISTORY_TURNS = 8
 
 ALLOWED_OPERATION_PATHS: set[str] = {
     "location.province",
@@ -287,5 +288,7 @@ def public_session_state(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def unknown_room_fields(room: dict[str, Any]) -> list[str]:
-    fields = ("rent_price", "deposit", "area_m2", "available_from")
+    # available_from is not populated in the current normalized room model,
+    # so treating it as "unknown" produces a false warning on every answer.
+    fields = ("rent_price", "deposit", "area_m2")
     return [field for field in fields if room.get(field) is None]

@@ -24,10 +24,23 @@ import time
 import uuid
 from typing import Any, Callable, Awaitable
 
+from .comparison import best_room_from_comparison, comparison_reason
+from .formatters import (
+    AMENITY_LABELS,
+    cost_item_label,
+    format_vnd,
+    room_feature_facts,
+    verified_amenity_labels,
+)
 from .intent import parse_intent_and_constraint_patch, parse_intent_async
 from .repository import RoomRepository, create_room_repository
 from .retrieval import RoomSemanticIndex
-from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, public_session_state, unknown_room_fields
+from .schemas import (
+    MAX_READ_TOOL_CALLS_PER_TURN,
+    RECENT_HISTORY_TURNS,
+    public_session_state,
+    unknown_room_fields,
+)
 from .session_store import (
     SessionStore,
     apply_operations,
@@ -61,6 +74,16 @@ _semantic_index: RoomSemanticIndex | None = None
 _init_lock = threading.Lock()
 _tool_registry = ReadOnlyToolRegistry()
 _logger = logging.getLogger(__name__)
+_best_room_from_comparison = best_room_from_comparison
+
+
+def _build_semantic_index() -> RoomSemanticIndex | None:
+    try:
+        from .qdrant_index import QdrantRoomSemanticIndex
+
+        return QdrantRoomSemanticIndex()
+    except Exception:
+        return None
 
 
 async def startup(
@@ -78,49 +101,44 @@ async def startup(
     except Exception as exc:
         _logger.warning("room_assistant_config_validation_failed %s", exc)
     with _init_lock:
-        _session_store = session_store or _session_store or create_session_store()
-        _room_repository = repository or _room_repository or create_room_repository()
+        if session_store is not None:
+            _session_store = session_store
+        elif _session_store is None:
+            _session_store = create_session_store()
+
+        if repository is not None:
+            _room_repository = repository
+        elif _room_repository is None:
+            _room_repository = create_room_repository()
+
         if semantic_index is not None:
             _semantic_index = semantic_index
         elif _semantic_index is None:
-            try:
-                from .qdrant_index import QdrantRoomSemanticIndex
-                _semantic_index = QdrantRoomSemanticIndex()
-            except Exception:
-                _semantic_index = None
+            _semantic_index = _build_semantic_index()
 
 
 def _get_session_store() -> SessionStore:
     global _session_store
-    if _session_store is None:
-        with _init_lock:
-            if _session_store is None:
-                _session_store = create_session_store()
-    return _session_store
+    with _init_lock:
+        if _session_store is None:
+            _session_store = create_session_store()
+        return _session_store
 
 
 def _get_room_repository() -> RoomRepository:
     global _room_repository
-    if _room_repository is None:
-        with _init_lock:
-            if _room_repository is None:
-                _room_repository = create_room_repository()
-    return _room_repository
+    with _init_lock:
+        if _room_repository is None:
+            _room_repository = create_room_repository()
+        return _room_repository
 
 
 def _get_semantic_index() -> RoomSemanticIndex | None:
     global _semantic_index
-    if _semantic_index is not None:
-        return _semantic_index
     with _init_lock:
-        if _semantic_index is not None:
-            return _semantic_index
-        try:
-            from .qdrant_index import QdrantRoomSemanticIndex
-            _semantic_index = QdrantRoomSemanticIndex()
-        except Exception:
-            _semantic_index = None
-    return _semantic_index
+        if _semantic_index is None:
+            _semantic_index = _build_semantic_index()
+        return _semantic_index
 
 
 @observe(name="room_assistant_turn", capture_input=False, capture_output=False)
@@ -136,7 +154,7 @@ async def run_room_assistant(
     """Chạy một lượt hội thoại của người dùng."""
     started = time.time()
     question = str(question or "").strip()
-    history = (history or [])[-8:]
+    history = (history or [])[-RECENT_HISTORY_TURNS:]
     session_id = session_id or str(uuid.uuid4())
     question_hash = _question_hash(question)
     _update_langfuse_turn_span(
@@ -452,10 +470,10 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
                 room.get("district") or "chưa rõ khu vực",
                 f"Diện tích: {room.get('area_m2') or '?'} m²",
             ]
-            amenities = _verified_amenity_labels(room, constraints)
+            amenities = verified_amenity_labels(room, constraints)
             if amenities:
                 details.append(f"Tiện ích xác minh: {', '.join(amenities)}")
-            feature_facts = _room_feature_facts(room)
+            feature_facts = room_feature_facts(room)
             if feature_facts:
                 details.append(f"Thông tin phòng: {', '.join(feature_facts[:8])}")
             if room.get("available") is not None:
@@ -551,7 +569,7 @@ def _compose_answer_template(
             f"**{room.get('title')}** (#{room.get('room_id')}) — giá {format_vnd(room.get('rent_price'))}/tháng.",
             f"Khu vực: {room.get('address') or room.get('district') or 'chưa rõ'}.",
         ]
-        feature_facts = _room_feature_facts(room)
+        feature_facts = room_feature_facts(room)
         if feature_facts:
             parts.append(f"Tiện ích và thông tin phòng đã xác minh: {', '.join(feature_facts)}.")
         if unknown:
@@ -565,7 +583,7 @@ def _compose_answer_template(
         if estimate.get("rental_months"):
             lines.append(f"- Thời gian thuê: {estimate['rental_months']} tháng")
             for item in estimate.get("period_items", []):
-                lines.append(f"- {_cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
+                lines.append(f"- {cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
             if estimate.get("recurring_fees_for_period"):
                 lines.append(f"- Phí cố định {estimate['rental_months']} tháng: {format_vnd(estimate.get('recurring_fees_for_period'))}")
             lines.append(f"\n**Tổng tạm tính {estimate['rental_months']} tháng:** {format_vnd(estimate.get('total_period_cost'))}")
@@ -573,13 +591,13 @@ def _compose_answer_template(
             for item in estimate.get("items", []):
                 if item.get("amount") == 0:
                     continue
-                lines.append(f"- {_cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
+                lines.append(f"- {cost_item_label(item['name'])}: {format_vnd(item.get('amount'))}")
             lines.append(f"\n**Tổng tạm tính ban đầu:** {format_vnd(estimate.get('total_initial_cost'))}")
         if estimate.get("unknown"):
             lines.append(f"_Chưa có dữ liệu: {', '.join(estimate['unknown'])}._")
         if estimate.get("not_calculated"):
             details = [
-                f"{_cost_item_label('fee_' + str(item.get('name', '')).removeprefix('fees.'))}: {item.get('value')}"
+                f"{cost_item_label('fee_' + str(item.get('name', '')).removeprefix('fees.'))}: {item.get('value')}"
                 for item in estimate["not_calculated"]
             ]
             lines.append(f"_Có dữ liệu nhưng chưa tính vào tổng: {', '.join(details)}._")
@@ -598,10 +616,10 @@ def _compose_answer_template(
                 f"- **#{row.get('room_id')}**: {format_vnd(row.get('rent_price'))}/tháng, "
                 f"{row.get('area_m2') or 'chưa rõ'} m², {row.get('district') or 'chưa rõ khu vực'}."
             )
-        best = _best_room_from_comparison(rows, grounding.get("constraints", {}), question)
+        best = best_room_from_comparison(rows, grounding.get("constraints", {}), question)
         if best:
             area = f", diện tích {best.get('area_m2')} m²" if best.get("area_m2") else ""
-            reason = _comparison_reason(best, question)
+            reason = comparison_reason(best, question)
             lines.append(
                 f"\n**Gợi ý phù hợp nhất:** #{best.get('room_id')} "
                 f"với giá {format_vnd(best.get('rent_price'))}/tháng{area}{reason}."
@@ -631,28 +649,10 @@ async def _compose_answer_async(
     stream_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     intent = parsed["intent"]
-    if intent in {
-        "REQUEST_ACTION",
-        "CALCULATE_COST",
-        "COMPARE_ROOMS",
-    } or tool_results.get("error"):
-        answer = _compose_answer_template(parsed, grounding, tool_results, question)
-        if stream_callback is not None:
-            await _stream_text_chunks(answer, stream_callback)
-        return answer
-    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
-        answer = _compose_answer_template(parsed, grounding, tool_results, question)
-        if stream_callback is not None:
-            await _stream_text_chunks(answer, stream_callback)
-        return answer
-    if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and grounding.get("rooms"):
-        answer = _compose_answer_template(parsed, grounding, tool_results, question)
-        if stream_callback is not None:
-            await _stream_text_chunks(answer, stream_callback)
-        return answer
     rooms = grounding.get("rooms", [])
     faq = tool_results.get("faq_results")
-    if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ", "SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+
+    if _should_use_template_response(intent, question, grounding, tool_results, faq):
         answer = _compose_answer_template(parsed, grounding, tool_results, question)
         if stream_callback is not None:
             await _stream_text_chunks(answer, stream_callback)
@@ -700,20 +700,46 @@ async def _stream_text_chunks(
     words_per_chunk: int = 4,
 ) -> None:
     """Emit deterministic answers in small chunks so SSE UX matches LLM replies."""
-    words = [word for word in str(text or "").split() if word]
-    if not words:
+    import re
+
+    pieces = re.findall(r"\S+\s*|\n+", str(text or ""))
+    if not pieces:
         return
 
-    chunk_words: list[str] = []
-    for word in words:
-        chunk_words.append(word)
-        if len(chunk_words) >= words_per_chunk:
-            await stream_callback(" ".join(chunk_words) + " ")
-            chunk_words = []
+    chunk_pieces: list[str] = []
+    visible_words = 0
+    for piece in pieces:
+        chunk_pieces.append(piece)
+        if piece.strip() and "\n" not in piece:
+            visible_words += 1
+        if visible_words >= words_per_chunk:
+            await stream_callback("".join(chunk_pieces))
+            chunk_pieces = []
+            visible_words = 0
             await asyncio.sleep(0.02)
 
-    if chunk_words:
-        await stream_callback(" ".join(chunk_words))
+    if chunk_pieces:
+        await stream_callback("".join(chunk_pieces))
+
+
+def _should_use_template_response(
+    intent: str,
+    question: str,
+    grounding: dict[str, Any],
+    tool_results: dict[str, Any],
+    faq: list[dict[str, Any]] | None,
+) -> bool:
+    if intent in {"REQUEST_ACTION", "CALCULATE_COST", "COMPARE_ROOMS"}:
+        return True
+    if tool_results.get("error"):
+        return True
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
+        return True
+    if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and grounding.get("rooms"):
+        return True
+    if grounding.get("rooms") or faq:
+        return False
+    return intent not in {"GENERAL_HELP", "REQUEST_FAQ", "SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}
 
 
 def _extract_rooms(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
@@ -729,104 +755,6 @@ def _current_room_from_results(intent: str, rooms: list[dict[str, Any]]) -> str 
 
 def _unknown_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
-
-
-AMENITY_LABELS: dict[str, str] = {
-    "air_conditioner": "Máy lạnh",
-    "balcony": "Ban công",
-    "window": "Cửa sổ",
-    "washing_machine": "Máy giặt",
-    "private_bathroom": "WC riêng",
-    "mezzanine": "Gác",
-    "kitchen": "Bếp",
-    "refrigerator": "Tủ lạnh",
-    "hot_water": "Nước nóng",
-    "bed": "Giường",
-    "mattress": "Nệm",
-    "wardrobe": "Tủ quần áo",
-    "elevator": "Thang máy",
-    "wifi": "Wifi",
-    "ev_charging": "Sạc xe điện",
-    "free_hours": "Giờ tự do",
-    "pets_allowed": "Cho nuôi thú cưng",
-}
-
-FEATURE_FACT_LABELS: tuple[str, ...] = (
-    "Máy lạnh",
-    "Ban công",
-    "Cửa sổ",
-    "Wifi",
-    "Gác",
-    "Toilet",
-    "Giờ giấc",
-    "Máy giặt",
-    "Thú cưng",
-    "Để xe",
-    "Thang máy",
-    "Kệ bếp",
-    "Nước nóng",
-    "Tủ lạnh",
-    "Giường",
-    "Nệm",
-    "Tủ quần áo",
-)
-
-
-def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) -> list[str]:
-    room_amenities = {str(item).strip().lower() for item in (room.get("amenities") or [])}
-    required = [str(item).strip().lower() for item in (constraints.get("amenities_required") or [])]
-    preferred = [str(item).strip().lower() for item in (constraints.get("amenities_preferred") or [])]
-
-    labels: list[str] = []
-    for amenity in required + preferred:
-        if amenity in room_amenities or _room_text_has_amenity(room, amenity):
-            label = AMENITY_LABELS.get(amenity, amenity)
-            if label not in labels:
-                labels.append(label)
-
-    if not labels:
-        for amenity in sorted(room_amenities):
-            label = AMENITY_LABELS.get(amenity)
-            if label and label not in labels:
-                labels.append(label)
-            if len(labels) >= 4:
-                break
-    return labels[:4]
-
-
-def _room_feature_facts(room: dict[str, Any]) -> list[str]:
-    facts: list[str] = []
-    text = str(room.get("embedding_text") or "")
-    for label in FEATURE_FACT_LABELS:
-        value = _extract_feature_status(text, label)
-        if value:
-            facts.append(f"{label}: {value}")
-    if facts:
-        return facts
-    return [
-        AMENITY_LABELS.get(str(item), str(item))
-        for item in (room.get("amenities") or [])
-        if item
-    ]
-
-
-def _extract_feature_status(text: str, label: str) -> str | None:
-    if not text:
-        return None
-    import re
-    match = re.search(rf"(?im)^\s*-\s*{re.escape(label)}\s*:\s*([^\n\r]+)", text)
-    return match.group(1).strip() if match else None
-
-
-def _room_text_has_amenity(room: dict[str, Any], amenity: str) -> bool:
-    label = AMENITY_LABELS.get(amenity)
-    if not label:
-        return False
-    text = str(room.get("embedding_text") or room.get("description") or "")
-    if not text:
-        return False
-    import re
-    return bool(re.search(rf"{re.escape(label)}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)", text, re.IGNORECASE))
 
 
 def _asks_about_amenities(question: str) -> bool:
@@ -872,93 +800,6 @@ def _preferred_source_score(item: dict[str, Any]) -> float:
 
 def _first_or_none(values: list[Any]) -> Any | None:
     return values[0] if values else None
-
-
-def _comparison_text(question: str) -> str:
-    import unicodedata
-
-    return "".join(
-        ch for ch in unicodedata.normalize("NFD", str(question or "").lower())
-        if unicodedata.category(ch) != "Mn"
-    ).replace("đ", "d")
-
-
-def _location_quality_score(row: dict[str, Any]) -> float:
-    import re
-
-    score = 0.0
-    if row.get("district"):
-        score += 1.0
-    if row.get("ward"):
-        score += 1.0
-    if row.get("address"):
-        score += 1.0
-    nearby_text = str(row.get("tien_ich_xq") or "")
-    nearby_parts = [
-        part.strip()
-        for part in re.split(r"[\n,;/|-]+", nearby_text)
-        if part and part.strip()
-    ]
-    score += min(len(nearby_parts), 4)
-    score += min(float(row.get("amenities_count") or 0), 4.0) * 0.25
-    if row.get("available"):
-        score += 0.5
-    return score
-
-
-def _comparison_reason(row: dict[str, Any], question: str) -> str:
-    normalized = _comparison_text(question)
-    if "khu vuc tot hon" in normalized:
-        return ", khu vực có nhiều thông tin địa chỉ và tiện ích xung quanh hơn"
-    if any(phrase in normalized for phrase in ("rong hon", "lon hon", "dien tich lon hon")):
-        return ", phù hợp nếu bạn ưu tiên diện tích rộng hơn"
-    if any(phrase in normalized for phrase in ("re hon", "gia tot hon", "tiet kiem hon")):
-        return ", phù hợp nếu bạn ưu tiên mức giá tiết kiệm hơn"
-    return ""
-
-
-def _best_room_from_comparison(
-    rows: list[dict[str, Any]],
-    constraints: dict[str, Any],
-    question: str = "",
-) -> dict[str, Any] | None:
-    if not rows:
-        return None
-    budget = constraints.get("budget") or {}
-    max_price = budget.get("max")
-    min_price = budget.get("min")
-    occupants = constraints.get("occupants")
-    normalized_question = _comparison_text(question)
-    wants_location = "khu vuc tot hon" in normalized_question
-    wants_cheaper = any(phrase in normalized_question for phrase in ("re hon", "gia tot hon", "tiet kiem hon"))
-    wants_larger = any(phrase in normalized_question for phrase in ("rong hon", "lon hon", "dien tich lon hon"))
-    wants_fit_people = "phu hop hon" in normalized_question and occupants
-
-    def score(row: dict[str, Any]) -> tuple[float, ...]:
-        rent = row.get("rent_price")
-        area = row.get("area_m2") or 0
-        location_score = _location_quality_score(row)
-        available = 1.0 if row.get("available") else 0.0
-        in_budget = 1
-        if rent is not None:
-            if max_price is not None and rent > max_price:
-                in_budget = 0
-            if min_price is not None and rent < min_price:
-                in_budget = 0
-        cheaper = -(float(rent) if rent is not None else float("inf"))
-        if wants_location:
-            return (location_score, available, float(in_budget), float(area), cheaper)
-        if wants_larger or (constraints.get("area") or {}).get("preference") == "larger":
-            return (float(in_budget), float(area), available, location_score, cheaper)
-        if wants_cheaper:
-            return (float(in_budget), cheaper, available, location_score, float(area))
-        if wants_fit_people:
-            min_area = max(int(occupants or 1) * 8, 16)
-            occupant_fit = 1.0 if area >= min_area else 0.0
-            return (occupant_fit, float(in_budget), float(area), available, cheaper)
-        return (float(in_budget), available, location_score, float(area), cheaper)
-
-    return max(rows, key=score)
 
 
 def _extract_rental_months(question: str) -> int | None:
@@ -1116,25 +957,3 @@ def format_vnd(value: Any) -> str:
         return f"{int(value):,} VND".replace(",", ".")
     except Exception:
         return str(value)
-
-
-def _cost_item_label(name: str) -> str:
-    labels = {
-        "rent_first_month": "Tiền thuê tháng đầu",
-        "deposit": "Tiền cọc",
-        "fee_electricity": "Tiền điện",
-        "fee_water": "Tiền nước",
-        "fee_management": "Phí quản lý",
-        "fee_parking": "Phí gửi xe",
-        "fee_wifi": "Wifi",
-        "fee_washing_machine": "Máy giặt",
-    }
-    if name.startswith("rent_") and name.endswith("_months"):
-        parts = name.split("_")
-        if len(parts) >= 2:
-            return f"Tiền thuê {parts[1]} tháng"
-    if name in labels:
-        return labels[name]
-    if name.startswith("fee_"):
-        return "Phí " + name.removeprefix("fee_").replace("_", " ")
-    return name

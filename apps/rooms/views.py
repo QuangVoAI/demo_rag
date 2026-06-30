@@ -498,9 +498,16 @@ def room_detail(request, room_id: str):
         raise Http404("Không tìm thấy phòng")
 
     rooms = _load_rooms()
+    chat_identity = _session_chat_identity(request) or {}
+    booking_prefill = {
+        "name": chat_identity.get("name", "") if chat_identity.get("role") == "customer" else "",
+        "phone": chat_identity.get("phone", "") if chat_identity.get("role") == "customer" else "",
+    }
     context = {
         "room": room,
         "related_rooms": [item for item in rooms if item["id"] != room["id"]][:3],
+        "booking_prefill": booking_prefill,
+        "booking_hint_active": str(request.GET.get("booking_hint", "")).strip() == "1",
     }
     return render(request, "rooms/room_detail.html", context)
 

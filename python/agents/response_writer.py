@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from agents.llm_client import groq_chat_complete, GROQ_MODEL_SMART, GROQ_MODEL_FAST
 from config import ANSWER_MAX_TOKENS
+from room_assistant.schemas import RECENT_HISTORY_TURNS
 
 # ---------------------------------------------------------------------------
 # System prompts theo từng mood
@@ -47,7 +48,7 @@ async def write_response(
     Args:
         question        : Câu hỏi hiện tại của người dùng.
         verified_context: Dữ liệu room / FAQ đã được grounding.
-        history         : Lịch sử hội thoại gần nhất (tối đa 6 lượt).
+        history         : Lịch sử hội thoại gần nhất.
         mood            : Cảm xúc người dùng (frustrated/urgent/normal).
 
     Returns:
@@ -58,7 +59,7 @@ async def write_response(
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
     # Thêm lịch sử hội thoại gần nhất
-    for turn in (history or [])[-6:]:
+    for turn in (history or [])[-RECENT_HISTORY_TURNS:]:
         role = turn.get("role", "user")
         if role in {"user", "assistant"}:
             messages.append({"role": role, "content": str(turn.get("content", ""))[:500]})

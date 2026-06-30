@@ -16,6 +16,7 @@ from typing import Awaitable, Callable, Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from room_assistant.schemas import RECENT_HISTORY_TURNS
 from room_assistant.workflow import run_room_assistant
 
 
@@ -32,7 +33,7 @@ async def run_streaming(
     """
     return await run_room_assistant(
         question=question,
-        history=(history or [])[-8:],
+        history=(history or [])[-RECENT_HISTORY_TURNS:],
         session_id=session_id,
         stream_callback=stream_callback,
     )
