@@ -796,7 +796,12 @@ def _compose_answer_template(
         if not rooms:
             return ASK_ROOM_MISSING_ID
         room = rooms[0]
-        insufficient = _verified_data_insufficient_message(question, room)
+        insufficient = _verified_data_insufficient_message(
+            question,
+            room,
+            intent=intent,
+            constraints=constraints,
+        )
         if insufficient:
             return insufficient
         unknown = _unknown_fields(room)
@@ -980,6 +985,16 @@ async def _compose_answer_async(
         )
         return _finalize_composed_answer(answer, False, "", verification)
 
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and rooms:
+        insufficient = _verified_data_insufficient_message(
+            question,
+            rooms[0],
+            intent=intent,
+            constraints=grounding.get("constraints"),
+        )
+        if insufficient:
+            return _finalize_composed_answer(insufficient, False, "", verification)
+
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
         answer = _template_answer()
         abstain, reason = _evaluate_abstain(
@@ -1052,6 +1067,15 @@ async def _compose_answer_async(
         abstain, reason = _evaluate_abstain(
             question, intent, grounding, tool_results, answer, from_template=True,
         )
+    if abstain and reason == "insufficient_verified_data" and rooms:
+        specific = _verified_data_insufficient_message(
+            question,
+            rooms[0],
+            intent=intent,
+            constraints=grounding.get("constraints"),
+        )
+        if specific:
+            return _finalize_composed_answer(specific, False, "", verification)
     return _finalize_composed_answer(answer, abstain, reason, verification)
 
 
@@ -1106,26 +1130,28 @@ def _unknown_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
 
 
-def _verified_data_insufficient_message(question: str, room: dict[str, Any]) -> str | None:
-    from room_assistant.tools import SufficiencyStatus, check_sufficiency, classify_sensitive_question
+def _verified_data_insufficient_message(
+    question: str,
+    room: dict[str, Any],
+    *,
+    intent: str = "",
+    constraints: dict[str, Any] | None = None,
+) -> str | None:
+    from room_assistant.tools import (
+        SufficiencyStatus,
+        evaluate_room_data_sufficiency,
+        format_insufficient_field_labels,
+    )
 
-    answer_type = classify_sensitive_question(question)
-    if not answer_type:
+    status, missing = evaluate_room_data_sufficiency(
+        question,
+        room,
+        intent=intent,
+        constraints=constraints,
+    )
+    if status != SufficiencyStatus.INSUFFICIENT or not missing:
         return None
-    status, missing = check_sufficiency(room, answer_type)
-    if status != SufficiencyStatus.INSUFFICIENT:
-        return None
-    field_labels = {
-        "monthly_rent": "giá thuê",
-        "deposit": "tiền cọc",
-        "hold_days": "thời gian giữ cọc",
-        "status": "tình trạng còn phòng",
-        "pets_policy": "quy định thú cưng",
-        "utilities": "phí điện/nước/wifi",
-        "location": "địa chỉ",
-    }
-    labels = ", ".join(field_labels.get(item, item) for item in sorted(missing))
-    return INSUFFICIENT_VERIFIED_DATA.format(fields=labels)
+    return INSUFFICIENT_VERIFIED_DATA.format(fields=format_insufficient_field_labels(missing))
 
 
 def _verified_amenity_labels(room: dict[str, Any], constraints: dict[str, Any]) -> list[str]:

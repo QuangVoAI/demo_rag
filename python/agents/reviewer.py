@@ -190,6 +190,19 @@ def should_abstain(
         return False, ""
 
     rooms = grounding.get("rooms") or []
+    constraints = grounding.get("constraints") or {}
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and rooms:
+        from room_assistant.tools import SufficiencyStatus, evaluate_room_data_sufficiency
+
+        status, _ = evaluate_room_data_sufficiency(
+            question,
+            rooms[0],
+            intent=intent,
+            constraints=constraints,
+        )
+        if status == SufficiencyStatus.INSUFFICIENT:
+            return True, "insufficient_verified_data"
+
     estimate = tool_results.get("cost_estimate") or {}
     q_lower = (question or "").lower()
     factual_intents = {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "COMPARE_ROOMS"}

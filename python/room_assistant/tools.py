@@ -489,23 +489,99 @@ REQUIRED_FIELDS = {
     "utilities_query": {"utilities"},
 }
 
-_SENSITIVE_QUESTION_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("deposit_query", ("coc", "cọc", "dat coc", "đặt cọc")),
-    ("availability_query", ("con phong", "còn phòng", "phong trong", "phòng trống", "het phong", "hết phòng")),
-    ("pets_query", ("thu cung", "thú cưng", "nuoi meo", "nuôi mèo", "nuoi cho", "nuôi chó", "pet")),
-    ("utilities_query", ("dien", "điện", "nuoc", "nước", "phi ", "phí ", "wifi", "giu xe", "giữ xe", "gui xe", "gửi xe")),
-    ("price_query", ("gia", "giá", "bao nhieu", "bao nhiêu")),
+_SENSITIVE_KEYWORD_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("deposit_query", ("tien coc", "tiền cọc", "dat coc", "đặt cọc", "tien dat coc", "tiền đặt cọc")),
+    (
+        "availability_query",
+        ("con phong", "còn phòng", "phong trong", "phòng trống", "het phong", "hết phòng", "con trong khong"),
+    ),
+    (
+        "pets_query",
+        ("thu cung", "thú cưng", "nuoi meo", "nuôi mèo", "nuoi cho", "nuôi chó", "cho nuoi", "cho nuôi", "pet"),
+    ),
+    (
+        "utilities_query",
+        (
+            "tien dien", "tiền điện", "gia dien", "giá điện", "phi dien", "phí điện",
+            "tien nuoc", "tiền nước", "gia nuoc", "giá nước", "phi nuoc", "phí nước",
+            "phi wifi", "phí wifi", "phi quan ly", "phí quản lý",
+            "phi gui xe", "phí gửi xe", "phi giu xe", "phí giữ xe", "gia gui xe", "giá gửi xe",
+        ),
+    ),
+)
+
+_ROOM_PRICE_KEYWORD_PATTERNS: tuple[str, ...] = (
+    "gia bao nhieu", "giá bao nhiêu", "gia phong", "giá phòng",
+    "bao nhieu tien", "bao nhiêu tiền", "gia thue", "giá thuê", "gia thang", "giá tháng",
 )
 
 
-def classify_sensitive_question(question: str) -> str | None:
+def _normalize_question_text(question: str) -> str:
     import unicodedata
 
     text = unicodedata.normalize("NFD", (question or "").lower())
-    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
-    for answer_type, tokens in _SENSITIVE_QUESTION_PATTERNS:
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
+
+
+def _keyword_sensitive_types(
+    question: str,
+    *,
+    intent: str = "",
+    has_room_context: bool = False,
+) -> set[str]:
+    text = _normalize_question_text(question)
+    types: set[str] = set()
+    for answer_type, tokens in _SENSITIVE_KEYWORD_PATTERNS:
         if any(token in text for token in tokens):
-            return answer_type
+            types.add(answer_type)
+    if has_room_context and intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST"}:
+        if any(token in text for token in _ROOM_PRICE_KEYWORD_PATTERNS):
+            types.add("price_query")
+        if any(token in text for token in ("coc", "dat coc", "tien coc", "tien dat coc")):
+            types.add("deposit_query")
+    return types
+
+
+def _question_mentions_pets(question: str) -> bool:
+    return "pets_query" in _keyword_sensitive_types(question)
+
+
+def resolve_sensitive_answer_types(
+    question: str,
+    *,
+    intent: str = "",
+    constraints: dict[str, Any] | None = None,
+    has_room_context: bool = False,
+) -> set[str]:
+    """Kết hợp slot đã parse + keyword (chỉ khi có ngữ cảnh phòng cho giá/phí)."""
+    constraints = constraints or {}
+    types = _keyword_sensitive_types(
+        question,
+        intent=intent,
+        has_room_context=has_room_context,
+    )
+
+    if constraints.get("pets_required") and _question_mentions_pets(question):
+        types.add("pets_query")
+
+    amenities_required = {str(item).strip().lower() for item in (constraints.get("amenities_required") or [])}
+    if "pets_allowed" in amenities_required and _question_mentions_pets(question):
+        types.add("pets_query")
+
+    if intent == "CALCULATE_COST":
+        types.add("deposit_query")
+        types.add("price_query")
+
+    return types
+
+
+def classify_sensitive_question(question: str) -> str | None:
+    """Giữ API cũ: trả về một loại đầu tiên (ưu tiên deposit → pets → utilities → price)."""
+    priority = ("deposit_query", "pets_query", "availability_query", "utilities_query", "price_query")
+    types = resolve_sensitive_answer_types(question, has_room_context=True)
+    for item in priority:
+        if item in types:
+            return item
     return None
 
 
@@ -553,9 +629,62 @@ def check_sufficiency(room: dict[str, Any], answer_type: str) -> tuple[Sufficien
             
     if not missing:
         return SufficiencyStatus.SUFFICIENT, set()
+    if answer_type == "deposit_query" and "deposit" in missing:
+        return SufficiencyStatus.INSUFFICIENT, missing
     if "monthly_rent" in missing and answer_type in {"price_query", "room_detail"}:
         return SufficiencyStatus.INSUFFICIENT, missing
     return SufficiencyStatus.PARTIAL_SAFE, missing
+
+
+INSUFFICIENT_FIELD_LABELS: dict[str, str] = {
+    "monthly_rent": "giá thuê",
+    "deposit": "tiền cọc",
+    "hold_days": "thời gian giữ cọc",
+    "status": "tình trạng còn phòng",
+    "pets_policy": "quy định thú cưng",
+    "utilities": "phí điện/nước/wifi",
+    "location": "địa chỉ",
+}
+
+
+def evaluate_room_data_sufficiency(
+    question: str,
+    room: dict[str, Any],
+    *,
+    intent: str = "",
+    constraints: dict[str, Any] | None = None,
+) -> tuple[SufficiencyStatus, set[str]]:
+    """Đánh giá đủ dữ liệu xác minh cho mọi chủ đề nhạy cảm áp dụng được."""
+    answer_types = resolve_sensitive_answer_types(
+        question,
+        intent=intent,
+        constraints=constraints,
+        has_room_context=True,
+    )
+    if not answer_types:
+        return SufficiencyStatus.SUFFICIENT, set()
+
+    merged_missing: set[str] = set()
+    worst = SufficiencyStatus.SUFFICIENT
+    rank = {
+        SufficiencyStatus.SUFFICIENT: 0,
+        SufficiencyStatus.PARTIAL_SAFE: 1,
+        SufficiencyStatus.INSUFFICIENT: 2,
+    }
+    for answer_type in sorted(answer_types):
+        status, missing = check_sufficiency(room, answer_type)
+        merged_missing.update(missing)
+        if rank[status] > rank[worst]:
+            worst = status
+    return worst, merged_missing
+
+
+def format_insufficient_field_labels(missing: set[str]) -> str:
+    return ", ".join(
+        INSUFFICIENT_FIELD_LABELS.get(item, item)
+        for item in sorted(missing)
+    )
+
 
 MAX_TARGETED_FETCH_ATTEMPTS = 1
 

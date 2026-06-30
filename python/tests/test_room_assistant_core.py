@@ -1083,9 +1083,37 @@ class RoomAssistantCoreTests(unittest.TestCase):
             grounding,
             {},
             question="Phòng này có cho nuôi mèo không?",
+            user_mood="normal",
         )
         self.assertIn("chưa có dữ liệu xác minh", answer.lower())
         self.assertIn("thú cưng", answer.lower())
+
+    def test_narrow_keywords_do_not_flag_generic_search(self):
+        from room_assistant.tools import resolve_sensitive_answer_types
+
+        types = resolve_sensitive_answer_types(
+            "Tìm phòng quận 7",
+            intent="SEARCH_ROOM",
+            has_room_context=False,
+        )
+        self.assertNotIn("price_query", types)
+        self.assertNotIn("utilities_query", types)
+
+    def test_pets_slot_plus_question_triggers_pets_sufficiency(self):
+        from room_assistant.tools import SufficiencyStatus, evaluate_room_data_sufficiency
+
+        room = {
+            "room_id": "r1",
+            "embedding_text": "## Tiện ích\n- Wifi: Có",
+        }
+        status, missing = evaluate_room_data_sufficiency(
+            "Phòng này nuôi mèo được không?",
+            room,
+            intent="ASK_ABOUT_ROOM",
+            constraints={"pets_required": ["cat"]},
+        )
+        self.assertEqual(status, SufficiencyStatus.INSUFFICIENT)
+        self.assertIn("pets_policy", missing)
 
 
 if __name__ == "__main__":
