@@ -65,6 +65,7 @@ from .prompts import (
     COMPARE_MISSING_ROOMS,
     COMPARE_NEED_ROOM_IDS,
     COMPARE_NOT_COMPARED,
+    COMPARE_ORDINAL_UNRESOLVED,
     COMPARE_OPENING,
     COMPARE_ROW,
     COMPARE_STATUS_AVAILABLE,
@@ -90,7 +91,7 @@ from .prompts import (
     LLM_CONTEXT_COST_TOTAL_INITIAL,
     LLM_CONTEXT_COST_TOTAL_PERIOD,
     LLM_CONTEXT_COST_UNKNOWN,
-    LLM_CONTEXT_EMPTY,
+    ORDINAL_OUT_OF_RANGE,
     LLM_CONTEXT_FAQ_HEADER,
     LLM_CONTEXT_FAQ_LINE,
     LLM_CONTEXT_ROOM_FEATURES,
@@ -115,6 +116,7 @@ from .prompts import (
     SEARCH_NO_RESULT_BUDGET_URGENT_PREFIX,
     SEARCH_NO_RESULT_DEFAULT,
     SEARCH_NO_RESULT_FRUSTRATED,
+    SEARCH_NO_RESULT_SALES_HANDOFF,
     SEARCH_NO_RESULT_URGENT,
     SEARCH_RELAXED_OPENING,
     SEARCH_ROOM_LINE,
@@ -303,7 +305,10 @@ async def run_room_assistant(
     if tool_results.get("relaxed_search"):
         rooms = [dict(room, relaxed_search=True) for room in rooms]
     result_ids = [item["room_id"] for item in rooms if item.get("room_id")]
-    current_room_id = parsed.get("current_room_id") or _current_room_from_results(parsed["intent"], rooms)
+    if parsed.get("ordinal_out_of_range"):
+        current_room_id = None
+    else:
+        current_room_id = parsed.get("current_room_id") or _current_room_from_results(parsed["intent"], rooms)
 
     next_state = update_turn_state(
         merged_state,
@@ -392,25 +397,27 @@ def _execute_workflow(
     """Route đến tool phù hợp theo intent đã phân loại."""
     intent = parsed["intent"]
     constraints = state.get("constraints", {})
-    current_room_id = (
-        parsed.get("current_room_id")
-        or state.get("current_room_id")
-        or _first_or_none(state.get("last_result_ids", []))
-    )
-
-    # 1. Direct Fast Path (disambiguate room_id vs room_code)
-    # Check if exact room reference is found
-    exact_ref = parsed.get("exact_room_reference")
-    if exact_ref and getattr(exact_ref, "room_id", None):
-        current_room_id = exact_ref.room_id
-        detail = _tool_registry.execute(
-            "retrieve_room_context", {"room_id": current_room_id}, context,
+    if parsed.get("ordinal_out_of_range"):
+        current_room_id = None
+    else:
+        current_room_id = (
+            parsed.get("current_room_id")
+            or state.get("current_room_id")
+            or _first_or_none(state.get("last_result_ids", []))
         )
-        return {"room_context": detail, "rooms": [detail["room"]] if detail.get("room") else [], "fast_path": True}
-    elif exact_ref and getattr(exact_ref, "room_code", None):
-        # Ambiguous room_code -> need simple search for exact room
-        constraints["room_code"] = exact_ref.room_code
-        intent = "SEARCH_ROOM"
+
+    # 1. Direct Fast Path (disambiguate room_id vs room_code) — chỉ cho hỏi chi tiết, không chặn tính phí/so sánh.
+    exact_ref = parsed.get("exact_reference") or parsed.get("exact_room_reference")
+    if exact_ref and intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
+        room_id = exact_ref.get("room_id") if isinstance(exact_ref, dict) else getattr(exact_ref, "room_id", None)
+        room_code = exact_ref.get("room_code") if isinstance(exact_ref, dict) else getattr(exact_ref, "room_code", None)
+        lookup_ref = room_id or room_code
+        if lookup_ref:
+            detail = _tool_registry.execute(
+                "retrieve_room_context", {"room_id": lookup_ref}, context,
+            )
+            if detail.get("room"):
+                return {"room_context": detail, "rooms": [detail["room"]], "fast_path": True}
 
     # 2. Simple Search vs Complex Planner routing
     # If the user asks a simple question or planner is disabled
@@ -465,10 +472,12 @@ def _execute_workflow(
                 return {"rooms": [], "alternative_rooms": alt_rooms, "relaxed_fields": all_dropped}
 
         if has_budget or has_district:
-            return {"rooms": [], "budget_or_district_miss": True}
-        return {"rooms": []}
+            return {"rooms": [], "budget_or_district_miss": True, "public_inventory_miss": True}
+        return {"rooms": [], "public_inventory_miss": True}
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
+        if parsed.get("ordinal_out_of_range"):
+            return {"rooms": [], "ordinal_out_of_range": True}
         detail = _tool_registry.execute(
             "retrieve_room_context", {"room_id": current_room_id}, context,
         )
@@ -496,6 +505,8 @@ def _execute_workflow(
         return {"rooms": [room] if room else [], "cost_estimate": estimate}
 
     if intent == "COMPARE_ROOMS":
+        if parsed.get("compare_unresolved"):
+            return {"comparison": {"rows": [], "compare_unresolved": True}, "rooms": []}
         ids = parsed.get("referenced_room_ids") or []
         selected_ids = state.get("selected_room_ids") or []
         last_result_ids = state.get("last_result_ids") or []
@@ -696,7 +707,14 @@ def _build_llm_context(grounding: dict[str, Any], tool_results: dict[str, Any]) 
 def _search_no_result_message(
     user_mood: str = "normal",
     constraints: dict[str, Any] | None = None,
+    *,
+    sales_handoff: bool = False,
 ) -> str:
+    if sales_handoff:
+        return SEARCH_NO_RESULT_SALES_HANDOFF.get(
+            user_mood,
+            SEARCH_NO_RESULT_SALES_HANDOFF["normal"],
+        )
     budget = (constraints or {}).get("budget") or {}
     districts = ((constraints or {}).get("location") or {}).get("districts") or []
     max_price = budget.get("max")
@@ -740,6 +758,10 @@ def _compose_answer_template(
     user_mood: str = "normal",
 ) -> str:
     intent = parsed["intent"]
+    if parsed.get("ordinal_out_of_range"):
+        requested = parsed.get("ordinal_requested") or 0
+        available = int(parsed.get("ordinal_available_count") or 0)
+        return ORDINAL_OUT_OF_RANGE.format(requested=requested, available=available)
     if tool_results.get("error") == "tool_budget_exceeded":
         return TOOL_BUDGET_EXCEEDED_ANSWER
     if intent == "REQUEST_ACTION":
@@ -764,7 +786,14 @@ def _compose_answer_template(
                     )
                 alt_lines.append(SEARCH_ALTERNATIVE_CTA)
                 return "\n".join(alt_lines)
-            return _search_no_result_message(user_mood, constraints)
+            return _search_no_result_message(
+                user_mood,
+                constraints,
+                sales_handoff=bool(
+                    tool_results.get("public_inventory_miss")
+                    or tool_results.get("budget_or_district_miss")
+                ),
+            )
         if tool_results.get("relaxed_search"):
             lines = [
                 SEARCH_RELAXED_OPENING.format(
@@ -886,6 +915,8 @@ def _compose_answer_template(
         return "\n".join(lines)
     if intent == "COMPARE_ROOMS":
         comparison = tool_results.get("comparison") or {}
+        if comparison.get("compare_unresolved"):
+            return COMPARE_ORDINAL_UNRESOLVED
         rows = comparison.get("rows", [])
         if not rows:
             missing = comparison.get("missing_room_ids") or []
@@ -962,6 +993,10 @@ async def _compose_answer_async(
     def _template_answer() -> str:
         return _compose_answer_template(parsed, grounding, tool_results, question=question, user_mood=user_mood)
 
+    if parsed.get("ordinal_out_of_range") or parsed.get("compare_unresolved"):
+        answer = _template_answer()
+        return await _finalize_composed_answer_async(answer, False, "", verification, stream_callback)
+
     if intent in {
         "REQUEST_ACTION",
         "CALCULATE_COST",
@@ -973,7 +1008,7 @@ async def _compose_answer_async(
         abstain, reason = _evaluate_abstain(
             question, intent, grounding, tool_results, answer, from_template=True,
         )
-        return _finalize_composed_answer(answer, abstain, reason, verification)
+        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
 
     if _is_off_topic_question(question):
         answer = _compose_answer_template(
@@ -983,7 +1018,7 @@ async def _compose_answer_async(
             question=question,
             user_mood=user_mood,
         )
-        return _finalize_composed_answer(answer, False, "", verification)
+        return await _finalize_composed_answer_async(answer, False, "", verification, stream_callback)
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and rooms:
         insufficient = _verified_data_insufficient_message(
@@ -993,21 +1028,28 @@ async def _compose_answer_async(
             constraints=grounding.get("constraints"),
         )
         if insufficient:
-            return _finalize_composed_answer(insufficient, False, "", verification)
+            return await _finalize_composed_answer_async(insufficient, False, "", verification, stream_callback)
 
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
         answer = _template_answer()
         abstain, reason = _evaluate_abstain(
             question, intent, grounding, tool_results, answer, from_template=True,
         )
-        return _finalize_composed_answer(answer, abstain, reason, verification)
+        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
         answer = _template_answer()
         abstain, reason = _evaluate_abstain(
             question, intent, grounding, tool_results, answer, from_template=True,
         )
-        return _finalize_composed_answer(answer, abstain, reason, verification)
+        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
+
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_price(question) and rooms:
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
 
     faq = tool_results.get("faq_results")
     if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
@@ -1015,9 +1057,13 @@ async def _compose_answer_async(
         abstain, reason = _evaluate_abstain(
             question, intent, grounding, tool_results, answer, from_template=True,
         )
-        return _finalize_composed_answer(answer, abstain, reason, verification)
+        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
 
     verified_data = _build_llm_context(grounding, tool_results)
+    sales_handoff = bool(
+        tool_results.get("public_inventory_miss")
+        or tool_results.get("budget_or_district_miss")
+    )
     answer = ""
     try:
         from agents.response_writer import write_response, write_no_result_response
@@ -1025,7 +1071,12 @@ async def _compose_answer_async(
             constraints = grounding.get("constraints", {})
             alt_rooms = tool_results.get("alternative_rooms", [])
             answer = await write_no_result_response(
-                question, constraints, user_mood, alt_rooms, stream_callback=stream_callback,
+                question,
+                constraints,
+                user_mood,
+                alt_rooms,
+                stream_callback=stream_callback,
+                sales_handoff=sales_handoff and not alt_rooms,
             )
         else:
             answer = await write_response(
@@ -1057,7 +1108,7 @@ async def _compose_answer_async(
             }
             if not verification["approved"]:
                 abstain, reason = True, "reviewer_rejected"
-                return _finalize_composed_answer(answer, abstain, reason, verification)
+                return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
     except Exception:
         pass
 
@@ -1075,8 +1126,8 @@ async def _compose_answer_async(
             constraints=grounding.get("constraints"),
         )
         if specific:
-            return _finalize_composed_answer(specific, False, "", verification)
-    return _finalize_composed_answer(answer, abstain, reason, verification)
+            return await _finalize_composed_answer_async(specific, False, "", verification, stream_callback)
+    return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
 
 
 def _evaluate_abstain(
@@ -1098,6 +1149,14 @@ def _evaluate_abstain(
         return False, ""
 
 
+async def _maybe_stream_answer(
+    answer: str,
+    stream_callback: Callable[[str], Awaitable[None]] | None,
+) -> None:
+    if stream_callback and answer and not answer.startswith("[status:"):
+        await stream_callback(answer)
+
+
 def _finalize_composed_answer(
     answer: str,
     abstain: bool,
@@ -1113,6 +1172,18 @@ def _finalize_composed_answer(
         "abstain_reason": abstain_reason or None,
         "verification": verification,
     }
+
+
+async def _finalize_composed_answer_async(
+    answer: str,
+    abstain: bool,
+    abstain_reason: str,
+    verification: dict[str, Any],
+    stream_callback: Callable[[str], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    result = _finalize_composed_answer(answer, abstain, abstain_reason, verification)
+    await _maybe_stream_answer(result["answer"], stream_callback)
+    return result
 
 
 def _extract_rooms(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1223,6 +1294,12 @@ def _asks_about_amenities(question: str) -> bool:
             "may giat", "nuoc nong", "tu lanh",
         )
     )
+
+
+def _asks_about_price(question: str) -> bool:
+    from .tools import question_asks_price
+
+    return question_asks_price(question)
 
 
 def _asks_to_compare_result_set(question: str) -> bool:
@@ -1711,12 +1788,9 @@ def _log_turn_summary(result: dict[str, Any], question_hash: str) -> None:
 
 
 def format_vnd(value: Any) -> str:
-    if value is None:
-        return "chưa rõ"
-    try:
-        return f"{int(value):,} VND".replace(",", ".")
-    except Exception:
-        return str(value)
+    from .money import format_vnd as _format_vnd
+
+    return _format_vnd(value)
 
 
 def _cost_item_label(name: str) -> str:

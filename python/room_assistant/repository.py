@@ -19,6 +19,10 @@ def _available_status_query() -> dict[str, Any]:
     }
 
 
+def normalize_room_code(room_code: str) -> str:
+    return str(room_code or "").strip().upper().replace(".", "")
+
+
 class RoomRepository(Protocol):
     def search_by_constraints(
         self,
@@ -36,6 +40,9 @@ class RoomRepository(Protocol):
         ...
 
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
+        ...
+
+    def get_by_room_code(self, room_code: str) -> dict[str, Any] | None:
         ...
 
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
@@ -59,6 +66,9 @@ class EmptyRoomRepository:
         return []
 
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
+        return None
+
+    def get_by_room_code(self, room_code: str) -> dict[str, Any] | None:
         return None
 
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
@@ -104,6 +114,17 @@ class InMemoryRoomRepository:
         room = self._rooms.get(str(room_id))
         return dict(room) if room else None
 
+    def get_by_room_code(self, room_code: str) -> dict[str, Any] | None:
+        target = normalize_room_code(room_code)
+        if not target:
+            return None
+        for room in self._rooms.values():
+            if normalize_room_code(room.get("room_code") or "") == target:
+                return dict(room)
+            if normalize_room_code(room.get("room_id") or "") == target:
+                return dict(room)
+        return None
+
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
         found = []
         for room_id in room_ids:
@@ -148,13 +169,18 @@ class MongoRoomRepository:
 
     def search_by_constraints(self, constraints: dict[str, Any], limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         query = build_mongo_query(constraints)
+        fetch_limit = max(limit, 1)
+        if _needs_post_constraint_pass(constraints):
+            fetch_limit = min(max(fetch_limit * 4, fetch_limit), 500)
         cursor = (
             self._collection
             .find(query)
             .skip(max(offset, 0))
-            .limit(max(limit, 1))
+            .limit(fetch_limit)
         )
-        return [item for item in (normalize_room(doc) for doc in cursor) if item]
+        rooms = [item for item in (normalize_room(doc) for doc in cursor) if item]
+        rooms = [room for room in rooms if room_matches_constraints(room, constraints)]
+        return rooms[:max(limit, 1)]
 
     def search_by_metadata(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
         import re
@@ -201,6 +227,25 @@ class MongoRoomRepository:
 
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         doc = self._collection.find_one({"$or": _mongo_id_or_clauses(str(room_id))})
+        return normalize_room(doc)
+
+    def get_by_room_code(self, room_code: str) -> dict[str, Any] | None:
+        target = normalize_room_code(room_code)
+        if not target:
+            return None
+        clauses: list[dict[str, Any]] = [
+            {"room_code_norm": target},
+        ]
+        for pattern in _room_code_regex_variants(str(room_code)):
+            clauses.extend([
+                {"metadata.room_code": {"$regex": f"^{pattern}$", "$options": "i"}},
+            ])
+        doc = self._collection.find_one({
+            "$and": [
+                _available_status_query(),
+                {"$or": clauses},
+            ]
+        })
         return normalize_room(doc)
 
     def get_many_by_ids(self, room_ids: list[str]) -> list[dict[str, Any]]:
@@ -418,7 +463,41 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
         if positive_pattern:
             query["$and"].append({"embedding_text": {"$not": {"$regex": positive_pattern, "$options": "i"}}})
 
+    for category in constraints.get("categories") or []:
+        category_clauses = _category_embedding_clauses(str(category))
+        if category_clauses:
+            query["$and"].append({"$or": category_clauses})
+
+    if constraints.get("pets_required"):
+        query["$and"].append({
+            "embedding_text": {"$regex": r"Thú cưng\s*:\s*Có", "$options": "i"},
+        })
+
     return query
+
+
+def _category_embedding_clauses(category: str) -> list[dict[str, Any]]:
+    terms = CATEGORY_SEARCH_TERMS.get(str(category).strip().lower())
+    if not terms:
+        return []
+    clauses: list[dict[str, Any]] = []
+    for term in terms:
+        pattern = _accent_flexible_regex(term)
+        clauses.extend([
+            {"embedding_text": {"$regex": pattern, "$options": "i"}},
+            {"metadata.house_name": {"$regex": pattern, "$options": "i"}},
+            {"metadata.room_code": {"$regex": pattern, "$options": "i"}},
+        ])
+    return clauses
+
+
+def _needs_post_constraint_pass(constraints: dict[str, Any]) -> bool:
+    return bool(
+        constraints.get("categories")
+        or constraints.get("pets_required")
+        or constraints.get("occupants")
+        or constraints.get("vehicles")
+    )
 
 
 def _room_searchable_text(room: dict[str, Any]) -> str:

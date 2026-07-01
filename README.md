@@ -169,7 +169,7 @@ flowchart LR
     Q --> Constraints[session constraints<br/>budget, amenities, pets...]
 
     Constraints --> MongoFilter[MongoDB<br/>build_mongo_query]
-    MongoFilter --> Candidates[Ứng viên ≤ 50 phòng]
+    MongoFilter --> Candidates[Ứng viên ≤ 100 phòng]
 
     Signals --> MetaSearch[search_by_metadata]
     MetaSearch --> Candidates

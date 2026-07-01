@@ -91,6 +91,8 @@ USE_RERANKER = _env_bool("USE_RERANKER", False)
 RERANK_CANDIDATE_POOL = int(os.getenv("RERANK_CANDIDATE_POOL", "20"))
 TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "6"))
 TOP_K_RERANK = int(os.getenv("TOP_K_RERANK", "5"))
+# Số phòng ứng viên sau lọc cứng MongoDB trước khi semantic rank (~9k rows).
+RETRIEVAL_CANDIDATE_LIMIT = int(os.getenv("RETRIEVAL_CANDIDATE_LIMIT", "100"))
 # Tổng số ký tự evidence đưa vào LLM (cắt cứng để giảm token & latency).
 EVIDENCE_MAX_CHARS = int(os.getenv("EVIDENCE_MAX_CHARS", "3500"))
 # Max tokens cho mỗi lượt sinh câu trả lời.

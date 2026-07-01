@@ -1165,6 +1165,7 @@ def _build_chat_payload(
         "filters": _build_ui_filters(response_dict),
         "sources": response_dict.get("sources", []),
         "abstain": bool(response_dict.get("abstain")),
+        "intent": response_dict.get("intent"),
         "relaxed_search": any(bool(room.get("relaxed_search")) for room in (response_dict.get("rooms") or [])),
         "threads": _list_chat_threads(contact_id, role, active_conversation_id=conversation_id),
     }

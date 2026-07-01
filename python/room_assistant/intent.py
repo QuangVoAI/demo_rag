@@ -378,25 +378,9 @@ def _is_off_topic_request(normalized: str) -> bool:
 
 
 def _money_to_vnd(raw: str, unit: str | None) -> int:
-    """Chuyển chuỗi số tiền sang VND nguyên."""
-    raw = raw.strip()
-    unit_norm = _norm(unit or "")
-    separators = raw.count(".") + raw.count(",")
-    if separators > 1:
-        return int(re.sub(r"\D", "", raw))
-    normalized_raw = raw.replace(",", ".")
-    if separators == 1 and not unit_norm:
-        whole, frac = re.split(r"[\.,]", raw, maxsplit=1)
-        if len(frac) == 3 and len(whole) <= 3:
-            return int(whole + frac)
-    value = float(normalized_raw)
-    if unit_norm in {"tr", "trieu", "million", "m"}:
-        return int(value * 1_000_000)
-    if unit_norm in {"k", "nghin"}:
-        return int(value * 1_000)
-    if value < 1000:
-        return int(value * 1_000_000)
-    return int(value)
+    from .money import money_to_vnd
+
+    return money_to_vnd(raw, unit)
 
 
 def _append_unique(ops: list[dict[str, Any]], op: str, path: str, value: Any = None) -> None:
@@ -434,12 +418,45 @@ def _looks_like_room_id(value: str) -> bool:
     return any(ch.isdigit() for ch in value)
 
 
+def _looks_like_mongo_object_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-f0-9]{24}", str(value or "").lower()))
+
+
+def _looks_like_room_code(value: str) -> bool:
+    compact = str(value or "").strip().upper().replace(".", "")
+    if not compact or _looks_like_mongo_object_id(compact):
+        return False
+    return bool(re.fullmatch(r"[A-Z]{1,3}\d{2,5}", compact))
+
+
+def _build_exact_reference(referenced_ids: list[str]) -> dict[str, Any] | None:
+    if not referenced_ids:
+        return None
+    ref = referenced_ids[0]
+    if _looks_like_mongo_object_id(ref):
+        return {"room_id": ref, "confidence": 1.0}
+    if _looks_like_room_code(ref):
+        return {"room_code": ref, "confidence": 1.0}
+    return {"room_id": ref, "confidence": 0.85}
+
+
 def _normalize_room_reference(value: Any) -> str:
     return str(value or "").strip().lstrip("#").strip()
 
 
 def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
     """Trích xuất ngân sách tối đa / tối thiểu từ câu hỏi."""
+    from .money import extract_colloquial_budget_vnd
+
+    colloquial = extract_colloquial_budget_vnd(normalized)
+    if colloquial is not None:
+        _append_unique(ops, "set", "budget.max", colloquial)
+        if any(token in normalized for token in ("duoi", "dưới", "tro xuong", "trở xuống", "khong qua", "không quá")):
+            _append_unique(ops, "set", "budget.max_operator", "lt")
+        else:
+            _append_unique(ops, "set", "budget.max_operator", "lte")
+        return
+
     money = r"(\d[\d\.,]*)\s*(triệu|trieu|tr|k|nghìn|nghin|vnd|đ|d)?"
 
     range_match = re.search(
@@ -785,6 +802,10 @@ def _is_chitchat_or_closing(normalized: str) -> bool:
 
 
 def _is_room_detail_question(normalized: str, ids: list[str], current_state: dict[str, Any] | None) -> bool:
+    if re.search(r"\b(?:them|thêm|bo|bỏ|loai|loại|xoa|xóa)\s+(?:dieu kien|điều kiện)\b", normalized):
+        return False
+    if re.search(r"\b(?:tim|tìm|loc|lọc)\s+phong\b", normalized):
+        return False
     if _has_keyword(normalized, COST_FIELD_KEYWORDS):
         return False
     if not _has_keyword(normalized, DETAIL_FIELD_KEYWORDS):
@@ -797,78 +818,123 @@ def _is_room_detail_question(normalized: str, ids: list[str], current_state: dic
 def _is_result_set_compare_request(normalized: str) -> bool:
     if not re.search(r"\bso\s*sanh\b", normalized):
         return False
+    if len(_ordinal_indices_from_text(normalized)) >= 2:
+        return False
+    if re.search(r"\bphong\s+(?:so|số|thu|thứ)\s*\d", normalized):
+        return False
     return bool(
         re.search(r"\b(?:3|ba)\s*phong\b", normalized)
+        or re.search(r"\b(?:2|hai)\s*phong\b", normalized)
         or re.search(r"\b(?:cac|nhung|may)\s+phong\b", normalized)
         or re.search(r"\bphong\s+(?:nay|tren|vua|dau tien)\b", normalized)
     )
 
 
-def _selected_room_id_from_ordinal(normalized: str, current_state: dict[str, Any] | None) -> str | None:
+_ORDINAL_WORD_INDEX: dict[str, int] = {
+    "mot": 0,
+    "một": 0,
+    "nhat": 0,
+    "nhất": 0,
+    "hai": 1,
+    "ba": 2,
+    "bon": 3,
+    "bốn": 3,
+    "tu": 3,
+    "tư": 3,
+    "nam": 4,
+    "năm": 4,
+}
+
+
+def _ordinal_indices_from_text(normalized: str) -> list[int]:
+    hits: list[tuple[int, int]] = []
+    for match in re.finditer(r"\b(?:phong|phòng)\s*(?:so|số|thu|thứ|#)?\s*(\d{1,2})\b", normalized):
+        hits.append((match.start(), int(match.group(1)) - 1))
+    for match in re.finditer(
+        r"\b(?:phong|phòng)\s+(?:thu|thứ|so|số)?\s*(mot|một|nhat|nhất|hai|ba|bon|bốn|tu|tư|nam|năm)\b",
+        normalized,
+    ):
+        index = _ORDINAL_WORD_INDEX.get(match.group(1))
+        if index is not None:
+            hits.append((match.start(), index))
+    first_match = re.search(r"\b(?:phong|phòng)\s+(?:dau tien|đầu tiên)\b", normalized)
+    if first_match:
+        hits.append((first_match.start(), 0))
+    hits.sort(key=lambda item: item[0])
+    indices: list[int] = []
+    for _, index in hits:
+        if index not in indices:
+            indices.append(index)
+    return indices
+
+
+def _ordinal_request_index(normalized: str, current_state: dict[str, Any] | None) -> int | None:
     if not current_state:
         return None
     match = re.search(r"\b(?:chon|chọn|lay|lấy)\s+(?:phong|phòng)?\s*(?:so|số|#)?\s*(\d{1,2})\b", normalized)
     if not match:
         match = re.search(r"\b(?:phong|phòng)\s*(?:so|số|thu|thứ|#)\s*(\d{1,2})\b", normalized)
-    if not match:
-        match = re.search(r"\b(?:phong|phòng)\s+(?:dau tien|đầu tiên|thu nhat|thứ nhất|so mot|số một|1)\b", normalized)
-    word_index = None
-    if not match:
-        word_match = re.search(r"\b(?:phong|phòng)\s+(?:thu|thứ|so|số)?\s*(hai|ba|bon|bốn|tu|tư|nam|năm)\b", normalized)
-        if word_match:
-            word_index = {
-                "hai": 1,
-                "ba": 2,
-                "bon": 3,
-                "bốn": 3,
-                "tu": 3,
-                "tư": 3,
-                "nam": 4,
-                "năm": 4,
-            }.get(word_match.group(1))
-    if not match:
-        if word_index is None:
-            return None
-        index = word_index
-    else:
-        index = int(match.group(1)) - 1 if match.groups() and match.group(1) else 0
+    if match:
+        return int(match.group(1)) - 1
+    if re.search(r"\b(?:phong|phòng)\s+(?:dau tien|đầu tiên|thu nhat|thứ nhất|so mot|số một|1)\b", normalized):
+        return 0
+    word_match = re.search(
+        r"\b(?:phong|phòng)\s+(?:thu|thứ|so|số)?\s*(hai|ba|bon|bốn|tu|tư|nam|năm)\b",
+        normalized,
+    )
+    if word_match:
+        return _ORDINAL_WORD_INDEX.get(word_match.group(1))
+    return None
+
+
+_DETAIL_SEARCH_OP_PATHS = frozenset({
+    "amenities_required",
+    "amenities_preferred",
+    "categories",
+    "excluded_features",
+})
+
+
+def _strip_detail_question_search_ops(
+    operations: list[dict[str, Any]],
+    *,
+    intent: str,
+    normalized: str,
+    referenced_room_ids: list[str],
+    current_state: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if intent not in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
+        return operations
+    if not _is_room_detail_question(normalized, referenced_room_ids, current_state):
+        return operations
+    return [op for op in operations if op.get("path") not in _DETAIL_SEARCH_OP_PATHS]
+
+
+def _selected_room_id_from_ordinal(normalized: str, current_state: dict[str, Any] | None) -> str | None:
+    if not current_state:
+        return None
+    index = _ordinal_request_index(normalized, current_state)
+    if index is None:
+        return None
     ids = current_state.get("last_result_ids") or []
     if 0 <= index < len(ids):
         return str(ids[index])
     return None
 
 
-def _selected_room_ids_from_ordinals(normalized: str, current_state: dict[str, Any] | None) -> list[str]:
+def _selected_room_ids_from_ordinals(
+    normalized: str,
+    current_state: dict[str, Any] | None,
+) -> tuple[list[str], bool]:
     if not current_state:
-        return []
+        return [], False
     ids = current_state.get("last_result_ids") or []
     if not ids:
-        return []
+        return [], False
 
-    indices: list[int] = []
-    for match in re.finditer(r"\b(?:phong|phòng)\s*(?:so|số|thu|thứ|#)?\s*(\d{1,2})\b", normalized):
-        index = int(match.group(1)) - 1
-        if index not in indices:
-            indices.append(index)
-
-    word_map = {
-        "mot": 0,
-        "một": 0,
-        "nhat": 0,
-        "nhất": 0,
-        "hai": 1,
-        "ba": 2,
-        "bon": 3,
-        "bốn": 3,
-        "tu": 3,
-        "tư": 3,
-        "nam": 4,
-        "năm": 4,
-    }
-    for match in re.finditer(r"\b(?:phong|phòng)\s+(?:thu|thứ|so|số)?\s*(mot|một|nhat|nhất|hai|ba|bon|bốn|tu|tư|nam|năm)\b", normalized):
-        index = word_map.get(match.group(1))
-        if index is not None and index not in indices:
-            indices.append(index)
+    indices = _ordinal_indices_from_text(normalized)
+    if not indices:
+        return [], False
 
     resolved = []
     for index in indices:
@@ -876,7 +942,8 @@ def _selected_room_ids_from_ordinals(normalized: str, current_state: dict[str, A
             resolved_id = str(ids[index])
             if resolved_id not in resolved:
                 resolved.append(resolved_id)
-    return resolved
+    unresolved = len(resolved) < len(indices)
+    return resolved, unresolved
 
 
 def _selected_room_id_from_deictic(normalized: str, current_state: dict[str, Any] | None) -> str | None:
@@ -1104,7 +1171,14 @@ def _merge_router_decision(
         approved_intent = regex_candidate["intent"]
 
     operations = list(regex_parsed.get("operations", []))
-    if verifier.get("use_llm_hard_slots"):
+    regex_hard_ops = list(regex_candidate.get("hard_operations") or [])
+    if regex_hard_ops:
+        _, regex_soft_ops = _partition_operations(operations)
+        operations = regex_hard_ops + [
+            op for op in regex_soft_ops
+            if op.get("path") not in {item.get("path") for item in regex_hard_ops}
+        ]
+    elif verifier.get("use_llm_hard_slots"):
         _, regex_soft_ops = _partition_operations(operations)
         operations = list(llm_candidate.get("hard_operations", [])) + regex_soft_ops
     if verifier.get("allow_llm_soft_slots", True):
@@ -1116,36 +1190,53 @@ def _merge_router_decision(
             operations.append(item)
 
     referenced_room_ids = list(regex_parsed.get("referenced_room_ids", []) or [])
+    regex_room_ids = [
+        _normalize_room_reference(item)
+        for item in referenced_room_ids
+        if _normalize_room_reference(item)
+    ]
     approved_ids = [
         _normalize_room_reference(item)
         for item in (verifier.get("approved_room_ids") or [])
         if _normalize_room_reference(item)
     ]
-    if approved_ids:
+    if regex_room_ids and float(regex_candidate.get("confidence") or 0) >= 0.85:
+        referenced_room_ids = regex_room_ids
+    elif approved_ids:
         referenced_room_ids = approved_ids
     elif verifier.get("use_llm_hard_slots"):
         referenced_room_ids = list(llm_candidate.get("referenced_room_ids", []) or referenced_room_ids)
 
     requested_action = regex_parsed.get("requested_action")
     approved_action = verifier.get("approved_requested_action")
-    if approved_action:
+    if regex_parsed.get("requested_action") and float(regex_candidate.get("confidence") or 0) >= 0.85:
+        requested_action = regex_parsed.get("requested_action")
+    elif approved_action:
         requested_action = approved_action
     elif verifier.get("use_llm_hard_slots") and llm_candidate.get("requested_action"):
         requested_action = llm_candidate.get("requested_action")
 
     current_room_id = regex_parsed.get("current_room_id")
-    if referenced_room_ids:
+    if regex_parsed.get("ordinal_out_of_range") or regex_parsed.get("compare_unresolved"):
+        current_room_id = None
+        if regex_parsed.get("ordinal_out_of_range"):
+            referenced_room_ids = []
+    elif referenced_room_ids:
         current_room_id = referenced_room_ids[0]
     elif not current_room_id and current_state and approved_intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "FIND_SIMILAR"}:
         current_room_id = current_state.get("current_room_id") or _first_or_none(current_state.get("last_result_ids") or [])
 
-    return {
+    merged = {
         "intent": approved_intent if approved_intent in INTENTS else "GENERAL_HELP",
         "operations": operations,
         "current_room_id": current_room_id,
         "referenced_room_ids": referenced_room_ids,
         "requested_action": requested_action,
     }
+    for key in ("exact_reference", "ordinal_out_of_range", "ordinal_requested", "ordinal_available_count", "compare_unresolved"):
+        if key in regex_parsed:
+            merged[key] = regex_parsed[key]
+    return merged
 
 
 def _default_verifier_decision(regex_candidate: dict[str, Any], llm_candidate: dict[str, Any]) -> dict[str, Any]:
@@ -1436,10 +1527,27 @@ def parse_intent_and_constraint_patch(
     _maybe_replace_location_filters(normalized, current_state, operations)
 
     referenced_room_ids = [_normalize_room_reference(item) for item in _extract_room_ids(text)]
-    selected_room_id = _selected_room_id_from_ordinal(normalized, current_state)
-    if not selected_room_id:
-        selected_room_id = _selected_room_id_from_deictic(normalized, current_state)
-    compare_room_ids = _selected_room_ids_from_ordinals(normalized, current_state)
+    ordinal_out_of_range = False
+    compare_unresolved = False
+    ordinal_requested: int | None = None
+    ordinal_available_count = len((current_state or {}).get("last_result_ids") or [])
+
+    ordinal_index = _ordinal_request_index(normalized, current_state)
+    is_result_set_compare = _is_result_set_compare_request(normalized)
+    if ordinal_index is not None and not re.search(r"\bso\s*sanh\b", normalized):
+        ids = (current_state or {}).get("last_result_ids") or []
+        if ordinal_index >= len(ids):
+            ordinal_out_of_range = True
+            ordinal_requested = ordinal_index + 1
+            referenced_room_ids = []
+
+    selected_room_id = None
+    compare_room_ids: list[str] = []
+    if not is_result_set_compare:
+        selected_room_id = None if ordinal_out_of_range else _selected_room_id_from_ordinal(normalized, current_state)
+        if not selected_room_id:
+            selected_room_id = _selected_room_id_from_deictic(normalized, current_state)
+        compare_room_ids, compare_unresolved = _selected_room_ids_from_ordinals(normalized, current_state)
     if len(compare_room_ids) >= 2:
         referenced_room_ids = compare_room_ids
     elif selected_room_id and selected_room_id not in referenced_room_ids:
@@ -1447,6 +1555,8 @@ def parse_intent_and_constraint_patch(
     action = _requested_action(normalized)
     intent, _ = _regex_classify(normalized, action, referenced_room_ids, current_state)
     if len(compare_room_ids) >= 2:
+        intent = "COMPARE_ROOMS"
+    elif compare_unresolved and re.search(r"\bso\s*sanh\b", normalized):
         intent = "COMPARE_ROOMS"
     try:
         from room_assistant.staff_knowledge import is_policy_question
@@ -1480,7 +1590,17 @@ def parse_intent_and_constraint_patch(
     if intent not in INTENTS:
         intent = "GENERAL_HELP"
 
+    operations = _strip_detail_question_search_ops(
+        operations,
+        intent=intent,
+        normalized=normalized,
+        referenced_room_ids=referenced_room_ids,
+        current_state=current_state,
+    )
+
     current_room_id = referenced_room_ids[0] if referenced_room_ids else None
+    if ordinal_out_of_range:
+        current_room_id = None
 
     return {
         "intent": intent,
@@ -1488,6 +1608,11 @@ def parse_intent_and_constraint_patch(
         "current_room_id": current_room_id,
         "referenced_room_ids": referenced_room_ids,
         "requested_action": action,
+        "exact_reference": _build_exact_reference(referenced_room_ids),
+        "ordinal_out_of_range": ordinal_out_of_range,
+        "ordinal_requested": ordinal_requested,
+        "ordinal_available_count": ordinal_available_count,
+        "compare_unresolved": compare_unresolved,
     }
 
 
@@ -1552,13 +1677,21 @@ async def parse_intent_async(
     if not verifier:
         verifier = _default_verifier_decision(regex_candidate, llm_candidate)
 
-    return _merge_router_decision(
+    merged = _merge_router_decision(
         regex_parsed=regex_parsed,
         regex_candidate=regex_candidate,
         llm_candidate=llm_candidate,
         verifier=verifier,
         current_state=current_state,
     )
+    merged["operations"] = _strip_detail_question_search_ops(
+        merged.get("operations", []),
+        intent=merged.get("intent", "GENERAL_HELP"),
+        normalized=normalized,
+        referenced_room_ids=merged.get("referenced_room_ids", []),
+        current_state=current_state,
+    )
+    return merged
 
 
 def _first_or_none(values: list[Any]) -> Any | None:

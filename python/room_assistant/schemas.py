@@ -111,13 +111,15 @@ class ExactRoomReference(TypedDict, total=False):
     confidence: float
 
 
-class ParsedRequest(TypedDict):
+class ParsedRequest(TypedDict, total=False):
     intent: str
     operations: list[Operation]
     current_room_id: str | None
     referenced_room_ids: list[str]
     requested_action: str | None
     exact_reference: ExactRoomReference | None
+    ordinal_out_of_range: bool
+    compare_unresolved: bool
 
 
 class TurnRecord(TypedDict, total=False):
@@ -309,6 +311,9 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized["house_id"] = str(house_id) if house_id else None
     normalized["house_name"] = house_name or None
     normalized["room_code"] = room_code or None
+    normalized["room_code_norm"] = (
+        str(room_code).strip().upper().replace(".", "") if room_code else None
+    )
     normalized["title"] = title
     normalized["description"] = raw.get("house_remark") or raw.get("description") or ""
     normalized["status"] = "active" if is_available else "unavailable"
@@ -337,8 +342,38 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
         source_url = room_id.split("#", 1)[0]
     normalized["source_url"] = source_url
     normalized["listing_id"] = str(room_id)
+    normalized["status_key"] = "available" if is_available else "unavailable"
+    if isinstance(price, (int, float)) and price:
+        normalized["price_num"] = int(price)
+    else:
+        normalized["price_num"] = None
+    normalized["district_key"] = str(district or "").strip().lower() or None
+    normalized["ward_key"] = str(ward or "").strip().lower() or None
+    normalized["pet_policy"] = _policy_from_embedding(embedding_text, "Thú cưng")
+    normalized["vehicle_policy"] = _vehicle_policy_from_embedding(embedding_text)
 
     return normalized
+
+
+def _policy_from_embedding(text: str, label: str) -> str:
+    import re
+
+    if re.search(rf"{re.escape(label)}\s*:\s*Không", text, re.IGNORECASE):
+        return "denied"
+    if re.search(rf"{re.escape(label)}\s*:\s*Có", text, re.IGNORECASE):
+        return "allowed"
+    return "unknown"
+
+
+def _vehicle_policy_from_embedding(text: str) -> str:
+    import re
+
+    lowered = (text or "").lower()
+    if re.search(r"xe\s*:\s*không", lowered):
+        return "denied"
+    if "gửi xe" in lowered or re.search(r"xe\s*:\s*có", lowered):
+        return "allowed"
+    return "unknown"
 
 
 def public_session_state(state: dict[str, Any]) -> dict[str, Any]:

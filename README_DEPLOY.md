@@ -50,6 +50,17 @@ RAG_RATE_LIMIT_MAX_REQUESTS=30
 DJANGO_CACHE_REDIS_URL=redis://127.0.0.1:6379/1
 DJANGO_CACHE_KEY_PREFIX=nhatrovn
 DJANGO_CACHE_DEFAULT_TIMEOUT=300
+
+# Room assistant / RAG pipeline (python/)
+RETRIEVAL_CANDIDATE_LIMIT=100
+TOP_K_RETRIEVAL=6
+QDRANT_URL=http://localhost:6333
+QDRANT_ROOMS_COLLECTION=rooms_v1
+MONGODB_URI=mongodb://localhost:27017/
+MONGODB_DB_NAME=demo_rag
+MONGODB_ROOMS_COLLECTION=rooms
+GROQ_API_KEY=
+ENABLE_REVIEWER=false
 ```
 
 Ghi chú:
@@ -184,6 +195,43 @@ Khuyến nghị:
 8. Render `rooms`, `follow_ups`, `intent` theo hướng defensive, không assume field nào luôn luôn có.
 9. Nếu `error.retryable=true`, backend web có thể retry có kiểm soát; nếu `false`, trả lỗi chuẩn cho người dùng.
 10. Trước cutover thật, chạy smoke test `GET /api/health/` và 1 request thật tới `POST /api/rag/query/`.
+
+## Room assistant (RAG) — hành vi production
+
+### Inventory ~9k
+
+- MongoDB: nguồn authoritative (`rent_price`, `room_code`, trạng thái còn phòng).
+- Qdrant `rooms_v1` (~9k points): semantic index (BGE-M3), cập nhật qua Kafka `room_index_worker` (CDC).
+- Bot **chỉ gợi ý phòng public**; không bịa từ kho nội bộ sales.
+
+### Biến môi trường retrieval
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `RETRIEVAL_CANDIDATE_LIMIT` | `100` | Số phòng sau Mongo hard filter đưa vào Qdrant rank. Tăng (150–200) nếu recall thấp ở quận dày. |
+| `TOP_K_RETRIEVAL` | `6` | Số phòng trả về sau rank |
+| `QDRANT_ROOMS_COLLECTION` | `rooms_v1` | Collection Qdrant cho phòng |
+
+### Lookup `room_code`
+
+Khách có thể hỏi `P.305` / `P305` — backend chuẩn hóa `room_code_norm` và tra Mongo trước `room_id`.
+
+### Sales handoff (không có phòng public)
+
+Khi `rooms=[]` sau search/refine khớp điều kiện nhưng inventory public trống, bot trả template thấu cảm + đề xuất **sales tư vấn thêm** (không gợi ý nới ngân sách). Web nên hiển thị như luồng chuyển nhân viên, không phải lỗi hệ thống.
+
+### Giá hiển thị
+
+Câu hỏi giá (`giá bao nhiêu`, `giá phòng P305`) dùng template `X.XXX.XXX VND` từ Mongo. Parser ngân sách chấp nhận: `5 triệu`, `5 củ`, `5m`, `5000k`, `5 chiệu`.
+
+### Test integration stack
+
+```bash
+cd python
+python -m pytest tests/test_inventory_scale.py::ProductionInventoryScaleTests -q
+```
+
+Cần `MONGODB_URI` + Qdrant ≥8k points. CI chạy nhánh in-memory `InventoryScaleTests` (không cần Qdrant).
 
 ## Checklist DevOps
 

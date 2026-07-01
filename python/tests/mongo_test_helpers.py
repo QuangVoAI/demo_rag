@@ -57,8 +57,31 @@ def qdrant_is_available() -> bool:
         return False
 
 
+def qdrant_points_count() -> int:
+    load_dotenv()
+    url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    if not url:
+        return 0
+    try:
+        from qdrant_client import QdrantClient
+
+        client = QdrantClient(url=url, check_compatibility=False, timeout=5)
+        collection = os.getenv("QDRANT_ROOMS_COLLECTION", "rooms_v1")
+        names = {item.name for item in client.get_collections().collections}
+        if collection not in names:
+            return 0
+        return int(client.get_collection(collection).points_count or 0)
+    except Exception:
+        return 0
+
+
 def integration_stack_ready() -> bool:
     return mongo_is_configured() and qdrant_is_available()
+
+
+def production_inventory_ready(min_points: int = 8000) -> bool:
+    """Mongo + Qdrant indexed inventory (~9k public rooms in prod)."""
+    return integration_stack_ready() and qdrant_points_count() >= min_points
 
 
 def create_semantic_index():

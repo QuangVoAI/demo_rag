@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Callable
 
-from .repository import RoomRepository
+from .repository import RoomRepository, normalize_room_code
 from .retrieval import RoomSemanticIndex, search_rooms_with_hard_filters
 from .schemas import MAX_READ_TOOL_CALLS_PER_TURN, READ_ONLY_TOOLS, unknown_room_fields
 
@@ -351,10 +351,7 @@ def compare_rooms(args: dict[str, Any], context: ToolExecutionContext) -> dict[s
 
 def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> list[dict[str, Any]]:
     room_id = args.get("room_id")
-    try:
-        source = context.repository.get_by_id(str(room_id)) if room_id else None
-    except Exception:
-        source = None
+    source = _resolve_room_reference(str(room_id), context) if room_id else None
     if not source:
         return []
     top_k = _bounded_top_k(args.get("top_k", 5))
@@ -376,33 +373,58 @@ def find_similar_rooms(args: dict[str, Any], context: ToolExecutionContext) -> l
         top_k=top_k + 1,
         trace=context.retrieval_trace,
     )
-    return [item for item in results if item.get("room_id") != room_id][:top_k]
+    return [item for item in results if item.get("room_id") != source.get("room_id")][:top_k]
 
 
 def _unknown_room_fields(room: dict[str, Any]) -> list[str]:
     return unknown_room_fields(room)
 
 
+def _looks_like_mongo_object_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-f0-9]{24}", str(value or "").lower()))
+
+
+def _looks_like_room_code(value: str) -> bool:
+    compact = normalize_room_code(value)
+    if not compact or _looks_like_mongo_object_id(compact):
+        return False
+    return bool(re.fullmatch(r"[A-Z]{1,3}\d{2,5}", compact))
+
+
 def _resolve_room_reference(room_ref: str, context: ToolExecutionContext) -> dict[str, Any] | None:
     room_ref = _normalize_room_reference(room_ref)
+    if not room_ref:
+        return None
+
+    if _looks_like_room_code(room_ref):
+        try:
+            room = context.repository.get_by_room_code(room_ref)
+        except Exception:
+            room = None
+        if room:
+            return room
+
     try:
         room = context.repository.get_by_id(str(room_ref))
     except Exception:
         room = None
     if room:
         return room
+
     try:
-        candidates = context.repository.search_by_metadata(str(room_ref), limit=3)
+        candidates = context.repository.search_by_metadata(str(room_ref), limit=5)
     except Exception:
         candidates = []
     if not candidates:
         return None
-    normalized_ref = str(room_ref).strip().upper().replace(".", "")
+    normalized_ref = normalize_room_code(room_ref)
     for candidate in candidates:
-        candidate_room_id = str(candidate.get("room_id") or "").strip().upper().replace(".", "")
-        candidate_room_code = str(candidate.get("room_code") or "").strip().upper().replace(".", "")
+        candidate_room_id = normalize_room_code(candidate.get("room_id") or "")
+        candidate_room_code = normalize_room_code(candidate.get("room_code") or "")
         if normalized_ref and normalized_ref in {candidate_room_id, candidate_room_code}:
             return candidate
+    if _looks_like_room_code(room_ref):
+        return None
     return candidates[0]
 
 
@@ -419,59 +441,15 @@ def _positive_int(value: Any) -> int | None:
 
 
 def _money_value_or_none(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().lower().replace("đ", "d")
-    if not normalized:
-        return None
-    match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(tr|triệu|trieu|k|nghìn|nghin)?", normalized)
-    if not match:
-        return None
-    number_text = match.group(1)
-    unit = match.group(2) or ""
-    if not unit and number_text.count(".") + number_text.count(",") > 1:
-        digits = re.sub(r"\D", "", number_text)
-        return int(digits) if digits else None
-    number = float(number_text.replace(",", "."))
-    if unit in {"tr", "triệu", "trieu"} or (not unit and number < 1000):
-        return int(number * 1_000_000)
-    if unit in {"k", "nghìn", "nghin"}:
-        return int(number * 1_000)
-    return int(number)
+    from room_assistant.money import parse_money_amount
+
+    return parse_money_amount(value, fee_context=False)
 
 
 def _money_amount_or_none(value: Any, fee_name: str | None = None, args: dict[str, Any] | None = None) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    if not isinstance(value, str):
-        return None
+    from room_assistant.money import parse_money_amount
 
-    normalized = value.strip().lower()
-    if normalized in {"free", "miễn phí", "mien phi", "0", "0đ", "0d", "free"}:
-        return 0
-    if "không có" in normalized or "không" == normalized:
-        return 0
-    if any(unit in normalized for unit in ("/kwh", "/kw", "/m3", "/m³", "/kg")):
-        return None
-
-    match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(k|nghìn|nghin|tr|triệu|trieu)?", normalized)
-    if not match:
-        return None
-    number = float(match.group(1).replace(",", "."))
-    unit = match.group(2) or ""
-    if unit in {"tr", "triệu", "trieu"}:
-        return int(number * 1_000_000)
-    if unit in {"k", "nghìn", "nghin"}:
-        return int(number * 1_000)
-    if number < 1000 and fee_name:
-        return int(number * 1_000)
-    return int(number)
+    return parse_money_amount(value, fee_name=fee_name, fee_context=True)
 
 from enum import Enum
 
@@ -540,6 +518,11 @@ def _keyword_sensitive_types(
         if any(token in text for token in ("coc", "dat coc", "tien coc", "tien dat coc")):
             types.add("deposit_query")
     return types
+
+
+def question_asks_price(question: str) -> bool:
+    text = _normalize_question_text(question)
+    return any(token in text for token in _ROOM_PRICE_KEYWORD_PATTERNS)
 
 
 def _question_mentions_pets(question: str) -> bool:

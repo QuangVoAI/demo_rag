@@ -44,6 +44,33 @@ SEARCH_NO_RESULT_DEFAULT = (
     "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ. "
     "Anh/chị thử nới ngân sách hoặc mở rộng khu vực giúp em nhé, đảm bảo sẽ có nhiều căn đẹp lắm ạ!"
 )
+SEARCH_NO_RESULT_SALES_HANDOFF_SUFFIX = (
+    "Bên em có đội ngũ sales kiểm tra thêm nguồn phòng nội bộ — đôi khi họ tìm được căn "
+    "phù hợp hơn ạ. Anh/chị chờ em chút để được tư vấn thêm nha."
+)
+SEARCH_NO_RESULT_SALES_HANDOFF: dict[str, str] = {
+    "normal": (
+        "Dạ em tìm mỏi mắt mà chưa thấy phòng nào phù hợp đang hiển thị trên hệ thống ạ. "
+        + SEARCH_NO_RESULT_SALES_HANDOFF_SUFFIX
+    ),
+    "urgent": (
+        "Dạ em hiểu mình cần gấp ạ. Em đã lọc kỹ inventory đang public nhưng chưa thấy căn khớp ngay. "
+        + SEARCH_NO_RESULT_SALES_HANDOFF_SUFFIX
+    ),
+    "frustrated": (
+        "Dạ em hiểu mình tìm mãi cũng mệt ạ. Em rà soát hết phòng đang hiển thị mà vẫn chưa có căn khớp trọn điều kiện. "
+        + SEARCH_NO_RESULT_SALES_HANDOFF_SUFFIX
+    ),
+}
+
+ORDINAL_OUT_OF_RANGE = (
+    "Dạ trong danh sách vừa rồi em chỉ có **{available}** phòng, "
+    "chưa có phòng số **{requested}** ạ. Anh/chị chọn lại giúp em (ví dụ phòng số 1–{available}) nha."
+)
+COMPARE_ORDINAL_UNRESOLVED = (
+    "Dạ em chưa xác định đủ phòng để so sánh ạ. "
+    "Anh/chị nói rõ giúp em (ví dụ: so sánh phòng số 1 và phòng số 3 trong danh sách vừa rồi) nha."
+)
 
 # ==========================================
 # 3. SEARCH — ALTERNATIVE / SUCCESS

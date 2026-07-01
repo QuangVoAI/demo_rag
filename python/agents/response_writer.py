@@ -73,6 +73,7 @@ async def write_response(
     verified_context: str,
     history: list[dict] | None = None,
     mood: str = "normal",
+    stream_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     """
     Sinh câu trả lời dựa trên dữ liệu đã xác minh.
@@ -82,10 +83,19 @@ async def write_response(
         verified_context: Dữ liệu room / FAQ đã được grounding.
         history         : Lịch sử hội thoại gần nhất (tối đa 6 lượt).
         mood            : Cảm xúc người dùng (frustrated/urgent/normal).
+        stream_callback : Callback stream token (nếu có).
 
     Returns:
         Câu trả lời tiếng Việt.
     """
+    if stream_callback is not None:
+        return await stream_response(
+            question=question,
+            verified_context=verified_context,
+            history=history,
+            mood=mood,
+            stream_callback=stream_callback,
+        )
     messages = _build_messages(question, verified_context, history=history, mood=mood)
     llm = _get_llm_client()
 
@@ -156,11 +166,20 @@ async def write_no_result_response(
     mood: str = "normal",
     alt_rooms: list[dict] | None = None,
     stream_callback: Callable[[str], Awaitable[None]] | None = None,
+    *,
+    sales_handoff: bool = False,
 ) -> str:
     """
     Sinh câu trả lời khi không tìm được phòng nào phù hợp.
     Gợi ý người dùng điều chỉnh điều kiện cụ thể hoặc đề xuất phòng lân cận.
     """
+    if sales_handoff and not alt_rooms:
+        from room_assistant.prompts import SEARCH_NO_RESULT_SALES_HANDOFF
+        answer = SEARCH_NO_RESULT_SALES_HANDOFF.get(mood, SEARCH_NO_RESULT_SALES_HANDOFF["normal"])
+        if stream_callback:
+            await stream_callback(answer)
+        return answer
+
     llm = _get_llm_client()
     budget = constraints.get("budget") or {}
     location = constraints.get("location") or {}

@@ -162,3 +162,46 @@ Example final event:
 - Rate limiting is applied **per conversation** when `session_id` or `conversation_id` is sent (recommended: Mongo `chat_history.conversation_id`). Without it, limits fall back to API key or client IP.
 - `history` is sanitized and bounded server-side; callers should still keep it concise.
 - `POST /api/rag/stream/` is for first-party UI experience only. Web team should integrate `POST /api/rag/query/`.
+
+## Assistant behavior (inventory & accuracy)
+
+The bot only recommends rooms visible in **public web/app inventory** (Mongo authoritative prices + Qdrant semantic index). It does **not** invent listings from internal sales-only stock.
+
+### Hybrid retrieval defaults
+
+| Setting | Default | Notes |
+|---|---|---|
+| `RETRIEVAL_CANDIDATE_LIMIT` | `100` | Max rooms after Mongo hard filter before Qdrant BGE-M3 rank (~9k index). Override via env if recall drops in dense districts. |
+| `TOP_K_RETRIEVAL` | `6` | Final rooms returned to client after rank |
+
+Pipeline: **Mongo hard filter → semantic rank on `candidate_ids` → authoritative `rent_price` from Mongo**.
+
+### Room reference resolution
+
+Users may cite rooms by:
+
+- Mongo `room_id` (24-char hex)
+- Public **`room_code`** (e.g. `P.305`, `P305`) — normalized via `room_code_norm` before lookup
+- Ordinal in last result list (“phòng số 2”, “phòng đầu tiên”)
+
+`ASK_ABOUT_ROOM` / price questions use verified Mongo fields; displayed rent uses `X.XXX.XXX VND` format.
+
+### No public match → sales handoff
+
+When search/refine finds **zero** public rooms (or budget+district miss), `intent` stays `SEARCH_ROOM` / `REFINE_SEARCH`, `rooms` is `[]`, and `reply` uses an empathetic **sales handoff** template (not “nới ngân sách”):
+
+- Acknowledges exhaustive public search (“em tìm mỏi mắt…”)
+- Offers internal sales follow-up for off-inventory options
+- Mood variants: `normal`, `urgent`, `frustrated` (inferred server-side)
+
+Clients should treat `rooms=[]` + sales wording as **handoff**, not hard error.
+
+### Streaming status events
+
+`/api/rag/stream/` emits progress before tokens, e.g.:
+
+- `[status:Phân tích|Hệ thống] Đang phân tích yêu cầu...`
+- `[status:Truy vấn|Cơ sở dữ liệu] Đang tìm kiếm các phòng phù hợp...`
+- `[status:Tổng hợp|Trợ lý AI] Đang tổng hợp câu trả lời...`
+
+Template answers (search hits, sales handoff, ordinal errors, verified price) may stream without LLM.

@@ -116,10 +116,27 @@ def _parse_result(response: str) -> dict:
         end = response.rfind("}") + 1
         if start >= 0 and end > start:
             result = json.loads(response[start:end])
+            if "is_approved" in result:
+                return {
+                    "is_approved": bool(result.get("is_approved", True)),
+                    "issues": list(result.get("issues", [])),
+                    "suggestion": str(result.get("suggestion", "")),
+                }
+            safe = result.get("safe")
+            if safe is None and "violation_type" in result:
+                violation = str(result.get("violation_type") or "none").lower()
+                safe = violation in {"", "none"}
+            feedback = str(result.get("feedback") or result.get("suggestion") or "")
+            corrected = result.get("corrected_answer")
+            issues = [feedback] if feedback and not safe else []
+            if violation := str(result.get("violation_type") or ""):
+                if violation.lower() not in {"", "none"}:
+                    issues.insert(0, violation)
             return {
-                "is_approved": bool(result.get("is_approved", True)),
-                "issues": list(result.get("issues", [])),
-                "suggestion": str(result.get("suggestion", "")),
+                "is_approved": bool(safe) if safe is not None else True,
+                "issues": issues,
+                "suggestion": feedback,
+                "corrected_answer": corrected,
             }
     except (json.JSONDecodeError, KeyError):
         pass
@@ -144,6 +161,12 @@ async def review_with_retry(
         result = await review(question, current_answer, room_context)
 
         if result["is_approved"] or attempt >= max_retries:
+            break
+
+        corrected = result.get("corrected_answer")
+        if corrected and str(corrected).strip().lower() not in {"", "null", "none"}:
+            current_answer = str(corrected).strip()
+            result["is_approved"] = True
             break
 
         console.print(f"[yellow]  Reviewer retry #{attempt + 1}: {result['issues']}[/]")

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import unittest
 from pathlib import Path
@@ -341,7 +342,12 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
         self.assertTrue(result["rooms"])
         self.assertEqual(result["rooms"][0]["room_code"], "P305")
-        self.assertIn("3.900.000", result["answer"])
+        from room_assistant.money import answer_mentions_vnd
+
+        self.assertTrue(
+            answer_mentions_vnd(result["answer"], 3_900_000),
+            msg=result["answer"],
+        )
 
     def test_patch_keeps_old_constraints_and_remove_trims_value(self):
         state = default_session_state("s1")
@@ -408,6 +414,16 @@ class RoomAssistantCoreTests(unittest.TestCase):
 
         mongo_query = build_mongo_query(constraints)
         self.assertIn(_available_status_query(), mongo_query["$and"])
+
+    def test_build_mongo_query_includes_studio_category(self):
+        query = build_mongo_query({
+            "location": {"districts": ["quan 7"]},
+            "categories": ["studio"],
+        })
+        serialized = json.dumps(query, ensure_ascii=False)
+        self.assertIn("metadata.house_name", serialized)
+        self.assertIn("embedding_text", serialized)
+        self.assertGreaterEqual(len(query["$and"]), 3)
 
     def test_normalize_room_treats_blank_status_code_as_available(self):
         room = normalize_room({
@@ -1114,6 +1130,73 @@ class RoomAssistantCoreTests(unittest.TestCase):
         )
         self.assertEqual(status, SufficiencyStatus.INSUFFICIENT)
         self.assertIn("pets_policy", missing)
+
+    def test_dotted_room_code_p305_resolves_by_room_code_norm(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "mongo-p305",
+                "metadata": {
+                    "house_name": "CS7",
+                    "room_code": "P.305",
+                    "price": 3_900_000,
+                    "status_code": "0",
+                    "district_name": "Tân Phú",
+                },
+                "embedding_text": "## Tiện ích\n- Máy lạnh: Có",
+                "available": True,
+                "status": "active",
+            }
+        ])
+        result = asyncio.run(run_room_assistant(
+            "Phòng P.305 giá bao nhiêu?",
+            session_id="room-code-dotted",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=None,
+        ))
+        self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
+        self.assertTrue(result["rooms"])
+        self.assertEqual(result["rooms"][0]["room_code"], "P.305")
+
+    def test_detail_amenity_question_does_not_set_search_filter(self):
+        state = default_session_state("detail-ac")
+        state["last_result_ids"] = ["A101"]
+        state["current_room_id"] = "A101"
+        state["last_intent"] = "SEARCH_ROOM"
+        parsed = parse_intent_and_constraint_patch("Phòng này có máy lạnh không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        amenities = [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_required"]
+        self.assertNotIn("air_conditioner", amenities)
+
+    def test_ordinal_out_of_range_does_not_fallback_room(self):
+        state = default_session_state("ordinal-miss")
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+        parsed = parse_intent_and_constraint_patch("Giá phòng số 4 bao nhiêu?", state)
+        self.assertTrue(parsed.get("ordinal_out_of_range"))
+        self.assertIsNone(parsed.get("current_room_id"))
+
+    def test_compare_first_and_third_room_by_ordinal(self):
+        state = default_session_state("compare-1-3")
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        parsed = parse_intent_and_constraint_patch("So sánh phòng đầu tiên và phòng thứ ba", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+        self.assertEqual(parsed["referenced_room_ids"], ["A101", "C303"])
+
+    def test_search_no_result_routes_to_sales_handoff(self):
+        repo = InMemoryRoomRepository([])
+        result = asyncio.run(run_room_assistant(
+            "Tìm phòng quận 7 dưới 1 triệu",
+            session_id="sales-handoff",
+            repository=repo,
+            session_store=InMemorySessionStore(),
+            semantic_index=None,
+        ))
+        self.assertIn("sales", result["answer"].lower())
+
+    def test_retrieval_candidate_limit_defaults_to_100(self):
+        from room_assistant.retrieval import _retrieval_config
+        self.assertEqual(_retrieval_config()["candidate_limit"], 100)
 
 
 if __name__ == "__main__":

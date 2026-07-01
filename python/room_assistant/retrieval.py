@@ -27,11 +27,13 @@ def search_rooms_with_hard_filters(
     repository: RoomRepository,
     semantic_index: RoomSemanticIndex | None = None,
     top_k: int = 5,
-    candidate_limit: int = 50,
+    candidate_limit: int | None = None,
     trace: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Search rooms by enforcing DB constraints before semantic ranking."""
     cfg = _retrieval_config()
+    if candidate_limit is None:
+        candidate_limit = cfg["candidate_limit"]
     feedback_retries = cfg["feedback_max_retries"] if cfg["enable_feedback_retry"] else 0
     signals = extract_metadata_signals(query_text)
     base_candidates = repository.search_by_constraints(
@@ -190,6 +192,17 @@ def _rank_attempt(
         room["retrieval_score"] = _preferred_source_score(room)
         rooms.append(room)
 
+    if not rooms:
+        rooms = _fallback_constrained_ranked_rooms(
+            candidates=candidates,
+            constraints=constraints,
+            repository=repository,
+            signals=signals,
+            top_k=top_k,
+            metadata_boost=cfg["metadata_boost"],
+            metadata_fields=cfg["metadata_fields"],
+        )
+
     confidence = max((_preferred_source_score(item) for item in rooms), default=0.0)
     return {
         "rooms": rooms,
@@ -202,6 +215,43 @@ def _rank_attempt(
             "semantic_result_count": len(semantic_results),
         },
     }
+
+
+def _fallback_constrained_ranked_rooms(
+    *,
+    candidates: list[dict[str, Any]],
+    constraints: dict[str, Any],
+    repository: RoomRepository,
+    signals: dict[str, Any],
+    top_k: int,
+    metadata_boost: float,
+    metadata_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Khi semantic rank trống, trả phòng đã lọc cứng theo metadata score."""
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for candidate in candidates:
+        room_id = candidate.get("room_id")
+        if not room_id:
+            continue
+        room = candidate
+        if room.get("rent_price") is None:
+            fetched = repository.get_by_id(str(room_id))
+            if fetched:
+                room = fetched
+        if not room_matches_constraints(room, constraints):
+            continue
+        metadata_score = max(
+            float(candidate.get("_metadata_score") or 0.0),
+            score_metadata_hit(room, signals, metadata_fields),
+        )
+        combined = metadata_score * metadata_boost
+        item = dict(room)
+        item["metadata_score"] = metadata_score
+        item["combined_score"] = combined
+        item["retrieval_score"] = combined
+        scored.append((combined, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[:top_k]]
 
 
 def _maybe_rerank_candidates(
@@ -339,6 +389,7 @@ def _retrieval_config() -> dict[str, Any]:
             LOW_CONFIDENCE_MIN_SCORE,
             METADATA_BOOST,
             METADATA_FIELDS,
+            RETRIEVAL_CANDIDATE_LIMIT,
             TOP_K_RETRIEVAL,
         )
         return {
@@ -350,6 +401,7 @@ def _retrieval_config() -> dict[str, Any]:
             "metadata_boost": METADATA_BOOST,
             "metadata_fields": METADATA_FIELDS,
             "top_k_retrieval": TOP_K_RETRIEVAL,
+            "candidate_limit": RETRIEVAL_CANDIDATE_LIMIT,
         }
     except Exception:
         return {
@@ -359,8 +411,9 @@ def _retrieval_config() -> dict[str, Any]:
             "low_confidence_min_docs": 1,
             "low_confidence_min_score": 0.015,
             "metadata_boost": 0.5,
-            "metadata_fields": ("room_id", "district", "title", "amenities"),
+            "metadata_fields": ("room_id", "room_code", "district", "title", "amenities"),
             "top_k_retrieval": 6,
+            "candidate_limit": 100,
         }
 
 
