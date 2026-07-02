@@ -892,3 +892,106 @@ class RagApiQueryTests(TestCase):
         self.assertIn('"665f00000000000000000001"', joined)
         self.assertIn('"665f00000000000000000002"', joined)
         self.assertIn('"665f00000000000000000003"', joined)
+
+
+@override_settings(ALLOWED_HOSTS=["127.0.0.1", "testserver", "localhost"])
+class ChatApiContractTests(ChatApiTests):
+    async def _full_rag_response(self, question, history=None, session_id="", stream_callback=None):
+        return {
+            "answer": "Dạ còn phòng phù hợp ạ.",
+            "intent": "SEARCH_ROOM",
+            "session_state": {"constraints": {"budget": {"max": 5_000_000}}},
+            "rooms": [{"room_id": "A101", "title": "Studio Bình Thạnh", "rent_price": 4_500_000}],
+            "cost_estimate": {"total_initial": 9_000_000},
+            "comparison": None,
+            "suggested_questions": ["Còn phòng rẻ hơn không?"],
+            "sources": [{"type": "room", "room_id": "A101"}],
+            "verification": {"approved": True, "corrected_answer_used": False},
+            "retrieval_confidence": 0.81,
+            "retrieval_low_confidence": False,
+            "retrieval_feedback_retry_count": 0,
+            "retrieval_attempts": [{"top_room_ids": ["A101"]}],
+            "processing_time_ms": 150,
+        }
+
+    def test_chat_final_payload_matches_rag_contract_fields(self):
+        body = {
+            "message": "Tìm phòng dưới 5 triệu",
+            "contact_phone": "0900555666",
+            "contact_name": "Contract QA",
+            "demo_role": "customer",
+        }
+        with patch("apps.rooms.views.get_collection", side_effect=self._get_collection):
+            with patch("apps.rooms.views.run_streaming", new=self._full_rag_response):
+                post = self.client.post(
+                    "/api/chat/",
+                    data=json.dumps(body),
+                    content_type="application/json",
+                )
+                chunks = []
+                for chunk in post.streaming_content:
+                    chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+                final_line = [
+                    line for line in "".join(chunks).splitlines()
+                    if line.startswith("data: ") and '"type": "final"' in line
+                ][-1]
+                payload = json.loads(final_line[len("data: "):])["payload"]
+
+        for key in (
+            "session_state",
+            "verification",
+            "cost_estimate",
+            "comparison",
+            "retrieval_confidence",
+            "retrieval_attempts",
+            "sources",
+            "follow_ups",
+            "intent",
+        ):
+            self.assertIn(key, payload)
+        self.assertEqual(payload["cost_estimate"]["total_initial"], 9_000_000)
+
+    def test_chat_reload_restores_assistant_metadata(self):
+        body = {
+            "message": "Tìm phòng quận 7",
+            "contact_phone": "0900777888",
+            "contact_name": "Reload Meta",
+            "demo_role": "customer",
+        }
+        with patch("apps.rooms.views.get_collection", side_effect=self._get_collection):
+            with patch("apps.rooms.views.run_streaming", new=self._full_rag_response):
+                post = self.client.post(
+                    "/api/chat/",
+                    data=json.dumps(body),
+                    content_type="application/json",
+                )
+                chunks = []
+                for chunk in post.streaming_content:
+                    chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+                final_line = [
+                    line for line in "".join(chunks).splitlines()
+                    if line.startswith("data: ") and '"type": "final"' in line
+                ][-1]
+                conv_id = json.loads(final_line[len("data: "):])["payload"]["conversation_id"]
+
+                reload = self.client.get("/api/chat/", {
+                    "contact_phone": "0900777888",
+                    "contact_name": "Reload Meta",
+                    "demo_role": "customer",
+                    "conversation_id": conv_id,
+                }).json()
+
+        assistant_msgs = [msg for msg in reload["messages"] if msg.get("role") == "assistant"]
+        self.assertTrue(assistant_msgs)
+        last = assistant_msgs[-1]
+        self.assertEqual(last.get("intent"), "SEARCH_ROOM")
+        self.assertTrue(last.get("rooms"))
+        self.assertTrue(last.get("follow_ups"))
+        self.assertIn("sources", last)
+
+    def test_health_deep_endpoint_reports_dependency_checks(self):
+        with patch("apps.rooms.views._get_rooms_collection", return_value=FakeCollection([])):
+            response = self.client.get("/api/health/deep/")
+        payload = response.json()
+        self.assertIn("checks", payload)
+        self.assertIn("mongodb", payload["checks"])

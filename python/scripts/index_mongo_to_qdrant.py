@@ -4,7 +4,6 @@
 và đẩy (upsert) toàn bộ vào Qdrant.
 """
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,8 @@ from config import (
 )
 from agents.model_registry import get_embed_model
 from utils.console import console
-from room_assistant.schemas import normalize_room
+from room_assistant.schemas import canonical_room_id, normalize_room
+from retrieval.qdrant_client import QdrantWrapper
 
 
 def extract_text_for_embedding(doc: dict[str, Any]) -> str:
@@ -50,25 +50,30 @@ def build_payload(doc: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_room(doc)
     if not normalized:
         normalized = dict(doc)
-        
+
+    room_id = canonical_room_id(doc)
     payload = dict(normalized)
-    
-    # Đảm bảo không có _id để tránh lỗi Qdrant
-    if "_id" in payload:
-        payload["room_id"] = str(payload["_id"])
-        del payload["_id"]
-        
+
+    raw_id = doc.get("_id")
+    if raw_id is not None:
+        payload["mongo_id"] = str(raw_id)
+    payload.pop("_id", None)
+    payload["room_id"] = room_id
+
     # Ép kiểu ObjectId và Datetime trong dict
     import datetime
-    for key, value in payload.items():
+    for key, value in list(payload.items()):
         if hasattr(value, "__class__") and value.__class__.__name__ == "ObjectId":
             payload[key] = str(value)
         elif isinstance(value, datetime.datetime):
             payload[key] = value.isoformat()
-            
-    # Giữ lại các trường meta quan trọng cho vector DB
+
     payload["chunk_type"] = "room_summary"
     return payload
+
+
+def room_point_id_for_doc(doc: dict[str, Any], chunk_type: str = "room_summary") -> str:
+    return QdrantWrapper.room_point_id(canonical_room_id(doc), chunk_type=chunk_type)
 
 
 def _format_datetime(val: Any) -> str | None:
@@ -109,7 +114,6 @@ def main():
     
     # 2. Connect to Qdrant
     console.print(f"[bold green]3. Kết nối Qdrant tại {QDRANT_URL}...[/]")
-    from retrieval.qdrant_client import QdrantWrapper
     from qdrant_client.http.models import SparseVector
     
     force_recreate = "--force" in sys.argv
@@ -185,8 +189,7 @@ def main():
             sparse_indices, sparse_values = wrapper._text_to_sparse(text)
             payload = build_payload(doc)
             
-            # UUID5 hash từ Mongo ObjectId
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(doc["_id"])))
+            point_id = room_point_id_for_doc(doc)
             
             batch_points.append(
                 PointStruct(
@@ -209,7 +212,7 @@ def main():
         )
 
     for doc in cursor:
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(doc["_id"])))
+        point_id = room_point_id_for_doc(doc)
         mongo_point_ids.add(point_id)
         
         # Kiểm tra updated_at để quyết định có skip hay không

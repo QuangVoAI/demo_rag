@@ -17,6 +17,81 @@ from .repository import RoomRepository
 VALID_OPERATIONS = {"upsert", "delete", "publish", "unpublish"}
 RETRYABLE_ERRORS = {"mongo_timeout", "network_timeout", "embedding_timeout", "qdrant_timeout", "inconsistent_data"}
 
+_MONGO_CDC_OPERATION_MAP = {
+    "insert": "upsert",
+    "update": "upsert",
+    "replace": "upsert",
+    "upsert": "upsert",
+    "delete": "delete",
+    "publish": "publish",
+    "unpublish": "unpublish",
+}
+
+
+def coerce_room_changed_event(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize legacy `{action, room_id}` payloads into the full indexing schema."""
+    if not isinstance(raw, dict):
+        raise PermanentIndexingError("invalid_schema", "Event must be a dict")
+
+    required = ("event_id", "room_id", "operation", "source_version", "occurred_at", "producer")
+    if all(field in raw for field in required):
+        merged = dict(raw)
+        operation = str(merged.get("operation") or merged.get("action") or "").strip().lower()
+        mapped = _MONGO_CDC_OPERATION_MAP.get(operation, operation)
+        merged["operation"] = mapped
+        return merged
+
+    room_id = raw.get("room_id")
+    action = raw.get("action") or raw.get("operation")
+    if not room_id or not action:
+        raise PermanentIndexingError("invalid_schema", "Missing room_id or operation/action")
+
+    now = datetime.now(timezone.utc).isoformat()
+    operation = _MONGO_CDC_OPERATION_MAP.get(str(action).strip().lower(), str(action).strip().lower())
+    return {
+        "event_id": str(raw.get("event_id") or f"legacy-{room_id}-{int(time.time() * 1000)}"),
+        "room_id": str(room_id),
+        "operation": operation,
+        "source_version": int(raw.get("source_version") or 0),
+        "occurred_at": str(raw.get("occurred_at") or now),
+        "producer": str(raw.get("producer") or "mongo-cdc"),
+    }
+
+
+def source_version_from_change(change: dict[str, Any], doc: dict[str, Any] | None = None) -> int:
+    if doc and doc.get("source_version") is not None:
+        try:
+            return int(doc["source_version"])
+        except Exception:
+            pass
+    cluster_time = change.get("clusterTime")
+    if cluster_time is not None:
+        try:
+            return int(getattr(cluster_time, "time", cluster_time))
+        except Exception:
+            pass
+    return int(time.time())
+
+
+def build_mongo_cdc_event(
+    *,
+    room_id: str,
+    mongo_operation: str,
+    source_version: int | None = None,
+    producer: str = "mongo-cdc",
+) -> dict[str, Any]:
+    operation = _MONGO_CDC_OPERATION_MAP.get(str(mongo_operation).strip().lower(), "upsert")
+    now = datetime.now(timezone.utc).isoformat()
+    version = int(source_version or 0)
+    return {
+        "event_id": f"cdc-{room_id}-{int(time.time() * 1000)}",
+        "room_id": str(room_id),
+        "operation": operation,
+        "source_version": version,
+        "occurred_at": now,
+        "producer": producer,
+    }
+
 
 class RoomVectorIndex(Protocol):
     def get_payload(self, room_id: str, chunk_type: str = "room_summary") -> dict | None:
@@ -72,6 +147,7 @@ class RetryableIndexingError(Exception):
 
 
 def validate_room_changed_event(event: dict[str, Any]) -> dict[str, Any]:
+    event = coerce_room_changed_event(event)
     required = ("event_id", "room_id", "operation", "source_version", "occurred_at", "producer")
     missing = [field for field in required if field not in event]
     if missing:

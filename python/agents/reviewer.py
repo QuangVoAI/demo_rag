@@ -150,12 +150,15 @@ async def review_with_retry(
     max_retries: int = 1,
 ) -> tuple[str, dict]:
     """
-    Review + tự sửa nếu phát hiện vi phạm.
+    Review and optionally replace the draft answer before it is streamed to users.
 
-    Giới hạn max_retries để tránh tốn quá nhiều token.
+    Policy: when the reviewer returns ``corrected_answer``, that text replaces the
+    draft and is treated as approved. Otherwise rejected answers may trigger one
+    rewrite retry. Streaming happens only after this function returns.
     """
     current_answer = answer
     result = {"is_approved": True, "issues": [], "suggestion": ""}
+    used_corrected_answer = False
 
     for attempt in range(max_retries + 1):
         result = await review(question, current_answer, room_context)
@@ -167,6 +170,7 @@ async def review_with_retry(
         if corrected and str(corrected).strip().lower() not in {"", "null", "none"}:
             current_answer = str(corrected).strip()
             result["is_approved"] = True
+            used_corrected_answer = True
             break
 
         console.print(f"[yellow]  Reviewer retry #{attempt + 1}: {result['issues']}[/]")
@@ -192,6 +196,7 @@ async def review_with_retry(
             break  # Giữ answer cũ nếu retry lỗi
 
     result["retry_count"] = max_retries
+    result["used_corrected_answer"] = used_corrected_answer
     return current_answer, result
 
 import re

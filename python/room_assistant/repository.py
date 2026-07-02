@@ -417,25 +417,19 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
     location = constraints.get("location") or {}
     if location.get("province"):
         query["$and"].append({
-            "$or": [
-                {"metadata.province_name": {"$regex": location["province"], "$options": "i"}},
-                {"embedding_text": {"$regex": location["province"], "$options": "i"}},
-            ]
+            "metadata.province_name": {"$regex": location["province"], "$options": "i"},
         })
     if location.get("districts"):
         district_clauses = []
         for d in location["districts"]:
             for variant in _location_query_variants(d):
                 district_clauses.append({"metadata.district_name": {"$regex": variant, "$options": "i"}})
-                district_clauses.append({"embedding_text": {"$regex": variant, "$options": "i"}})
         query["$and"].append({"$or": district_clauses})
     if location.get("wards"):
         ward_clauses = []
         for w in location["wards"]:
-            # Dùng regex linh hoạt dấu để "tan hung" khớp "Tân Hưng" trong dữ liệu có dấu.
             pattern = _accent_flexible_regex(str(w))
             ward_clauses.append({"metadata.ward_name": {"$regex": pattern, "$options": "i"}})
-            ward_clauses.append({"embedding_text": {"$regex": pattern, "$options": "i"}})
         query["$and"].append({"$or": ward_clauses})
     if location.get("near_landmarks"):
         landmark_clauses = []
@@ -450,50 +444,48 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
                 ])
         query["$and"].append({"$or": landmark_clauses})
 
-    # Amenities/features — search within embedding_text
+    # Amenities/features — prefer structured amenities array; post-filter handles edge cases.
     required = constraints.get("amenities_required") or []
     for amenity in required:
-        positive_pattern = _amenity_positive_pattern(amenity)
-        if positive_pattern:
-            query["$and"].append({"embedding_text": {"$regex": positive_pattern, "$options": "i"}})
+        query["$and"].append({"amenities": str(amenity).strip().lower()})
 
     excluded = constraints.get("excluded_features") or []
     for feature in excluded:
-        positive_pattern = _amenity_positive_pattern(feature)
-        if positive_pattern:
-            query["$and"].append({"embedding_text": {"$not": {"$regex": positive_pattern, "$options": "i"}}})
+        query["$and"].append({"amenities": {"$ne": str(feature).strip().lower()}})
 
-    for category in constraints.get("categories") or []:
-        category_clauses = _category_embedding_clauses(str(category))
-        if category_clauses:
-            query["$and"].append({"$or": category_clauses})
+    categories = constraints.get("categories") or []
+    category_groups = _group_category_constraints([str(item) for item in categories])
+    if categories and not _category_groups_active(category_groups):
+        for category in categories:
+            category_clauses = _category_query_clauses(str(category))
+            if category_clauses:
+                query["$and"].append({"$or": category_clauses})
 
     if constraints.get("pets_required"):
-        query["$and"].append({
-            "embedding_text": {"$regex": r"Thú cưng\s*:\s*Có", "$options": "i"},
-        })
+        # Pet preference is applied in post-filter (exclude explicit denial) and retrieval ranking.
+        pass
 
     return query
 
 
-def _category_embedding_clauses(category: str) -> list[dict[str, Any]]:
-    terms = CATEGORY_SEARCH_TERMS.get(str(category).strip().lower())
-    if not terms:
+def _category_query_clauses(category: str) -> list[dict[str, Any]]:
+    canonical = str(category).strip().lower()
+    if not canonical:
         return []
-    clauses: list[dict[str, Any]] = []
-    for term in terms:
-        pattern = _accent_flexible_regex(term)
-        clauses.extend([
-            {"embedding_text": {"$regex": pattern, "$options": "i"}},
-            {"metadata.house_name": {"$regex": pattern, "$options": "i"}},
-            {"metadata.room_code": {"$regex": pattern, "$options": "i"}},
-        ])
-    return clauses
+    # Room-type labels are often missing from Mongo `category`; post-filter uses embedding text.
+    if canonical in ROOM_TYPE_CATEGORIES:
+        return []
+    return [{"category": canonical}]
 
 
 def _needs_post_constraint_pass(constraints: dict[str, Any]) -> bool:
+    categories = constraints.get("categories") or []
+    category_groups = _group_category_constraints([str(item) for item in categories])
     return bool(
-        constraints.get("categories")
+        categories
+        or _category_groups_active(category_groups)
+        or constraints.get("amenities_required")
+        or constraints.get("excluded_features")
         or constraints.get("pets_required")
         or constraints.get("occupants")
         or constraints.get("vehicles")
@@ -526,9 +518,53 @@ CATEGORY_SEARCH_TERMS: dict[str, tuple[str, ...]] = {
     "mat_bang": ("mat bang", "mặt bằng"),
 }
 
+ROOM_TYPE_CATEGORIES = frozenset({"phong_tro", "can_ho", "chdv", "studio", "nha_pho", "mat_bang", "duplex"})
+BEDROOM_CATEGORIES = frozenset({"1pn", "2pn", "3pn"})
+SPECIAL_CATEGORIES = frozenset({
+    "sleepbox", "sleepbox_nu", "sleepbox_nam",
+    "giuong_nam", "giuong_nu", "giuong_tang",
+})
+
+
+def _group_category_constraints(categories: list[str]) -> dict[str, list[str]]:
+    groups = {"room_type": [], "bedroom": [], "special": []}
+    for category in categories:
+        canonical = str(category).strip().lower()
+        if not canonical:
+            continue
+        if canonical in ROOM_TYPE_CATEGORIES:
+            groups["room_type"].append(canonical)
+        elif canonical in BEDROOM_CATEGORIES:
+            groups["bedroom"].append(canonical)
+        else:
+            groups["special"].append(canonical)
+    return groups
+
+
+def _category_groups_active(groups: dict[str, list[str]]) -> bool:
+    active = [name for name, values in groups.items() if values]
+    return len(active) > 1 or (
+        len(active) == 1 and len(next(values for values in groups.values() if values)) > 1
+    )
+
+
+def _room_matches_category_groups(room: dict[str, Any], groups: dict[str, list[str]]) -> bool:
+    for values in groups.values():
+        if not values:
+            continue
+        if not any(_room_matches_category(room, category) for category in values):
+            return False
+    return True
+
 
 def _room_matches_category(room: dict[str, Any], category: str) -> bool:
-    terms = CATEGORY_SEARCH_TERMS.get(str(category).strip().lower())
+    canonical = str(category).strip().lower()
+    room_category = str(room.get("category_key") or room.get("category") or "").strip().lower()
+    if room_category == canonical:
+        return True
+    if canonical in ROOM_TYPE_CATEGORIES and room_category in ROOM_TYPE_CATEGORIES:
+        return room_category == canonical
+    terms = CATEGORY_SEARCH_TERMS.get(canonical)
     if not terms:
         return True
     text = _normalize_location_value(_room_searchable_text(room))
@@ -536,6 +572,16 @@ def _room_matches_category(room: dict[str, Any], category: str) -> bool:
 
 
 def _room_allows_pets(room: dict[str, Any]) -> bool:
+    policy = str(room.get("pet_policy") or "").strip().lower()
+    if policy == "denied":
+        return False
+    if policy == "allowed":
+        return True
+    if _room_has_canonical_amenity(room.get("amenities_canonical") or [], "pets_allowed"):
+        return True
+    if _room_has_canonical_amenity(room.get("amenities") or [], "pets_allowed"):
+        return True
+
     import re
 
     text = str(room.get("embedding_text") or "")
@@ -543,11 +589,7 @@ def _room_allows_pets(room: dict[str, Any]) -> bool:
         return False
     if re.search(r"Thú cưng\s*:\s*Có", text, re.IGNORECASE):
         return True
-    if _room_has_positive_amenity(room, "pets_allowed"):
-        return True
-    if _room_has_canonical_amenity(room.get("amenities") or [], "pets_allowed"):
-        return True
-    return False
+    return _room_has_positive_amenity(room, "pets_allowed")
 
 
 def _room_max_occupants(room: dict[str, Any]) -> int | None:
@@ -575,11 +617,18 @@ def _room_supports_occupants(room: dict[str, Any], occupants: int) -> bool:
 
 def _room_supports_vehicle(room: dict[str, Any], vehicle: str) -> bool:
     vehicle = str(vehicle).strip().lower()
+    vehicle_policy = str(room.get("vehicle_policy") or "").strip().lower()
+    if vehicle_policy == "denied" and vehicle in {"motorbike", "car", "electric_bike"}:
+        return False
     if vehicle == "electric_bike":
-        return _room_has_positive_amenity(room, "ev_charging") or _room_has_canonical_amenity(
-            room.get("amenities") or [], "ev_charging"
+        if _room_has_canonical_amenity(room.get("amenities_canonical") or [], "ev_charging"):
+            return True
+        return _room_has_canonical_amenity(room.get("amenities") or [], "ev_charging") or _room_has_positive_amenity(
+            room, "ev_charging"
         )
     if vehicle in {"motorbike", "car"}:
+        if vehicle_policy == "allowed":
+            return True
         import re
 
         text = _room_searchable_text(room)
@@ -613,10 +662,20 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
                 return False
 
     location = constraints.get("location") or {}
+    if location.get("province"):
+        room_province = _normalize_location_value(room.get("province"))
+        target_province = _normalize_location_value(location["province"])
+        if room_province and target_province and room_province != target_province:
+            return False
     if location.get("districts"):
         room_district = _normalize_location_value(room.get("district"))
         target_districts = {_normalize_location_value(item) for item in location["districts"]}
         if room_district and room_district not in target_districts:
+            return False
+    if location.get("wards"):
+        room_ward = _normalize_location_value(room.get("ward"))
+        target_wards = {_normalize_location_value(item) for item in location["wards"]}
+        if room_ward and target_wards and room_ward not in target_wards:
             return False
     if location.get("near_landmarks"):
         searchable = " ".join(
@@ -652,13 +711,22 @@ def room_matches_constraints(room: dict[str, Any], constraints: dict[str, Any]) 
         if _room_has_positive_amenity(room, feature):
             return False
 
-    for category in constraints.get("categories") or []:
-        if not _room_matches_category(room, category):
+    categories = constraints.get("categories") or []
+    if categories:
+        category_groups = _group_category_constraints([str(item) for item in categories])
+        if not _room_matches_category_groups(room, category_groups):
             return False
 
     pets_required = constraints.get("pets_required") or []
     if pets_required and not _room_allows_pets(room):
-        return False
+        import re
+        text = str(room.get("embedding_text") or "")
+        policy = str(room.get("pet_policy") or "").strip().lower()
+        explicitly_denied = policy == "denied" or bool(
+            re.search(r"Thú cưng\s*:\s*Không", text, re.IGNORECASE)
+        )
+        if explicitly_denied:
+            return False
 
     occupants = constraints.get("occupants")
     if isinstance(occupants, int) and occupants > 0 and not _room_supports_occupants(room, occupants):
@@ -708,6 +776,12 @@ def _amenity_positive_pattern(amenity: str) -> str | None:
 
 def _room_has_positive_amenity(room: dict[str, Any], amenity: str) -> bool:
     import re
+
+    canonical = str(amenity).strip().lower()
+    if _room_has_canonical_amenity(room.get("amenities_canonical") or [], canonical):
+        return True
+    if _room_has_canonical_amenity(room.get("amenities") or [], canonical):
+        return True
 
     pattern = _amenity_positive_pattern(amenity)
     if not pattern:

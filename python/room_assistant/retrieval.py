@@ -6,7 +6,12 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from .repository import RoomRepository, room_matches_constraints
+from .repository import (
+    RoomRepository,
+    room_matches_constraints,
+    _room_has_canonical_amenity,
+    _room_has_positive_amenity,
+)
 from retrieval.metadata_search import extract_metadata_signals, score_metadata_hit
 
 
@@ -157,7 +162,11 @@ def _rank_attempt(
             float(candidate.get("_metadata_score") or 0.0),
             score_metadata_hit(candidate, signals, cfg["metadata_fields"]),
         )
-        combined_score = rrf_score + metadata_score * cfg["metadata_boost"]
+        preferred_boost = _preferred_amenities_boost(
+            candidate,
+            constraints.get("amenities_preferred") or [],
+        )
+        combined_score = rrf_score + metadata_score * cfg["metadata_boost"] + preferred_boost
         ranked.append({
             "room_id": room_id,
             "rrf_score": rrf_score,
@@ -316,6 +325,22 @@ def _maybe_rerank_candidates(
         reverse=True,
     )
     return ranked
+
+
+def _preferred_amenities_boost(room: dict[str, Any], preferred: list[str]) -> float:
+    """Soft ranking boost for amenities_preferred (not a hard filter)."""
+    if not preferred:
+        return 0.0
+    boost = 0.0
+    for amenity in preferred:
+        canonical = str(amenity).strip().lower()
+        if _room_has_canonical_amenity(room.get("amenities_canonical") or [], canonical):
+            boost += 0.15
+        elif _room_has_canonical_amenity(room.get("amenities") or [], canonical):
+            boost += 0.12
+        elif _room_has_positive_amenity(room, canonical):
+            boost += 0.08
+    return boost
 
 
 def _metadata_filter_from_constraints(constraints: dict[str, Any]) -> dict[str, Any]:

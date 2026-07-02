@@ -139,6 +139,10 @@ REQUEST_ACTION_ANSWER = (
 )
 REQUEST_ACTION_DEFAULT = "thao tác nghiệp vụ"
 
+FIND_SIMILAR_MISSING_SOURCE = (
+    "Dạ em chưa rõ anh/chị muốn tìm phòng tương tự căn nào. "
+    "Anh/chị gửi mã phòng hoặc chọn một phòng trong danh sách giúp em nha!"
+)
 ASK_ROOM_MISSING_ID = (
     "Dạ em chưa rõ anh/chị đang quan tâm căn nào. Anh/chị gửi mã phòng cho em nha!"
 )

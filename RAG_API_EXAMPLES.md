@@ -1,12 +1,52 @@
 # RAG API Examples
 
-## Health Check
+## Health Check (shallow)
+
+Fast liveness probe — does not call Mongo/Qdrant/LLM.
 
 ```bash
 curl https://your-rag-host/api/health/
 ```
 
-## cURL
+Example response:
+
+```json
+{
+  "success": true,
+  "status": "ok",
+  "service": "nhatrovn-rag",
+  "api": {
+    "rag_query_path": "/api/rag/query/",
+    "rag_stream_path": "/api/rag/stream/",
+    "health_deep_path": "/api/health/deep/"
+  }
+}
+```
+
+## Deep Health Check (optional)
+
+Use before cutover or in staging monitors. May return `503` when Mongo is unreachable.
+
+```bash
+curl https://your-rag-host/api/health/deep/
+```
+
+Example response:
+
+```json
+{
+  "success": true,
+  "status": "ok",
+  "service": "nhatrovn-rag",
+  "checks": {
+    "mongodb": {"status": "ok"},
+    "qdrant": {"status": "ok"},
+    "llm": {"status": "ok"}
+  }
+}
+```
+
+## Success query
 
 ```bash
 curl -X POST https://your-rag-host/api/rag/query/ \
@@ -19,6 +59,93 @@ curl -X POST https://your-rag-host/api/rag/query/ \
       { "role": "user", "content": "Mình cần gần trung tâm" }
     ]
   }'
+```
+
+Example response (trimmed):
+
+```json
+{
+  "success": true,
+  "session_id": "web-user-123",
+  "reply": "Dạ em tìm được vài phòng phù hợp ạ...",
+  "intent": "SEARCH_ROOM",
+  "session_state": {"constraints": {"budget": {"max": 5000000}}},
+  "rooms": [{"room_id": "A101", "title": "Studio Bình Thạnh"}],
+  "sources": [{"type": "room", "room_id": "A101"}],
+  "verification": {"approved": true},
+  "retrieval_confidence": 0.82,
+  "processing_time_ms": 1234
+}
+```
+
+## No-result sales handoff
+
+When inventory miss is confirmed for district/budget constraints:
+
+```json
+{
+  "success": true,
+  "intent": "SEARCH_ROOM",
+  "rooms": [],
+  "reply": "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ...",
+  "suggested_questions": ["Nới ngân sách lên 6 triệu", "Xem phòng quận lân cận"]
+}
+```
+
+## Request action refusal
+
+```json
+{
+  "success": true,
+  "intent": "REQUEST_ACTION",
+  "rooms": [],
+  "reply": "Dạ tính năng thao tác tự động em chưa được học ạ..."
+}
+```
+
+## Validation error
+
+```json
+{
+  "success": false,
+  "message": "Vui lòng nhập câu hỏi.",
+  "error": {
+    "code": "validation_error",
+    "message": "Vui lòng nhập câu hỏi.",
+    "retryable": false,
+    "http_status": 400
+  }
+}
+```
+
+## Rate limit
+
+```json
+{
+  "success": false,
+  "message": "Too many requests. Please retry later.",
+  "rate_limited": true,
+  "retry_after_seconds": 42,
+  "error": {
+    "code": "rate_limited",
+    "message": "Too many requests. Please retry later.",
+    "retryable": true,
+    "http_status": 200
+  }
+}
+```
+
+## Source fields
+
+Typical `sources` item:
+
+```json
+{
+  "type": "room",
+  "room_id": "A101",
+  "title": "Studio Bình Thạnh",
+  "property_id": "665f00000000000000000001"
+}
 ```
 
 ## Frontend fetch
@@ -43,24 +170,8 @@ if (!response.ok || !payload.success) {
 }
 ```
 
-## Backend axios
+## `/api/chat/` contract note
 
-```js
-import axios from "axios";
+`POST /api/chat/` streams SSE and its `final` payload now mirrors the RAG contract fields (`session_state`, `verification`, `cost_estimate`, `comparison`, retrieval metrics). Reload via `GET /api/chat/` restores assistant message metadata (`rooms`, `follow_ups`, `sources`, `intent`) from persisted chat history.
 
-const { data } = await axios.post(
-  "https://your-rag-host/api/rag/query/",
-  {
-    message: userMessage,
-    session_id: conversationId,
-    history: history.slice(-10),
-  },
-  {
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": process.env.RAG_API_KEY,
-    },
-    timeout: 65000,
-  }
-);
-```
+`POST /api/chat/` does **not** enforce `RAG_API_KEY` or the RAG rate-limit bucket by default — first-party demo UI only. External integrators should use `/api/rag/query/` or `/api/rag/stream/`.

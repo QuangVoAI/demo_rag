@@ -428,6 +428,27 @@ class IntentParserTests(unittest.TestCase):
         self.assertIn("P.305", parsed["referenced_room_ids"])
         self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
 
+    def test_area_measurement_is_not_treated_as_room_id(self):
+        parsed = parse_intent_and_constraint_patch("tìm phòng 20m2 quận 7")
+        self.assertEqual(parsed["intent"], "SEARCH_ROOM")
+        self.assertEqual(parsed["referenced_room_ids"], [])
+
+    def test_compare_first_and_third_item_without_phong_word(self):
+        state = default_session_state("s-compare-can")
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        parsed = parse_intent_and_constraint_patch("So sánh căn đầu tiên và thứ ba", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+        self.assertEqual(parsed["referenced_room_ids"], ["A101", "C303"])
+
+    def test_location_pivot_doi_sang_does_not_add_bright_preference(self):
+        state = default_session_state("s-pivot-bright")
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "binh thanh"},
+        ])
+        parsed = parse_intent_and_constraint_patch("đổi sang quận 7", state)
+        preferred = [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
+        self.assertNotIn("bright", preferred)
+
 
 if __name__ == "__main__":
     unittest.main()

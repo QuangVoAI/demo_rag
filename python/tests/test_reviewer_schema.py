@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest.mock import patch
 
-from agents.reviewer import _parse_result
+from agents.reviewer import _parse_result, review_with_retry
 
 
 class ReviewerSchemaTests(unittest.TestCase):
@@ -25,6 +27,23 @@ class ReviewerSchemaTests(unittest.TestCase):
     def test_safe_none_violation_approves(self):
         result = _parse_result('{"safe": true, "violation_type": "none", "feedback": ""}')
         self.assertTrue(result["is_approved"])
+
+    def test_review_with_retry_applies_corrected_answer(self):
+        async def fake_review(_question, _answer, _room_context=""):
+            return {
+                "is_approved": False,
+                "issues": ["Giá không khớp"],
+                "corrected_answer": "Giá 4.5 triệu",
+            }
+
+        with patch("agents.reviewer.review", side_effect=fake_review):
+            answer, result = asyncio.run(
+                review_with_retry("Giá bao nhiêu?", "Giá 9 triệu", room_context="price=4500000")
+            )
+
+        self.assertEqual(answer, "Giá 4.5 triệu")
+        self.assertTrue(result["is_approved"])
+        self.assertTrue(result["used_corrected_answer"])
 
 
 if __name__ == "__main__":

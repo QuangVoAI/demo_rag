@@ -414,7 +414,14 @@ def _extract_room_ids(text: str) -> list[str]:
     return ids
 
 
+def _looks_like_area_measurement(value: str) -> bool:
+    compact = str(value or "").strip().lower().replace(" ", "")
+    return bool(re.fullmatch(r"\d{1,3}m2", compact)) or bool(re.fullmatch(r"\d{1,3}m²", compact))
+
+
 def _looks_like_room_id(value: str) -> bool:
+    if _looks_like_area_measurement(value):
+        return False
     return any(ch.isdigit() for ch in value)
 
 
@@ -739,6 +746,8 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
         _append_unique(ops, "append", "excluded_features", feature)
 
     for alias, canonical in SOFT_PREFERENCE_ALIASES.items():
+        if _is_location_pivot_phrase(normalized) and canonical == "bright":
+            continue
         if _contains_phrase(normalized, alias):
             _append_unique(ops, "append", "amenities_preferred", canonical)
 
@@ -801,7 +810,18 @@ def _is_chitchat_or_closing(normalized: str) -> bool:
     return any(_contains_phrase(compact, keyword) for keyword in CHITCHAT_KEYWORDS)
 
 
+def _is_location_pivot_phrase(normalized: str) -> bool:
+    return bool(re.search(
+        r"\b(?:doi|đổi|chuyen|chuyển|sang|ve|về)\b.*\b(?:quan|q\.?|phuong|phường|khu)\b",
+        normalized,
+    ))
+
+
 def _is_room_detail_question(normalized: str, ids: list[str], current_state: dict[str, Any] | None) -> bool:
+    if re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\s+nao\b", normalized):
+        return False
+    if re.search(r"\b(?:can|phong|nha)\s+nao\s+(?:co|con)\b", normalized):
+        return False
     if re.search(r"\b(?:them|thêm|bo|bỏ|loai|loại|xoa|xóa)\s+(?:dieu kien|điều kiện)\b", normalized):
         return False
     if re.search(r"\b(?:tim|tìm|loc|lọc)\s+phong\b", normalized):
@@ -860,6 +880,32 @@ def _ordinal_indices_from_text(normalized: str) -> list[int]:
     first_match = re.search(r"\b(?:phong|phòng)\s+(?:dau tien|đầu tiên)\b", normalized)
     if first_match:
         hits.append((first_match.start(), 0))
+    for match in re.finditer(
+        r"\b(?:can|căn|cai|cái|muc|mục)\s*(?:so|số|thu|thứ|#)?\s*(\d{1,2})\b",
+        normalized,
+    ):
+        hits.append((match.start(), int(match.group(1)) - 1))
+    for match in re.finditer(
+        r"\b(?:can|căn|cai|cái|muc|mục)\s+(?:thu|thứ|so|số)?\s*(mot|một|nhat|nhất|hai|ba|bon|bốn|tu|tư|nam|năm)\b",
+        normalized,
+    ):
+        index = _ORDINAL_WORD_INDEX.get(match.group(1))
+        if index is not None:
+            hits.append((match.start(), index))
+    first_item = re.search(r"\b(?:can|căn|cai|cái|muc|mục)\s+(?:dau tien|đầu tiên)\b", normalized)
+    if first_item:
+        hits.append((first_item.start(), 0))
+    if re.search(r"\bso\s*sanh\b", normalized):
+        for match in re.finditer(r"\b(?:so|số)\s*(\d{1,2})\b", normalized):
+            index = int(match.group(1)) - 1
+            hits.append((match.start(), index))
+        for match in re.finditer(
+            r"\b(?:thu|thứ)\s*(mot|một|nhat|nhất|hai|ba|bon|bốn|tu|tư|nam|năm)\b",
+            normalized,
+        ):
+            index = _ORDINAL_WORD_INDEX.get(match.group(1))
+            if index is not None:
+                hits.append((match.start(), index))
     hits.sort(key=lambda item: item[0])
     indices: list[int] = []
     for _, index in hits:
@@ -892,6 +938,14 @@ _DETAIL_SEARCH_OP_PATHS = frozenset({
     "amenities_preferred",
     "categories",
     "excluded_features",
+    "budget.min",
+    "budget.max",
+    "budget.min_operator",
+    "budget.max_operator",
+    "location.districts",
+    "location.wards",
+    "location.province",
+    "location.near_landmarks",
 })
 
 
@@ -903,10 +957,22 @@ def _strip_detail_question_search_ops(
     referenced_room_ids: list[str],
     current_state: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    if intent not in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}:
+    about_current_room = (
+        intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}
+        or (
+            _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS)
+            and _has_current_room(current_state)
+            and not any(kw in normalized for kw in _INTENT_KEYWORDS["SEARCH_ROOM"])
+            and not re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\s+nao\b", normalized)
+        )
+    )
+    if not about_current_room:
         return operations
-    if not _is_room_detail_question(normalized, referenced_room_ids, current_state):
-        return operations
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and not _is_room_detail_question(
+        normalized, referenced_room_ids, current_state
+    ):
+        if not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+            return operations
     return [op for op in operations if op.get("path") not in _DETAIL_SEARCH_OP_PATHS]
 
 
@@ -1185,7 +1251,11 @@ def _merge_router_decision(
         for item in llm_candidate.get("soft_operations", []):
             if item not in operations:
                 operations.append(item)
+    regex_hard_paths = {item.get("path") for item in regex_hard_ops} if regex_hard_ops else set()
     for item in verifier.get("approved_operations", []) or []:
+        path = item.get("path")
+        if path in HARD_OPERATION_PATHS and regex_hard_paths and path in regex_hard_paths:
+            continue
         if item not in operations and item.get("path") in ALLOWED_OPERATION_PATHS and item.get("op") in OP_TYPES:
             operations.append(item)
 

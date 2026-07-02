@@ -1,0 +1,624 @@
+[
+  {
+    "id": "TC_CHAT_01",
+    "group": "drawer",
+    "sends": [],
+    "expected_note": "Chào bạn, mình là CSKH của nhatrovn. Bạn đang cần tìm phòng ở khu vực nào để mình hỗ trợ nhanh cho bạn nhé?",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_02",
+    "group": "login",
+    "sends": [],
+    "expected_note": "Nếu trong collection Contact có lưu sđt của nhân viên, khi bấm role Khách hàng sẽ tự động vào trang chat của nhân viên",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_03",
+    "group": "login",
+    "sends": [],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_04",
+    "group": "login",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_05",
+    "group": "Bootstrap",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_06",
+    "group": "Welcome",
+    "sends": [],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_07",
+    "group": "message",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.204(#61ea636e3048d576be90729 b) — chỉ 4.800.000 VND/tháng, Quận 7. 2. C2-C3 HOÀNG QUỐC VIỆT - P.206(#61ea636e3048d576be90729 f) — chỉ 4.800.000 VND/tháng, Quận 7. 3. CN03 LPM - P.03.2 (#6272207589386819cb426 558) — chỉ 900.000 VND/tháng, Quận 7. 4. YUHOME 3 - 104 (#62963aae137e2a3d7e03c9c2) — chỉ 2.200.000 VND/tháng, Quận 7. 5. YUHOME 3 - 402 (#62963aae137e2a3d7e03c9e9) — chỉ 2.200.000 VND/tháng, Quận 7. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_08",
+    "group": "stream",
+    "sends": [
+      "Cho tôi tìm phòng studio quận 7 giá dưới 6 triệu"
+    ],
+    "expected_note": "Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 79-87DS19-TÂN QUY - A009(#63c744616f8843164879890 2) — chỉ 5.000.000 VND/tháng, Quận 7. 2. 79-87DS19-TÂN QUY - A211(#63c744616f8843164879891 c) — chỉ 4.900.000 VND/tháng, Quận 7. 3. 79-87DS19-TÂN QUY - A003(#63c744616f884316487988fc ) — chỉ 5.000.000 VND/tháng, Quận 7. 4. 79-87DS19-TÂN QUY - A002(#63c744616f884316487988f b) — chỉ 5.000.000 VND/tháng, Quận 7. 5. 111 TRẦN TRỌNG CUNG - 101(#64b79a9387e29b37872d0070) — chỉ 5.900.000 VND/tháng, Quận 7. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_09",
+    "group": "rooms",
+    "sends": [
+      "Tìm phòng có máy lạnh ở Bình Thạnh dưới 5 triệu"
+    ],
+    "expected_note": "Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 26/42 TRẦN QUÝ CÁP - P.202(#62849aeb00eff17936fdf5ba) — chỉ 4.800.000 VND/tháng, Quận Bình Thạnh. 2. 18/10E TĂNG BẠT HỔ - P.101(#632d8af464a8ce5ae762dce6 ) — chỉ 4.800.000 VND/tháng, Quận Bình Thạnh. 3. 26/42 TRẦN QUÝ CÁP - P.203(#62849aeb00eff17936fdf5bb ) — chỉ 4.800.000 VND/tháng, Quận Bình Thạnh. 4. 381/49 PHAN VĂN TRỊ - 204(#636a23627cbc503b596ccb7b) — chỉ 4.300.000 VND/tháng, Quận Bình Thạnh. 5. 381/49 PHAN VĂN TRỊ - 401(#636a23627cbc503b596ccb81) — chỉ 4.500.000 VND/tháng, Quận Bình Thạnh. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_10",
+    "group": "Card",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_11",
+    "group": "Click",
+    "sends": [],
+    "expected_note": "Phòng #62849aeb00eff17936fdf5ba — cho em hỏi thêm chi tiết ạ Dạ em hiểu anh/chị muốn biết thêm thông tin về phòng #62849aeb00eff17936fdf5ba này ạ! 😊 Phòng này có diện tích 18 m², nằm tại địa chỉ 26/42 Trần Quý Cáp, Quận Bình Thạnh. Giá thuê là 4.800.000 VND/tháng, và đã được xác minh có máy lạnh, cửa sổ, wifi miễn phí. Mỗi phòng có toilet riêng và giờ giấc tự do, rất phù hợp cho những ai muốn có không gian riêng tư 🏠. Sáng mai hay chiều mai anh/chị tiện ghé xem hơn ạ? 🌿 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_12",
+    "group": "ID",
+    "sends": [
+      "Tìm phòng quận 7 gần trường đại học"
+    ],
+    "expected_note": "Có các gợi ý sau khi trả ra các thẻ phòng: + Tính tổng chi phí cho #63c744616f88431648798902 + Tóm tắt ưu điểm và hạn chế của #63c744616f88431648798902 + Tìm phòng tương tự nhưng rẻ hơn Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_13",
+    "group": "Search",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.204(#61ea636e3048d576be90729 b) — chỉ 4.800.000 VND/tháng, Quận 7. 2. C2-C3 HOÀNG QUỐC VIỆT - P.206(#61ea636e3048d576be90729 f) — chỉ 4.800.000 VND/tháng, Quận 7. 3. CN03 LPM - P.03.2 (#6272207589386819cb426 558) — chỉ 900.000 VND/tháng, Quận 7. 4. YUHOME 3 - 104 (#62963aae137e2a3d7e03c9c2) — chỉ 2.200.000 VND/tháng, Quận 7. 5. YUHOME 3 - 402 (#62963aae137e2a3d7e03c9e9) — chỉ 2.200.000 VND/tháng, Quận 7. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_14",
+    "group": "Search",
+    "sends": [
+      "Tìm phòng có máy lạnh ở Bình Thạnh"
+    ],
+    "expected_note": "Trả ra kết quả phòng có máy lạnh, có trong mô tả chi tiết từng phòng Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_15",
+    "group": "Search",
+    "sends": [
+      "Tìm phòng gần TDTU"
+    ],
+    "expected_note": "Chỉ đúng với những địa điểm đã test. Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 79-87DS19-TÂN QUY - A009(#63c744616f8843164879890 2) — chỉ 5.000.000 VND/tháng, Quận 7. 2. 79-87DS19-TÂN QUY - A211(#63c744616f8843164879891 c) — chỉ 4.900.000 VND/tháng, Quận 7. 3. 79-87DS19-TÂN QUY - A213(#63c744616f8843164879891 e) — chỉ 7.000.000 VND/tháng, Quận 7. 4. 79-87DS19-TÂN QUY - A003(#63c744616f884316487988fc ) — chỉ 5.000.000 VND/tháng, Quận 7. 5. 79-87DS19-TÂN QUY - A002(#63c744616f884316487988f b) — chỉ 5.000.000 VND/tháng, Quận 7. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_16",
+    "group": "Search",
+    "sends": [
+      "Tìm phòng 4 đến 6 triệu ở quận 7"
+    ],
+    "expected_note": "Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.204(#61ea636e3048d576be90729 b) — chỉ 4.800.000 VND/tháng, Quận 7. 2. C2-C3 HOÀNG QUỐC VIỆT - P.206(#61ea636e3048d576be90729 f) — chỉ 4.800.000 VND/tháng, Quận 7. 3. 50 ĐƯỜNG SỐ 14 HIMLAM - 202(#66177a98ae9745390203c72d) — chỉ 5.000.000 VND/tháng, Quận 7. 4. 17 ĐƯỜNG 43 - P.3.4 (#630c7d49cb475157b878bbf f) — chỉ 4.500.000 VND/tháng, Quận 7. 5. CUBICITY - INDIAN HOUSE Q7 - 107(#62cc0e17ff6aae63cefbeda7) — chỉ 4.500.000 VND/tháng, Quận 7. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_17",
+    "group": "Search",
+    "sends": [
+      "Tìm phòng 2 người ở, nuôi mèo"
+    ],
+    "expected_note": "Bot sẽ focus vào Thú Cưng và SL Người, kiểm tra nội dung có 2 trường trên không, hoặc ít nhất 1 trong 2 trường. Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 110A NGUYỄN ĐÌNH CHÍNH - P.504(#621d8b6e3e3dc5346fceb68 7) — chỉ 2.800.000 VND/tháng, Quận Phú Nhuận. 2. FULL HOUSE - P.502 (#624f0c3ba019c94de141845 c) — chỉ 3.400.000 VND/tháng, Huyện Nhà Bè. 3. FULL HOUSE - P.602 (#624f0c3ba019c94de141845 1) — chỉ 3.700.000 VND/tháng, Huyện Nhà Bè. 4. BM HOME CMT8 Q1 - P.303(#6271cedd42753704bb3c776 7) — chỉ 8.800.000 VND/tháng, Quận 1. 5. 121 LÊ ĐÌNH CẨN - E10 (#646750b02dac6f541f701a7f) — chỉ 2.800.000 VND/tháng, Quận Bình Tân. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tếh hò bê ài đ h Bộ test case chat ID Nhóm",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_18",
+    "group": "Search",
+    "sends": [
+      "Tìm phòng quận 1 dưới 1 triệu có ban công, máy giặt riêng, cho nuôi 2 chó"
+    ],
+    "expected_note": "User: Tìm phòng quận 1 dưới 1 triệu có ban công, máy giặt riêng, cho nuôi 2 chó Bot: Dạ em tìm mỏi mắt mà chưa thấy phòng nào phù hợp đang hiển thị trên hệ thống ạ. Bên em có đội ngũ sales kiểm tra thêm nguồn phòng nội bộ — đôi khi họ tìm được căn phù hợp hơn ạ. Anh/chị chờ em chút để được tư vấn thêm nha. Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_19",
+    "group": "a",
+    "sends": [
+      "Tìm phòng quận 7 dưới 4 triệu"
+    ],
+    "expected_note": "User: Tìm phòng quận 7 dưới 4 triệu Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. CN03 LPM - P.03.2 (#6272207589386819cb426 558) — chỉ 900.000 VND/tháng, Quận 7. 2. YUHOME 3 - 104 (#62963aae137e2a3d7e03c9c2) — chỉ 2.200.000 VND/tháng, Quận 7. 3. YUHOME 3 - 402 (#62963aae137e2a3d7e03c9e9) — chỉ 2.200.000 VND/tháng, Quận 7. 4. YUHOME 3 - 203 (#62963aae137e2a3d7e03c9d0) — chỉ 2.300.000 VND/tháng, Quận 7. 5. TIẾNTHÀNHHOUSE.945HTP - 201(#635b410eef688d562f34f0e0) — chỉ 3.800.000 VND/tháng, Quận 7. Anh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊 User: Nới thêm 1 triệu Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho ì h đâ Bộ test case chat",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_20",
+    "group": "sang",
+    "sends": [
+      "Tìm phòng Bình Thạnh dưới 5 triệu",
+      "Đổi sang quận 7"
+    ],
+    "expected_note": "User: Tìm phòng Bình Thạnh dưới 5 triệu Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 26/42 TRẦN QUÝ CÁP - P.202(#62849aeb00eff17936fdf5ba) — chỉ 4.800.000 VND/tháng, Quận Bình Thạnh. 2. 18/10E TĂNG BẠT HỔ - P.101(#632d8af464a8ce5ae762dce6 ) — chỉ 4.800.000 VND/tháng, Quận Bình Thạnh. 3. 26/42 TRẦN QUÝ CÁP - P.203(#62849aeb00eff17936fdf5bb ) — chỉ 4.800.000 VND/tháng, Quận Bình Thạnh. 4. 381/49 PHAN VĂN TRỊ - 204(#636a23627cbc503b596ccb7b) — chỉ 4.300.000 VND/tháng, Quận Bình Thạnh. 5. 381/49 PHAN VĂN TRỊ - 401(#636a23627cbc503b596ccb81) — chỉ 4.500.000 VND/tháng, Quận Bình Thạnh. ….. User: Đổi sang quận 7 Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.204(#61ea63",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_21",
+    "group": "a",
+    "sends": [
+      "Tìm phòng có máy lạnh ở quận 7"
+    ],
+    "expected_note": "Note: 630c7d49cb475157b878bbff không có thông tin đề cập đến máy lạnh 61ea636e3048d576be90729f vẫn có máy lạnh khi bỏ yêu cầu máy lạnh User: Tìm phòng có máy lạnh ở quận 7 Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.206(#61ea636e3048d576be90729 f) — chỉ 4.800.000 VND/tháng, Quận 7. 2. 50 ĐƯỜNG SỐ 14 HIMLAM - 202(#66177a98ae9745390203c72d) — chỉ 5.000.000 VND/tháng, Quận 7. 3. 17 ĐƯỜNG 43 - P.3.4 (#630c7d49cb475157b878bbf f) — chỉ 4.500.000 VND/tháng, Quận 7. 4. CUBICITY - INDIAN HOUSE Q7 - 107(#62cc0e17ff6aae63cefbeda7) — chỉ 4.500.000 VND/tháng, Quận 7. 5. TIẾNTHÀNHHOUSE.945HTP - L04(#635b410eef688d562f34f0d9) — chỉ 5.300.000 VND/tháng, Quận 7. Bộ test case chat ID Nhóm Mục tiêu Tiền điều",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_22",
+    "group": "ban",
+    "sends": [
+      "Tìm phòng quận 6 dưới 5 triệu",
+      "Thêm điều kiện có ban công"
+    ],
+    "expected_note": "Tại câu hỏi đầu tiên, khi user hỏi “Tìm phòng quận 6 dưới 5 triệu” => Bot trả ra bao quát phòng có ban công và không có ban công. Tại câu hỏi thêm điều kiện có ban công. => Bot trả ra các phòng bắt buộc Ban công: có Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_23",
+    "group": "Reset",
+    "sends": [
+      "Tìm phòng gần TDTU dưới 5 triệu",
+      "Tìm ở quận 7 thôi"
+    ],
+    "expected_note": "User: Tìm phòng gần TDTU dưới 5 triệu Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 79-87DS19-TÂN QUY - A211(#63c744616f8843164879891 c) — chỉ 4.900.000 VND/tháng, Quận 7. 2. 915/74/8 LÊ VĂN LƯƠNG - P.007(#6890300ef372343449a06ba 2) — chỉ 2.900.000 VND/tháng, Huyện Nhà Bè. 3. KC56 KHU PHỐ 3 TÂN THUẬN TÂY - 101(#686b65df5dc9fa5f8559f38e) — chỉ 1.900.000 VND/tháng, Quận 7. 4. KC56 KHU PHỐ 3 TÂN THUẬN TÂY - 102(#686b65df5dc9fa5f8559f38f) — chỉ 1.900.000 VND/tháng, Quận 7. 5. KC56 KHU PHỐ 3 TÂN THUẬN TÂY - 103(#686b65df5dc9fa5f8559f390) — chỉ 1.900.000 VND/tháng, Quận 7. User: Tìm ở quận 8 thôi Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. BÌNH ĐIỀN 2 - P 308 (#62495922b2049562859762 Bộ te",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_24",
+    "group": "chat",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu",
+      "Rẻ hơn chút được không?"
+    ],
+    "expected_note": "User: Tìm phòng quận 7 dưới 5 triệu Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.204(#61ea636e3048d576be90729 b) — chỉ 4.800.000 VND/tháng, Quận 7. 2. C2-C3 HOÀNG QUỐC VIỆT - P.206(#61ea636e3048d576be90729 f) — chỉ 4.800.000 VND/tháng, Quận 7. 3. CN03 LPM - P.03.2 (#6272207589386819cb426 558) — chỉ 900.000 VND/tháng, Quận 7. 4. YUHOME 3 - 104 (#62963aae137e2a3d7e03c9c2) — chỉ 2.200.000 VND/tháng, Quận 7. 5. YUHOME 3 - 402 (#62963aae137e2a3d7e03c9e9) — chỉ 2.200.000 VND/tháng, Quận 7. User: Rẻ hơn chút được không?\" Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. C2-C3 HOÀNG QUỐC VIỆT - P.204(#61ea636e3048d576be90729 b) — chỉ 4.800.000 VND/tháng, Quận 7. 2 C2 C3 HOÀ",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_25",
+    "group": "ban",
+    "sends": [
+      "Phòng này có ban công không?"
+    ],
+    "expected_note": "Note: chưa trả lời đúng trọng tâm User: phòng 6272207589386819cb426558 có ban công không Bot: CN03 LPM - P.03.2 (#6272207589386819cb426 558) — giá 900.000 VND/tháng. Khu vực: 23/15 Đường số 1, Phường Bình Thuận, Quận 7, Thành phố Hồ Chí Minh. Dạ tiện ích có đủ: Máy lạnh: Không, Ban công: Không, Cửa sổ: Không, Wifi: Free, Gác: Không, Toilet: Riêng, Giờ giấc: Tự do, Máy giặt: Không có, Thú cưng: Không, Để xe: Chung, Thang máy: Không, Kệ bếp: Không, Nước nóng: Không, Tủ lạnh: Không, Giường: Không, Nệm: Không, Tủ quần áo: Không. Mình dọn vào là ở thoải mái luôn ạ. Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_26",
+    "group": "ID",
+    "sends": [
+      "Phòng số 2 có tiện ích gì"
+    ],
+    "expected_note": "User: tôi muốn tìm phòng quận 9 Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 219/3 NGUYỄN VĂN TĂNG - D14(#697dc648ea8685209651dc07 ) — chỉ 3.600.000 VND/tháng, Quận 9. 2. 219/3 NGUYỄN VĂN TĂNG - D17A(#697dc648ea8685209651dc0 9) — chỉ 4.000.000 VND/tháng, Quận 9. 3. 219/3 NGUYỄN VĂN TĂNG - D12(#697dc648ea8685209651dc05 ) — chỉ 3.600.000 VND/tháng, Quận 9. User: Phòng số 2 có tiện ích gì Bot: 219/3 NGUYỄN VĂN TĂNG - D17A(#697dc648ea8685209651dc0 9) — giá 4.000.000 VND/tháng. Khu vực: 219/3 Nguyễn Văn Tăng, Phường Long Thạnh Mỹ, Quận 9, Thành phố Hồ Chí Minh. Dạ tiện ích có đủ: Máy lạnh: Không, Ban công: Không, Cửa sổ: Có, Wifi: Free, Gác: Có, Toilet: Riêng, Giờ giấc: Tự do, Máy giặt: Không có, Thú cưng: Có (kèm ĐK), Để xe: Bãi n",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_27",
+    "group": "ID",
+    "sends": [
+      "Căn ở trên có máy lạnh không?"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_28",
+    "group": "current",
+    "sends": [
+      "Phòng kia thì sao?"
+    ],
+    "expected_note": "User: Phòng số 2 có tiện ích gì Bot: 219/3 NGUYỄN VĂN TĂNG - D17A(#697dc648ea8685209651dc0 9) — giá 4.000.000 VND/tháng. Khu vực: 219/3 Nguyễn Văn Tăng, Phường Long Thạnh Mỹ, Quận 9, Thành phố Hồ Chí Minh. Dạ tiện ích có đủ: Máy lạnh: Không, Ban công: Không, Cửa sổ: Có, Wifi: Free, Gác: Có, Toilet: Riêng, Giờ giấc: Tự do, Máy giặt: Không có, Thú cưng: Có (kèm ĐK), Để xe: Bãi ngoài, Thang máy: Không, Kệ bếp: Có, Nước nóng: Không, Tủ lạnh: Không, Giường: Không, Nệm: Không, Tủ quần áo: Không. Mình dọn vào là ở thoải mái luôn ạ. User: Phòng kia thì sao? Bot: Dạ em hiểu ạ! Phòng 219/3 NGUYỄN VĂN TĂNG - D12(#697dc648ea8685209651dc05 ) giá 3.600.000 VND/tháng, diện tích 20 m², ở Quận 9, anh/chị xem thông tin phòng này nhé: - Máy lạnh: Không - Ban công: Không - Cửa sổ:",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_29",
+    "group": "room",
+    "sends": [
+      "Địa chỉ cụ thể là gì?"
+    ],
+    "expected_note": "User: Địa chỉ cụ thể là gì? Bot: Dạ câu hỏi này hay ạ! Địa chỉ cụ thể của phòng 219/3 NGUYỄN VĂN TĂNG - D12 là 219/3 Nguyễn Văn Tăng, Phường Long Thạnh Mỹ, Quận 9, Thành phố Hồ Chí Minh ạ. Anh/chị muốn xem phòng này trực tiếp không ạ? 🏠😊",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_30",
+    "group": "room",
+    "sends": [
+      "Phòng này có tiện ích gì?"
+    ],
+    "expected_note": "User: Phòng này có tiện ích gì Bot: 219/3 NGUYỄN VĂN TĂNG - D12(#697dc648ea8685209651dc05 ) — giá 3.600.000 VND/tháng. Khu vực: 219/3 Nguyễn Văn Tăng, Phường Long Thạnh Mỹ, Quận 9, Thành phố Hồ Chí Minh. Dạ tiện ích có đủ: Máy lạnh: Không, Ban công: Không, Cửa sổ: Có, Wifi: Free, Gác: Có, Toilet: Riêng, Giờ giấc: Tự do, Máy giặt: Không có, Thú cưng: Có (kèm ĐK), Để xe: Bãi ngoài, Thang máy: Không, Kệ bếp: Có, Nước nóng: Không, Tủ lạnh: Không, Giường: Không, Nệm: Không, Tủ quần áo: Không. Mình dọn vào là ở thoải mái luôn ạ. Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_31",
+    "group": "room",
+    "sends": [
+      "Còn phòng không?"
+    ],
+    "expected_note": "Không có ràng buộc status code Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_32",
+    "group": "current",
+    "sends": [
+      "Phòng này có máy giặt riêng không?"
+    ],
+    "expected_note": "Note: Chưa trả lời ngắn gọn User: Phòng 623c22796dcba66794e9ab5f này có máy giặt riêng không? Bot: YUHOME 1 - D2 (#623c22796dcba66794e9ab5f) — giá 3.300.000 VND/tháng. Khu vực: 11 Lê Thị Kỉnh (915/11 Lê Văn Lương), Âp 5, Phước Kiển, Nhà Bè, Xã Phước Kiển, Huyện Nhà Bè, Thành phố Hồ Chí Minh. Dạ tiện ích có đủ: Máy lạnh: Có, Ban công: Không, Cửa sổ: Có, Wifi: Free, Gác: Không, Toilet: Riêng, Giờ giấc: Tự do, Máy giặt: Không có, Thú cưng: Không, Để xe: Chung, Thang máy: Không, Kệ bếp: Có, Nước nóng: Không, Tủ lạnh: Không, Giường: Có, Nệm: Có, Tủ quần áo: Có. Mình dọn vào là ở thoải mái luôn ạ. Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_33",
+    "group": "theo",
+    "sends": [
+      "So sánh 2 phòng đầu tiên giúp tôi"
+    ],
+    "expected_note": "User: tôi muốn tìm phòng ở gò vấp Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 127 BÙI QUANG LÀ - 402 (#6278cd33b9d7767e199538cb ) — chỉ 4.700.000 VND/tháng, Quận Gò Vấp. 2. 383/45 QUANG TRUNG - 403(#626aa6552210ee27b1053564) — chỉ 8.800.000 VND/tháng, Quận Gò Vấp. 3. 20 ĐƯỜNG SỐ 6 - 201 (#62b5725aea7aa84b17d4d0ad) — chỉ 9.500.000 VND/tháng, Quận Gò Vấp. 4. 20 ĐƯỜNG SỐ 6 - P.001 (#62b5725aea7aa84b17d4d0 b4) — chỉ 6.500.000 VND/tháng, Quận Gò Vấp. 5. 85 ĐƯỜNG SỐ 2 - 302 (#62b572c4ea7aa84b17d4d0c3) — chỉ 6.000.000 VND/tháng, Quận Gò Vấp. User: so sánh 2 phòng đầu tiên giúp tôi Bot: Dạ em gửi anh/chị bảng so sánh chi tiết: - 127 BÙI QUANG LÀ - 402 (#6278cd33b9d7767e199538cb ): 4.700.000 VND/tháng, 20 m², Quận Gò Vấp, Phòng trố",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_34",
+    "group": "ids",
+    "sends": [
+      "So sánh room A và room B giúp tôi"
+    ],
+    "expected_note": "User: so sánh #6278cd33b9d7767e199538cb và 62b5725aea7aa84b17d4d0ad Bot: Dạ em gửi anh/chị bảng so sánh chi tiết: - 127 BÙI QUANG LÀ - 402 (#6278cd33b9d7767e199538cb ): 4.700.000 VND/tháng, 20 m², Quận Gò Vấp, Phòng trống. - 20 ĐƯỜNG SỐ 6 - 201 (#62b5725aea7aa84b17d4d0ad) : 9.500.000 VND/tháng, 20 m², Quận Gò Vấp, Còn phòng. - Giá: 127 BÙI QUANG LÀ - 402 rẻ hơn 20 ĐƯỜNG SỐ 6 - 201 khoảng 4.800.000 VND/tháng. - Ưu điểm 127 BÙI QUANG LÀ - 402: có thêm Thang máy. - Ưu điểm 20 ĐƯỜNG SỐ 6 - 201: có thêm Ban công, Nước nóng, Wifi. ✨ Gợi ý cực hợp lý: Căn 127 BÙI QUANG LÀ - 402(#6278cd33b9d7767e199538cb) với giá 4.700.000 VND/tháng, diện tích 20 m². Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_35",
+    "group": "ID",
+    "sends": [
+      "So sánh mấy phòng này giúp tôi"
+    ],
+    "expected_note": "User: cho tôi phòng ở bình tân Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. CS7:473A HƯƠNG LỘ 2 - P.602(#61ca7d813aed5624bb6856f 0) — chỉ 3.600.000 VND/tháng, Quận Bình Tân. 2. CS7:473A HƯƠNG LỘ 2 - P.302(#61ca7d813aed5624bb6856e 2) — chỉ 3.600.000 VND/tháng, Quận Bình Tân. 3. 121 LÊ ĐÌNH CẨN - E10 (#646750b02dac6f541f701a7f) — chỉ 2.800.000 VND/tháng, Quận Bình Tân. 4. 121 LÊ ĐÌNH CẨN - E18 (#646750d52dac6f541f701a87) — chỉ 2.900.000 VND/tháng, Quận Bình Tân. 5. 121 LÊ ĐÌNH CẨN - E14 (#646750da2dac6f541f701a88) — chỉ 2.300.000 VND/tháng, Quận Bình Tân. User: So sánh mấy phòng này giúp tôi Bot: Dạ em gửi anh/chị bảng so sánh chi tiết: - CS7:473A HƯƠNG LỘ 2 - P.602(#61ca7d813aed5624bb6856f 0): 3.600.000 VND/tháng, 15 m², Quậ",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_36",
+    "group": "",
+    "sends": [
+      "So sánh tất cả các phòng này"
+    ],
+    "expected_note": "Note: chưa note phần chưa so sánh",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_37",
+    "group": "room",
+    "sends": [
+      "Tính tổng chi phí phòng này"
+    ],
+    "expected_note": "Bot: Dạ em tính sương sương chi phí dự kiến cho anh/chị nhé: - Tiền thuê mỗi tháng: 3.600.000 VND - Phí gửi xe: 300.000 VND - Thời gian thuê: 1 tháng - Phí cố định 1 tháng: 300.000 VND Tổng tạm tính 1 tháng: 3.900.000 VND _Chưa có dữ liệu: deposit._ _Có dữ liệu nhưng chưa tính vào tổng: Tiền điện: 3.8k/kWh, Tiền nước: 20k/m3._ Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_38",
+    "group": "room",
+    "sends": [
+      "Ở 6 tháng thì tổng bao nhiêu?"
+    ],
+    "expected_note": "User: phòng 61ca7d813aed5624bb6856f0 ở 6 tháng thì tổng là bao nhiêu Bot: Dạ câu hỏi này hay ạ! 🤔 Để tính tổng chi phí cho 6 tháng thuê phòng CS7:473A HƯƠNG LỘ 2 - P.602, em sẽ nhân giá thuê tháng với số tháng thuê. Giá thuê tháng của phòng này là 3.600.000 VND/tháng. Tổng chi phí 6 tháng = 3.600.000 VND/tháng * 6 tháng = 21.600.000 VND. Anh/chị muốn xem phòng này vào thời điểm nào thì tiện nhất ạ? 🏠 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_39",
+    "group": "room",
+    "sends": [
+      "Giá điện nước thế nào?"
+    ],
+    "expected_note": "Bot: Dạ em tính sương sương chi phí dự kiến cho anh/chị nhé: - Tiền thuê mỗi tháng: 3.600.000 VND - Phí gửi xe: 300.000 VND - Thời gian thuê: 1 tháng - Phí cố định 1 tháng: 300.000 VND Tổng tạm tính 1 tháng: 3.900.000 VND _Chưa có dữ liệu: deposit._ _Có dữ liệu nhưng chưa tính vào tổng: Tiền điện: 3.8k/kWh, Tiền nước: 20k/m3._ Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_40",
+    "group": "Room",
+    "sends": [
+      "Tổng chi phí và phụ phí là bao nhiêu?"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_41",
+    "group": "a",
+    "sends": [
+      "Thủ tục ký hợp đồng thế nào?"
+    ],
+    "expected_note": "Note: Chưa có data chính xác User: Thủ tục ký hợp đồng thế nào? Bot: Dạ thời hạn thuê và điều khoản hợp đồng tùy từng chủ nhà ạ. Em có thể tư vấn thông tin phòng và chi phí có trong hệ thống; phần ký kết anh/chị trao đổi trực tiếp khi xem phòng nha. Nếu rảnh anh/chị sắp xếp ghé xem phòng thực tế, em hỗ trợ đặt lịch xem phòng luôn ạ 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_42",
+    "group": "online",
+    "sends": [
+      "Bên mình có hỗ trợ đặt cọc online không?"
+    ],
+    "expected_note": "User: Bên mình có hỗ trợ đặt cọc online không? Bot: Dạ tính năng thao tác tự động em chưa được học ạ. Với yêu cầu 'payment', anh/chị thao tác trực tiếp trên giao diện giúp em nha! Nhưng nếu ưng phòng rồi, chiều nay ghé xem thực tế luôn cho tiện anh/chị nhỉ?",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_43",
+    "group": "boundary",
+    "sends": [
+      "Tôi muốn đặt phòng này"
+    ],
+    "expected_note": "User: Tôi muốn đặt phòng này Bot: Dạ tính năng thao tác tự động em chưa được học ạ. Với yêu cầu 'dat_lich', anh/chị thao tác trực tiếp trên giao diện giúp em nha! Nhưng nếu ưng phòng rồi, chiều nay ghé xem thực tế luôn cho tiện anh/chị nhỉ? Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_44",
+    "group": "footnote",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "Nguồn tham chiếu C2-C3 HOÀNG QUỐC VIỆT - P.204- Địa chỉ: C2 - C3 Hoàng Quốc Việt, Phường Phú Thuận, Quận 7, Thành phố Hồ Chí Minh C2-C3 HOÀNG QUỐC VIỆT - P.206- Địa chỉ: C2 - C3 Hoàng Quốc Việt, Phường Phú Thuận, Quận 7, Thành phố Hồ Chí Minh CN03 LPM - P.03.2- Địa chỉ: 23/15 Đường số 1, Phường Bình Thuận, Quận 7, Thành phố Hồ Chí Minh",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_45",
+    "group": "Source",
+    "sends": [
+      "Tìm phòng gần TDTU có máy lạnh"
+    ],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_46",
+    "group": "abstain",
+    "sends": [
+      "Phòng này có view sông không?"
+    ],
+    "expected_note": "User: Phòng này có view sông không? Bot: Dạ em hiểu anh/chị đang tìm phòng có view sông ạ! 🌊 Tuy nhiên, với phòng CS7:473A HƯƠNG LỘ 2 - P.602 này, em chưa có thông tin về view phòng. 🏠 Nhưng anh/chị có thể xem phòng thực tế để kiểm tra view sông được không ạ? Sáng mai hay chiều mai anh/chị tiện ghé xem hơn ạ? 😊",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_47",
+    "group": "Room",
+    "sends": [
+      "Phòng này có cửa sổ hướng đông không?"
+    ],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_48",
+    "group": "search",
+    "sends": [
+      "Tìm phòng quận 7 dưới 2 triệu, có ban công, máy giặt riêng"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_49",
+    "group": "protection",
+    "sends": [
+      "Tìm phòng dưới 3 triệu ở quận 7"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_50",
+    "group": "thread",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_51",
+    "group": "thread",
+    "sends": [],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_52",
+    "group": "thread",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_53",
+    "group": "history",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_54",
+    "group": "thread",
+    "sends": [],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_55",
+    "group": "handling",
+    "sends": [],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_56",
+    "group": "handling",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_57",
+    "group": "limit",
+    "sends": [],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_58",
+    "group": "stream",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_59",
+    "group": "DB",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "Được lưu trong collection chat_history",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_60",
+    "group": "Tin",
+    "sends": [
+      "Tìm phòng quận 7 dưới 5 triệu"
+    ],
+    "expected_note": "Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_61",
+    "group": "quan",
+    "sends": [
+      "Còn phòng không anh?"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_62",
+    "group": "ID",
+    "sends": [
+      "Phòng đường số 57 có máy lạnh không, em chỉ tầm 2tr3 thôi"
+    ],
+    "expected_note": "Có thông báo trong chat: Em đã nới một số điều kiện lọc để gợi ý các phòng gần đúng nhất. User: Phòng đường số 57 có máy lạnh không, em chỉ tầm 2tr3 thôi Bot: Dạ em chưa thấy căn khớp đúng vị trí gần mốc bạn nói nên em xin phép gợi ý mấy căn gần đúng nhất nha. Mấy căn cùng khu vực vẫn ngon mà hợp lý nè: 1. 36A ĐƯỜNG SỐ 01 - BOX6(#63eb3e49e2de7234e5bc53 67) — chỉ 2.000.000 VND/tháng, Quận 7. 2. KTX 53 ĐƯỜNG SỐ 05 - P.1A02(#641958f7d47dd446f87b4c e4) — chỉ 1.700.000 VND/tháng, Quận Bình Thạnh. 3. KTX 53 ĐƯỜNG SỐ 05 - P.1A01(#641958f7d47dd446f87b4c e3) — chỉ 1.700.000 VND/tháng, Quận Bình Thạnh. 4. KTX 53 ĐƯỜNG SỐ 05 - P.1A04(#641958f7d47dd446f87b4c e6) — chỉ 1.600.000 VND/tháng, Quận Bình Thạnh. 5. KTX 53 ĐƯỜNG SỐ 05 - P.1A05(#641958f7d47dd446f87b4c e7) — chỉ 1.500.000",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_63",
+    "group": "room",
+    "sends": [
+      "Em có nuôi mèo, phòng này được không?"
+    ],
+    "expected_note": "Note: Chưa đề xuất User: Em có nuôi mèo, phòng này được không? 646750b02dac6f541f701a7f Bot: Dạ em hiểu anh/chị đang tìm phòng và có nuôi mèo, đúng không ạ? 😊 Dạ, phòng 121 LÊ ĐÌNH CẨN - E10 vẫn còn phòng, với giá 2,8 triệu/tháng, diện tích 18m², và có cửa sổ, toilet riêng, giờ giấc tự do. Tuy nhiên, em chưa có thông tin về việc nuôi mèo trong phòng này. Sáng mai hay chiều mai anh/chị tiện ghé xem phòng hơn ạ? 🏠 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_64",
+    "group": "quanh",
+    "sends": [
+      "Em tìm quanh Võ Văn Kiệt, Hồ Học Lãm, Kinh Dương Vương thôi, em không rành phường"
+    ],
+    "expected_note": "Note: Còn bị lạc các phòng khác vào Em tìm quanh Võ Văn Kiệt, Hồ Học Lãm, Kinh Dương Vương thôi, em không rành phường Dạ em chưa thấy căn khớp đúng vị trí gần mốc bạn nói nên em xin phép gợi ý mấy căn gần đúng nhất nha. Mấy căn cùng khu vực vẫn ngon mà hợp lý nè: 1. YUHOME 1 - D2 (#623c22796dcba66794e9ab5f) — chỉ 3.300.000 VND/tháng, Huyện Nhà Bè. 2. CS7:473A HƯƠNG LỘ 2 - P.602(#61ca7d813aed5624bb6856f 0) — chỉ 3.600.000 VND/tháng, Quận Bình Tân. 3. CS7:473A HƯƠNG LỘ 2 - P.302(#61ca7d813aed5624bb6856e 2) — chỉ 3.600.000 VND/tháng, Quận Bình Tân. 4. 110A NGUYỄN ĐÌNH CHÍNH - P.504(#621d8b6e3e3dc5346fceb68 7) — chỉ 2.800.000 VND/tháng, Quận Phú Nhuận. 5. 220/18 ÂU CƠ - P.101 (#623d623d711fff27d5ebaa6f ) — chỉ 2.900.000 VND/tháng, Quận Tân Bình. Anh/chị ưng căn nào",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_65",
+    "group": "Trong",
+    "sends": [
+      "Cần 2 phòng, 3 người ở, gần Vành Đai Trong có không anh?"
+    ],
+    "expected_note": "Note: Trả về phòng đúng vị trí nhưng những phòng không để số lượng người vẫn có thể hiện thị User: Cần 2 phòng, 3 người ở, gần Vành Đai Trong có không anh?\" Bot: Dạ còn phòng ạ! Em vừa lọc ra mấy căn sạch đẹp, giá cực tốt cho mình đây: 1. 150 VÀNH ĐAI TRONG - P202(#67408e5a08287412342a7c1 d) — chỉ 3.000.000 VND/tháng, Quận Bình Tân. 2. 150 VÀNH ĐAI TRONG - P103(#67408e5a08287412342a7c1 e) — chỉ 5.300.000 VND/tháng, Quận Bình Tân. 3. 7 ĐƯỜNG SỐ 27 - 201 (#689225a10983830e630e94f8) — chỉ 5.000.000 VND/tháng, Quận Bình Tân. 4. 7 ĐƯỜNG SỐ 27 - 202 (#68d50ba8dde9c25279cde360 ) — chỉ 5.000.000 VND/tháng, Quận Bình Tân. 5. 7 ĐƯỜNG SỐ 27 - 101 (#689225a10983830e630e94f7) — chỉ 4.500.000 VND/tháng, Quận Bình Tân. Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_66",
+    "group": "a",
+    "sends": [
+      "Phòng trệt hay lầu, điện nước sao, có cọc không, gác cao không?"
+    ],
+    "expected_note": "User: Phòng trệt hay lầu, điện nước sao, có cọc không, gác cao không Bot: Dạ em chưa có dữ liệu xác minh đủ cho phần này ạ (tiền cọc, thời gian giữ cọc). Anh/chị xem thêm chi tiết trên tin đăng hoặc nhắn em mã phòng khác để kiểm tra lại giúp mình nha.",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_67",
+    "group": "nt",
+    "sends": [
+      "Khoản g 2h chị qua xem được, em cho chị địa chỉ với số điện thoại"
+    ],
+    "expected_note": "",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_68",
+    "group": "a",
+    "sends": [
+      "Nhân viên dẫn đi xem có mất phí gì không em?"
+    ],
+    "expected_note": "Note: Trả lời lạc đề User: Nhân viên dẫn đi xem có mất phí gì không em?\" Bot: Các khoản phí như điện, nước, wifi, giữ xe chỉ được xem là xác nhận khi có trong dữ liệu phòng hoặc phần ước tính chi phí. Nếu rảnh anh/chị sắp xếp ghé xem phòng thực tế, em hỗ trợ đặt lịch xem phòng luôn ạ 😊",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_69",
+    "group": "a",
+    "sends": [
+      "Phòng thực tế không giống hình anh gửi, còn căn nào khác không?"
+    ],
+    "expected_note": "User: Phòng thực tế không giống hình anh gửi, còn căn nào khác không? Bot: Dạ em có thể tìm phòng, so sánh giá, tư vấn chi phí và tiện ích chi tiết ạ. Anh/chị đang cần tìm phòng quanh khu vực nào để em hỗ trợ gửi phòng đẹp ngay nhé 😊 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_70",
+    "group": "a",
+    "sends": [
+      "Bạn em nói xa chỗ làm quá"
+    ],
+    "expected_note": "Note: Chưa hỏi lại user,chỉ hiển thị thêm thông tin gợi ý các phòng tại khu vực cũ trước đó",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_71",
+    "group": "room",
+    "sends": [
+      "Em không cần nội thất, có thể deal giá lại không?"
+    ],
+    "expected_note": "Dạ em hiểu anh/chị muốn deal giá lại vì không cần nội thất ạ! 😊 Theo dữ liệu, phòng #64114be12cb584300764d71d hiện có giá 2.300.000 VND/tháng. Tuy nhiên, về việc deal giá lại, em chưa có thông tin cụ thể về việc này. Anh/chị có thể liên hệ trực tiếp với chủ nhà để thương lượng giá thuê. Anh/chị muốn em gửi thông tin liên lạc của chủ nhà để anh/chị có thể liên hệ trực tiếp không ạ? Hay anh/chị muốn xem phòng này trước để đánh giá không gian thực tế, sáng mai hay chiều mai anh/chị tiện ghé xem hơn ạ? 🌿 Bộ test case chat ID Nhóm Mục tiêu Tiền điều kiện Bước test Kết quả mong đợi Kết quả Ghi chú",
+    "ui_only": false
+  },
+  {
+    "id": "TC_CHAT_72",
+    "group": "",
+    "sends": [
+      "Khu đó có hay bị ngập không?"
+    ],
+    "expected_note": "Bot: Dạ em có thể tìm phòng, so sánh giá, tư vấn chi phí và tiện ích chi tiết ạ. Anh/chị đang cần tìm phòng quanh khu vực nào để em hỗ trợ gửi phòng đẹp ngay nhé 😊",
+    "ui_only": false
+  }
+]

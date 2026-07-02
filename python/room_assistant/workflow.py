@@ -522,6 +522,8 @@ def _execute_workflow(
         return {"comparison": comparison, "rooms": comparison.get("rows", [])}
 
     if intent == "FIND_SIMILAR":
+        if not current_room_id:
+            return {"rooms": [], "find_similar_missing_source": True}
         rooms = _tool_registry.execute(
             "find_similar_rooms", {"room_id": current_room_id, "top_k": 5}, context,
         )
@@ -762,6 +764,11 @@ def _compose_answer_template(
         requested = parsed.get("ordinal_requested") or 0
         available = int(parsed.get("ordinal_available_count") or 0)
         return ORDINAL_OUT_OF_RANGE.format(requested=requested, available=available)
+    if tool_results.get("find_similar_missing_source"):
+        from room_assistant.prompts import FIND_SIMILAR_MISSING_SOURCE
+        return FIND_SIMILAR_MISSING_SOURCE
+    if parsed.get("compare_unresolved") and intent == "COMPARE_ROOMS":
+        return "Dạ em chưa đủ phòng trong danh sách để so sánh theo thứ tự anh/chị yêu cầu. Anh/chị chọn lại giúp em nha!"
     if tool_results.get("error") == "tool_budget_exceeded":
         return TOOL_BUDGET_EXCEEDED_ANSWER
     if intent == "REQUEST_ACTION":
@@ -1075,7 +1082,7 @@ async def _compose_answer_async(
                 constraints,
                 user_mood,
                 alt_rooms,
-                stream_callback=stream_callback,
+                stream_callback=None,
                 sales_handoff=sales_handoff and not alt_rooms,
             )
         else:
@@ -1084,7 +1091,7 @@ async def _compose_answer_async(
                 verified_context=verified_data,
                 history=history,
                 mood=user_mood,
-                stream_callback=stream_callback,
+                stream_callback=None,
             )
     except Exception:
         pass
@@ -1105,6 +1112,7 @@ async def _compose_answer_async(
                 "reviewed": True,
                 "approved": bool(review_result.get("is_approved", True)),
                 "issues": list(review_result.get("issues") or []),
+                "corrected_answer_used": bool(review_result.get("used_corrected_answer")),
             }
             if not verification["approved"]:
                 abstain, reason = True, "reviewer_rejected"

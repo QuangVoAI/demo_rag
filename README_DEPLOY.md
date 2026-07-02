@@ -233,6 +233,30 @@ python -m pytest tests/test_inventory_scale.py::ProductionInventoryScaleTests -q
 
 Cần `MONGODB_URI` + Qdrant ≥8k points. CI chạy nhánh in-memory `InventoryScaleTests` (không cần Qdrant).
 
+## Production gates (bắt buộc trước cutover)
+
+Chạy tuần tự và **không cutover** nếu gate bắt buộc fail:
+
+| Gate | Lệnh / endpoint | Pass criteria |
+|---|---|---|
+| Django system check | `python manage.py check` | exit 0 |
+| Django API tests | `python manage.py test apps.rooms` | all pass |
+| Python compile | `python -m compileall -q python apps config` | exit 0 |
+| Intent/parser | `python -m pytest python/tests/test_intent_parser.py -q` | all pass |
+| Indexing contract | `python -m pytest python/tests/test_indexing_contract.py -q` | all pass |
+| Core assistant | `python -m pytest python/tests/test_room_assistant_core.py -q` | all pass (hoặc isolate test treo) |
+| Shallow health | `GET /api/health/` | HTTP 200, `status=ok` |
+| Deep health | `GET /api/health/deep/` | Mongo `ok`; Qdrant `ok` hoặc `skipped` nếu chưa bật semantic |
+| Qdrant inventory | `rooms_v1` point count ≈ Mongo available rooms | lệch >1% cần reindex |
+| Kafka CDC (nếu bật) | worker consume + upsert 1 event test | `result=upserted` |
+| RAG smoke | `POST /api/rag/query/` 1 câu search thật | `success=true`, có `intent` |
+| QA transcript (khuyến nghị) | `python -m pytest python/tests/test_transcript_qa_regression.py -q` | không regression routing |
+
+Ghi chú:
+- `GET /api/health/` giữ nhanh (không gọi Mongo/Qdrant).
+- `GET /api/health/deep/` dùng trước deploy/cutover; trả `503` khi Mongo down.
+- Staging không có Mongo/Qdrant live: integration tests được skip nhưng phải ghi rõ trong release note.
+
 ## Checklist DevOps
 
 1. `manage.py check --deploy`

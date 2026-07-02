@@ -22,7 +22,7 @@ from room_assistant.repository import (
 from room_assistant.schemas import default_session_state, normalize_room
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
-from room_assistant.workflow import _build_llm_context, _compose_answer_template, run_room_assistant
+from room_assistant.workflow import _build_llm_context, _compose_answer_async, _compose_answer_template, run_room_assistant
 
 
 class FakeMongoCursor:
@@ -421,9 +421,19 @@ class RoomAssistantCoreTests(unittest.TestCase):
             "categories": ["studio"],
         })
         serialized = json.dumps(query, ensure_ascii=False)
-        self.assertIn("metadata.house_name", serialized)
-        self.assertIn("embedding_text", serialized)
-        self.assertGreaterEqual(len(query["$and"]), 3)
+        self.assertIn("metadata.district_name", serialized)
+        # Room-type categories rely on post-filter / embedding text, not Mongo `category`.
+        self.assertNotIn('"category": "studio"', serialized)
+        self.assertNotIn("embedding_text", serialized)
+        self.assertGreaterEqual(len(query["$and"]), 2)
+
+    def test_build_mongo_query_uses_structured_amenity_filter(self):
+        query = build_mongo_query({
+            "amenities_required": ["air_conditioner"],
+        })
+        serialized = json.dumps(query, ensure_ascii=False)
+        self.assertIn('"amenities": "air_conditioner"', serialized)
+        self.assertNotIn("embedding_text", serialized)
 
     def test_normalize_room_treats_blank_status_code_as_available(self):
         room = normalize_room({
@@ -439,6 +449,17 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertTrue(room["available"])
         self.assertEqual(room["status"], "active")
         self.assertEqual(room["status_desc"], "Còn phòng")
+
+    def test_normalize_room_missing_status_stays_unknown(self):
+        room = normalize_room({
+            "room_id": "Q5-203",
+            "metadata": {"price": 4_300_000, "district_name": "Quận 5"},
+            "embedding_text": "",
+        })
+        self.assertIsNone(room["available"])
+        self.assertEqual(room["status_desc"], "Không rõ")
+        self.assertEqual(room["status"], "unknown")
+        self.assertEqual(room["status_key"], "unknown")
 
     def test_mongo_repository_uses_object_id_for_native_room_documents(self):
         try:
@@ -636,6 +657,55 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("[status:Phân tích|Hệ thống]", joined)
         self.assertIn("[status:Truy vấn|Cơ sở dữ liệu]", joined)
         self.assertIn("[status:Tổng hợp|Trợ lý AI]", joined)
+
+    def test_compose_answer_streams_only_final_answer_after_review(self):
+        from unittest.mock import AsyncMock
+
+        events = []
+        parsed = {"intent": "SEARCH_ROOM", "operations": []}
+        grounding = {
+            "rooms": [],
+            "constraints": {"budget": {"max": 5_000_000}},
+        }
+        tool_results = {
+            "rooms": [],
+            "faq_results": [{"question": "q", "answer": "a"}],
+        }
+
+        async def capture(chunk):
+            events.append(chunk)
+
+        mock_write = AsyncMock(return_value="DRAFT_SHOULD_NOT_STREAM")
+        mock_review = AsyncMock(return_value=(
+            "FINAL_REVIEWED_ANSWER",
+            {
+                "is_approved": True,
+                "issues": [],
+                "used_corrected_answer": False,
+            },
+        ))
+
+        with patch("config.ENABLE_REVIEWER", True):
+            with patch("agents.response_writer.write_no_result_response", mock_write):
+                with patch("agents.reviewer.review_with_retry", mock_review):
+                    result = asyncio.run(_compose_answer_async(
+                        "Tìm phòng dưới 5 triệu",
+                        parsed,
+                        grounding,
+                        tool_results,
+                        history=[],
+                        stream_callback=capture,
+                    ))
+
+        mock_write.assert_awaited_once()
+        self.assertIsNone(mock_write.await_args.kwargs.get("stream_callback"))
+        mock_review.assert_awaited_once()
+        self.assertEqual(mock_review.await_args.kwargs["answer"], "DRAFT_SHOULD_NOT_STREAM")
+        self.assertEqual(result["answer"], "FINAL_REVIEWED_ANSWER")
+        self.assertFalse(result["verification"]["corrected_answer_used"])
+        joined = "".join(events)
+        self.assertNotIn("DRAFT_SHOULD_NOT_STREAM", joined)
+        self.assertIn("FINAL_REVIEWED_ANSWER", joined)
 
     def test_hallucinated_money_falls_back_to_template_answer(self):
         store = InMemorySessionStore()
@@ -1052,35 +1122,57 @@ class RoomAssistantCoreTests(unittest.TestCase):
         studio_room = {
             "room_id": "s1",
             "available": True,
-            "embedding_text": "Studio gọn, giá tốt",
+            "category": "studio",
+            "category_key": "studio",
             "rent_price": 4_000_000,
         }
         normal_room = {
             "room_id": "n1",
             "available": True,
-            "embedding_text": "Phòng trọ tiện nghi",
+            "category": "phong_tro",
+            "category_key": "phong_tro",
             "rent_price": 3_000_000,
         }
         constraints = {"categories": ["studio"]}
         self.assertTrue(room_matches_constraints(studio_room, constraints))
         self.assertFalse(room_matches_constraints(normal_room, constraints))
 
+    def test_repository_enforces_studio_category_from_embedding_fallback(self):
+        studio_room = {
+            "room_id": "s2",
+            "available": True,
+            "embedding_text": "Studio gọn, giá tốt",
+            "rent_price": 4_000_000,
+        }
+        constraints = {"categories": ["studio"]}
+        self.assertTrue(room_matches_constraints(studio_room, constraints))
+
     def test_repository_enforces_pets_required(self):
         pet_room = {
             "room_id": "p1",
             "available": True,
-            "embedding_text": "## Tiện ích\n- Thú cưng: Có",
+            "pet_policy": "allowed",
             "rent_price": 4_000_000,
         }
         no_pet_room = {
             "room_id": "np1",
             "available": True,
-            "embedding_text": "## Tiện ích\n- Thú cưng: Không",
+            "pet_policy": "denied",
             "rent_price": 3_500_000,
         }
         constraints = {"pets_required": ["cat"]}
         self.assertTrue(room_matches_constraints(pet_room, constraints))
         self.assertFalse(room_matches_constraints(no_pet_room, constraints))
+
+    def test_repository_pets_required_allows_unknown_policy(self):
+        unknown_pet_room = {
+            "room_id": "unk1",
+            "available": True,
+            "rent_price": 3_000_000,
+            "embedding_text": "## Tiện ích\n- Wifi: Có",
+        }
+        constraints = {"pets_required": ["cat"]}
+        self.assertTrue(room_matches_constraints(unknown_pet_room, constraints))
 
     def test_ask_room_pets_without_verified_data_is_insufficient(self):
         parsed = {"intent": "ASK_ABOUT_ROOM"}
@@ -1197,6 +1289,154 @@ class RoomAssistantCoreTests(unittest.TestCase):
     def test_retrieval_candidate_limit_defaults_to_100(self):
         from room_assistant.retrieval import _retrieval_config
         self.assertEqual(_retrieval_config()["candidate_limit"], 100)
+
+    def test_province_and_ward_post_filter_blocks_wrong_metadata(self):
+        room = {
+            "room_id": "W1",
+            "available": True,
+            "province": "Hồ Chí Minh",
+            "district": "Quận 7",
+            "ward": "Tân Phú Trung",
+            "rent_price": 4_000_000,
+            "amenities": [],
+        }
+        self.assertTrue(room_matches_constraints(room, {
+            "location": {"province": "Hồ Chí Minh", "wards": ["tan phu trung"]},
+        }))
+        self.assertFalse(room_matches_constraints(room, {
+            "location": {"province": "Đồng Nai", "wards": ["tan phu trung"]},
+        }))
+        self.assertFalse(room_matches_constraints(room, {
+            "location": {"wards": ["phuoc long"]},
+        }))
+
+    def test_metadata_candidates_cannot_bypass_province_constraint(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "HN-1",
+                "available": True,
+                "province": "Hà Nội",
+                "district": "Cầu Giấy",
+                "rent_price": 5_000_000,
+                "embedding_text": "studio quan 7",
+                "metadata": {"status_code": "0"},
+            },
+            {
+                "room_id": "HCM-1",
+                "available": True,
+                "province": "Hồ Chí Minh",
+                "district": "Quận 7",
+                "rent_price": 4_500_000,
+                "embedding_text": "studio quan 7",
+                "metadata": {"status_code": "0"},
+            },
+        ])
+        from room_assistant.retrieval import search_rooms_with_hard_filters
+        rooms = search_rooms_with_hard_filters(
+            "studio quan 7",
+            {"location": {"province": "Hồ Chí Minh"}},
+            repository=repo,
+            semantic_index=None,
+            top_k=5,
+        )
+        self.assertEqual([room["room_id"] for room in rooms], ["HCM-1"])
+
+    def test_composite_category_chdv_and_2pn_matches_room_with_both_signals(self):
+        room = {
+            "room_id": "CHDV-2PN",
+            "available": True,
+            "category": "chdv",
+            "rent_price": 8_000_000,
+            "embedding_text": "CHDV 2 phòng ngủ ban công",
+            "amenities": [],
+        }
+        self.assertTrue(room_matches_constraints(room, {"categories": ["chdv", "2pn"]}))
+
+    def test_composite_category_query_does_not_and_impossible_scalar_filters(self):
+        query = build_mongo_query({"categories": ["chdv", "2pn"]})
+        category_clauses = [
+            clause for clause in query["$and"]
+            if any("category" in option for option in clause.get("$or", []))
+        ]
+        self.assertEqual(category_clauses, [])
+
+    def test_detail_landmark_question_does_not_set_search_filters(self):
+        state = default_session_state("detail-landmark")
+        state["last_result_ids"] = ["A101"]
+        state["current_room_id"] = "A101"
+        state["last_intent"] = "SEARCH_ROOM"
+        parsed = parse_intent_and_constraint_patch("Phòng này gần TDTU không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        paths = {op.get("path") for op in parsed["operations"]}
+        self.assertFalse(paths & {"location.near_landmarks", "location.districts", "budget.max"})
+
+    def test_detail_budget_question_does_not_set_search_filters(self):
+        state = default_session_state("detail-budget")
+        state["last_result_ids"] = ["A101"]
+        state["current_room_id"] = "A101"
+        parsed = parse_intent_and_constraint_patch("phòng này dưới 5 triệu không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        paths = {op.get("path") for op in parsed["operations"]}
+        self.assertNotIn("budget.max", paths)
+
+    def test_warm_session_balcony_search_routes_to_refine_search(self):
+        state = default_session_state("balcony-search")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["A101", "B202"]
+        parsed = parse_intent_and_constraint_patch("Có căn nào có ban công không?", state)
+        self.assertIn(parsed["intent"], {"SEARCH_ROOM", "REFINE_SEARCH"})
+        self.assertIn("balcony", [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_required"])
+
+    def test_compare_room_1_and_4_unresolved_with_three_results(self):
+        state = default_session_state("compare-1-4")
+        state["last_result_ids"] = ["R1", "R2", "R3"]
+        parsed = parse_intent_and_constraint_patch("So sánh phòng số 1 và số 4", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+        self.assertTrue(parsed.get("compare_unresolved"))
+
+    def test_refine_single_result_does_not_replace_last_result_ids(self):
+        from room_assistant.session_store import update_turn_state
+        state = default_session_state("refine-one")
+        state["last_result_ids"] = ["OLD1", "OLD2", "OLD3"]
+        next_state = update_turn_state(
+            state,
+            intent="REFINE_SEARCH",
+            current_room_id="NEW1",
+            referenced_room_ids=[],
+            result_ids=["NEW1"],
+        )
+        self.assertEqual(next_state["last_result_ids"], ["OLD1", "OLD2", "OLD3"])
+
+    def test_find_similar_without_current_room_asks_for_source(self):
+        result = asyncio.run(run_room_assistant(
+            "Tìm phòng tương tự",
+            session_id="find-similar-missing",
+            repository=InMemoryRoomRepository([]),
+            session_store=InMemorySessionStore(),
+            semantic_index=None,
+        ))
+        self.assertEqual(result["intent"], "FIND_SIMILAR")
+        self.assertIn("mã phòng", result["answer"].lower())
+
+    def test_location_pivot_does_not_set_bright_preference(self):
+        state = default_session_state("pivot-bright")
+        state, _ = apply_operations(state, [{"op": "append", "path": "location.districts", "value": "binh thanh"}])
+        parsed = parse_intent_and_constraint_patch("đổi sang quận 7", state)
+        preferred = [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
+        self.assertNotIn("bright", preferred)
+
+    def test_preferred_amenities_boost_ranks_matching_room_higher(self):
+        from room_assistant.retrieval import _preferred_amenities_boost
+        with_balcony = {
+            "amenities_canonical": ["balcony"],
+            "amenities": [],
+            "embedding_text": "",
+        }
+        without = {"amenities_canonical": [], "amenities": [], "embedding_text": ""}
+        self.assertGreater(
+            _preferred_amenities_boost(with_balcony, ["balcony"]),
+            _preferred_amenities_boost(without, ["balcony"]),
+        )
 
 
 if __name__ == "__main__":

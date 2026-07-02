@@ -244,10 +244,23 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     status_code = metadata.get("status_code")
     if status_code is not None:
         is_available = str(status_code).strip() in {"0", ""}
+    elif "available" in raw:
+        is_available = bool(raw.get("available"))
+    elif raw.get("status") == "active":
+        is_available = True
+    elif raw.get("status"):
+        is_available = False
     else:
-        is_available = raw.get("available") if "available" in raw else (raw.get("status") == "active")
+        is_available = None
 
-    status_desc = metadata.get("status_desc") or ("Còn phòng" if is_available else "Hết phòng")
+    if metadata.get("status_desc"):
+        status_desc = metadata["status_desc"]
+    elif is_available is True:
+        status_desc = "Còn phòng"
+    elif is_available is False:
+        status_desc = "Hết phòng"
+    else:
+        status_desc = "Không rõ"
 
     # Location from metadata
     province = metadata.get("province_name") if "province_name" in metadata else raw.get("province")
@@ -316,7 +329,11 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     )
     normalized["title"] = title
     normalized["description"] = raw.get("house_remark") or raw.get("description") or ""
-    normalized["status"] = "active" if is_available else "unavailable"
+    normalized["status"] = (
+        "active" if is_available is True
+        else "unavailable" if is_available is False
+        else raw.get("status") or "unknown"
+    )
     normalized["status_desc"] = status_desc
     normalized["available"] = is_available
     normalized["allow_sale"] = metadata.get("allow_sale") == "Y"
@@ -329,6 +346,11 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized["ward"] = ward
     normalized["area_m2"] = area_m2 if area_m2 is not None else raw.get("area_m2")
     normalized["amenities"] = amenities_list if amenities_list else raw.get("amenities", [])
+    normalized["amenities_canonical"] = _derive_amenities_canonical(
+        raw.get("amenities"),
+        normalized["amenities"],
+        embedding_text,
+    )
     normalized["embedding_text"] = embedding_text
     normalized["tien_ich_xq"] = raw.get("tien_ich_xq", "")
     normalized["has_image"] = metadata.get("has_image", False)
@@ -342,7 +364,12 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
         source_url = room_id.split("#", 1)[0]
     normalized["source_url"] = source_url
     normalized["listing_id"] = str(room_id)
-    normalized["status_key"] = "available" if is_available else "unavailable"
+    normalized["status_key"] = (
+        "available" if is_available is True
+        else "unavailable" if is_available is False
+        else "unknown"
+    )
+    normalized["category_key"] = str(raw.get("category") or "").strip().lower() or None
     if isinstance(price, (int, float)) and price:
         normalized["price_num"] = int(price)
     else:
@@ -353,6 +380,68 @@ def normalize_room(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized["vehicle_policy"] = _vehicle_policy_from_embedding(embedding_text)
 
     return normalized
+
+
+def _derive_amenities_canonical(
+    raw_amenities: Any,
+    parsed_amenities: list[str],
+    embedding_text: str,
+) -> list[str]:
+    """Map mixed amenity labels to canonical codes for hard filtering."""
+    import re
+
+    canonical: set[str] = set()
+    known_codes = set(_AMENITY_LABEL_TO_CANONICAL.values())
+
+    for item in raw_amenities or []:
+        key = str(item).strip().lower()
+        if key in known_codes:
+            canonical.add(key)
+        elif key in _AMENITY_LABEL_TO_CANONICAL:
+            canonical.add(_AMENITY_LABEL_TO_CANONICAL[key])
+
+    for label in parsed_amenities or []:
+        label_key = str(label).strip().lower()
+        if label_key in known_codes:
+            canonical.add(label_key)
+        elif label_key in _AMENITY_LABEL_TO_CANONICAL:
+            canonical.add(_AMENITY_LABEL_TO_CANONICAL[label_key])
+        else:
+            for vi_label, code in _AMENITY_LABEL_TO_CANONICAL.items():
+                if vi_label in label_key:
+                    canonical.add(code)
+
+    for code, vi_label in _AMENITY_CANONICAL_TO_LABEL.items():
+        pattern = rf"{re.escape(vi_label)}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)"
+        if re.search(pattern, embedding_text or "", re.IGNORECASE):
+            canonical.add(code)
+
+    return sorted(canonical)
+
+
+_AMENITY_CANONICAL_TO_LABEL: dict[str, str] = {
+    "air_conditioner": "Máy lạnh",
+    "balcony": "Ban công",
+    "window": "Cửa sổ",
+    "washing_machine": "Máy giặt",
+    "private_bathroom": "Toilet",
+    "mezzanine": "Gác",
+    "kitchen": "Kệ bếp",
+    "refrigerator": "Tủ lạnh",
+    "hot_water": "Nước nóng",
+    "bed": "Giường",
+    "mattress": "Nệm",
+    "wardrobe": "Tủ quần áo",
+    "elevator": "Thang máy",
+    "wifi": "Wifi",
+    "ev_charging": "Xe điện",
+    "free_hours": "Giờ giấc",
+    "pets_allowed": "Thú cưng",
+}
+
+_AMENITY_LABEL_TO_CANONICAL: dict[str, str] = {
+    label.lower(): code for code, label in _AMENITY_CANONICAL_TO_LABEL.items()
+}
 
 
 def _policy_from_embedding(text: str, label: str) -> str:
@@ -390,6 +479,15 @@ def public_session_state(state: dict[str, Any]) -> dict[str, Any]:
         "state_version": state.get("state_version", 1),
         "updated_at": state.get("updated_at"),
     }
+
+
+def canonical_room_id(doc: dict[str, Any]) -> str:
+    """Canonical room id shared by Mongo, Qdrant point id, payload, and CDC."""
+    if doc.get("room_id"):
+        return str(doc["room_id"])
+    if doc.get("_id") is not None:
+        return str(doc["_id"])
+    raise ValueError("Room document missing room_id and _id")
 
 
 def unknown_room_fields(room: dict[str, Any]) -> list[str]:

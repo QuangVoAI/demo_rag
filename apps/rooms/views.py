@@ -825,12 +825,54 @@ def _serialize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
     serialized: list[dict[str, Any]] = []
     for msg in messages:
         created_at = msg.get("created_at")
-        serialized.append({
+        entry: dict[str, Any] = {
             "role": msg.get("role"),
             "content": msg.get("content"),
             "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
-        })
+        }
+        for key in (
+            "intent",
+            "rooms",
+            "follow_ups",
+            "suggested_questions",
+            "sources",
+            "session_state",
+            "verification",
+            "cost_estimate",
+            "comparison",
+            "abstain",
+            "abstain_reason",
+            "retrieval_confidence",
+            "retrieval_low_confidence",
+            "retrieval_feedback_retry_count",
+            "retrieval_attempts",
+            "processing_time_ms",
+        ):
+            if key in msg:
+                entry[key] = _json_safe_value(msg.get(key))
+        serialized.append(entry)
     return serialized
+
+
+def _assistant_message_metadata(response_dict: dict[str, Any]) -> dict[str, Any]:
+    return _json_safe_value({
+        "intent": response_dict.get("intent"),
+        "rooms": _build_rooms_data(response_dict),
+        "follow_ups": response_dict.get("suggested_questions", []),
+        "suggested_questions": response_dict.get("suggested_questions", []),
+        "sources": response_dict.get("sources", []),
+        "session_state": response_dict.get("session_state", {}),
+        "verification": response_dict.get("verification", {}),
+        "cost_estimate": response_dict.get("cost_estimate"),
+        "comparison": response_dict.get("comparison"),
+        "abstain": bool(response_dict.get("abstain")),
+        "abstain_reason": response_dict.get("abstain_reason"),
+        "retrieval_confidence": response_dict.get("retrieval_confidence"),
+        "retrieval_low_confidence": response_dict.get("retrieval_low_confidence"),
+        "retrieval_feedback_retry_count": response_dict.get("retrieval_feedback_retry_count", 0),
+        "retrieval_attempts": response_dict.get("retrieval_attempts", []),
+        "processing_time_ms": response_dict.get("processing_time_ms", 0),
+    })
 
 
 def _list_chat_threads(contact_id: str, role: str, active_conversation_id: str | None = None) -> list[dict[str, Any]]:
@@ -1155,17 +1197,29 @@ def _build_chat_payload(
         "conversation_id": conversation_id,
         "role": role,
         "reply": reply,
+        "answer": reply,
+        "intent": response_dict.get("intent"),
+        "session_state": response_dict.get("session_state", {}),
         "rooms": _build_rooms_data(response_dict),
+        "cost_estimate": response_dict.get("cost_estimate"),
+        "comparison": response_dict.get("comparison"),
         "follow_ups": response_dict.get("suggested_questions") or [
             "Tìm phòng dưới 5 triệu ở Bình Thạnh",
             "Có gác lửng",
             "Gần trung tâm",
             "Cho nuôi thú cưng",
         ],
+        "suggested_questions": response_dict.get("suggested_questions") or [],
         "filters": _build_ui_filters(response_dict),
         "sources": response_dict.get("sources", []),
         "abstain": bool(response_dict.get("abstain")),
-        "intent": response_dict.get("intent"),
+        "abstain_reason": response_dict.get("abstain_reason"),
+        "verification": response_dict.get("verification", {}),
+        "retrieval_confidence": response_dict.get("retrieval_confidence"),
+        "retrieval_low_confidence": response_dict.get("retrieval_low_confidence"),
+        "retrieval_feedback_retry_count": response_dict.get("retrieval_feedback_retry_count", 0),
+        "retrieval_attempts": response_dict.get("retrieval_attempts", []),
+        "processing_time_ms": response_dict.get("processing_time_ms", 0),
         "relaxed_search": any(bool(room.get("relaxed_search")) for room in (response_dict.get("rooms") or [])),
         "threads": _list_chat_threads(contact_id, role, active_conversation_id=conversation_id),
     }
@@ -1364,6 +1418,7 @@ def api_chat(request):
                                 "role": "assistant",
                                 "content": reply,
                                 "created_at": finished_at,
+                                **_assistant_message_metadata(response_dict),
                             }
                         },
                     },
@@ -1589,6 +1644,7 @@ def api_health(request):
         "api": {
             "rag_query_path": "/api/rag/query/",
             "rag_stream_path": "/api/rag/stream/",
+            "health_deep_path": "/api/health/deep/",
         },
         "security": {
             "https_redirect": bool(getattr(settings, "SECURE_SSL_REDIRECT", False)),
@@ -1599,3 +1655,45 @@ def api_health(request):
             "default_backend": settings.CACHES["default"]["BACKEND"],
         },
     })
+
+
+def api_health_deep(request):
+    """Optional dependency probe — may be slower; keep /api/health/ shallow."""
+    checks: dict[str, Any] = {}
+    overall_ok = True
+
+    try:
+        rooms_col = _get_rooms_collection()
+        rooms_col.find_one({}, {"room_id": 1})
+        checks["mongodb"] = {"status": "ok"}
+    except Exception as exc:
+        overall_ok = False
+        checks["mongodb"] = {"status": "error", "message": str(exc)[:200]}
+
+    try:
+        from config import QDRANT_URL
+        if QDRANT_URL:
+            from retrieval.qdrant_client import QdrantWrapper
+            wrapper = QdrantWrapper()
+            wrapper.get_collection_info()
+            checks["qdrant"] = {"status": "ok"}
+        else:
+            checks["qdrant"] = {"status": "skipped", "message": "QDRANT_URL not configured"}
+    except Exception as exc:
+        checks["qdrant"] = {"status": "degraded", "message": str(exc)[:200]}
+
+    try:
+        from config import GROQ_API_KEY
+        checks["llm"] = {
+            "status": "ok" if str(GROQ_API_KEY or "").strip() else "skipped",
+            "message": None if str(GROQ_API_KEY or "").strip() else "GROQ_API_KEY not configured",
+        }
+    except Exception as exc:
+        checks["llm"] = {"status": "skipped", "message": str(exc)[:120]}
+
+    return JsonResponse({
+        "success": overall_ok,
+        "status": "ok" if overall_ok else "degraded",
+        "service": "nhatrovn-rag",
+        "checks": checks,
+    }, status=200 if overall_ok else 503)
