@@ -174,13 +174,16 @@ flowchart LR
     Signals --> MetaSearch[search_by_metadata]
     MetaSearch --> Candidates
 
-    Candidates --> QdrantRank[Qdrant hybrid search<br/>dense BGE-M3 + sparse BM25]
+    Candidates --> QdrantRank[Qdrant hybrid search<br/>dense BGE-M3 + sparse BM25<br/>restricted to candidate_ids]
     QdrantRank --> Rerank[Reranker optional]
     Rerank --> Authoritative[get_many_by_ids<br/>giá từ Mongo]
     Authoritative --> TopK[Top K phòng trả khách]
 ```
 
 - Giá, quận, trạng thái còn phòng: **luôn** lấy từ Mongo sau khi rank.
+- Qdrant chỉ xếp hạng trong tập `candidate_ids` từ Mongo — **không** filter lại quận bằng payload Qdrant (alias `binh thanh` ≠ `Quận Bình Thạnh` trong index).
+- Filter loại phòng (`phong_tro`, …) chạy **post-filter** trên Mongo candidates; phòng thiếu `category` metadata vẫn match `phong_tro` trừ khi text chỉ rõ loại khác.
+- Qdrant lỗi hoặc trả 0 hit: fallback xếp hạng theo metadata score trên candidates Mongo (không báo “không có phòng” nếu Mongo đã có ứng viên).
 - `semantic_index=None` khi gọi `run_room_assistant`: chỉ Mongo (dùng trong unit test).
 - Không truyền `semantic_index`: tự kết nối Qdrant (`QDRANT_URL`).
 
@@ -314,7 +317,7 @@ python scripts/pre_demo_mongo_audit.py
 
 | File | Mục đích |
 |---|---|
-| `python/tests/test_room_assistant_core.py` | Workflow, intent, retrieval, session |
+| `python/tests/test_room_assistant_core.py` | Workflow, intent, retrieval, session; acceptance tests fresh search + multi-turn budget |
 | `python/tests/test_intent_parser.py` | Parse constraint / landmark / quận |
 | `python/tests/test_intent_regression_matrix.py` | Ma trận routing intent (deictic, FAQ, schedule…) |
 | `python/tests/test_landmark_aliases.py` | Chuẩn hóa TDTU, TTTM, đường, trường… |
@@ -379,6 +382,9 @@ Mỗi lượt chat tạo span Langfuse `room_assistant_turn`, bao gồm:
 
 - `groq_chat_complete` — intent classify & router verifier
 - Metadata intent, retrieval confidence, processing time
+- `agent_trace.retrieval`: `candidate_count`, `retrieval_attempts[]` (gồm `semantic_result_count`, `semantic_error`, `fallback_used`), `empty_result_reason` khi `rooms=[]`
+
+Response REST/SSE cũng trả `retrieval_explanation` (human-readable audit lines) và `empty_result_reason` khi không có phòng — xem [RAG_API_CONTRACT.md](./RAG_API_CONTRACT.md).
 
 Cấu hình qua biến môi trường Langfuse trong `.env` (xem `.env.example`).
 
@@ -390,7 +396,7 @@ Cấu hình qua biến môi trường Langfuse trong `.env` (xem `.env.example`)
 2. **Grounded answers** — giá và tiện ích lấy từ Mongo; reviewer abstain khi thiếu context.
 3. **Sales tone có guardrail** — đồng cảm + CTA xem phòng, không hứa giảm giá / đặt cọc hộ.
 4. **Regex-first routing** — giảm latency và chi phí LLM; LLM chỉ cứu edge case.
-5. **Session-aware** — `REFINE_SEARCH` giữ ngữ cảnh budget/location qua nhiều lượt.
+5. **Session-aware** — `REFINE_SEARCH` giữ ngữ cảnh budget/location qua nhiều lượt; relative budget (“thêm 1 triệu”) cộng từ state hiện tại; category cũ được clear khi pivot search mới.
 
 ---
 

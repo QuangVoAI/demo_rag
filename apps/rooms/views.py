@@ -657,6 +657,8 @@ def _serialize_rag_response(response_dict: dict[str, Any], session_id: str = "")
         "retrieval_low_confidence": response_dict.get("retrieval_low_confidence"),
         "retrieval_feedback_retry_count": response_dict.get("retrieval_feedback_retry_count", 0),
         "retrieval_attempts": response_dict.get("retrieval_attempts", []),
+        "retrieval_explanation": response_dict.get("retrieval_explanation", []),
+        "empty_result_reason": response_dict.get("empty_result_reason"),
         "processing_time_ms": response_dict.get("processing_time_ms", 0),
     }
     return _json_safe_value(payload)
@@ -846,6 +848,8 @@ def _serialize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
             "retrieval_low_confidence",
             "retrieval_feedback_retry_count",
             "retrieval_attempts",
+            "retrieval_explanation",
+            "empty_result_reason",
             "processing_time_ms",
         ):
             if key in msg:
@@ -871,6 +875,8 @@ def _assistant_message_metadata(response_dict: dict[str, Any]) -> dict[str, Any]
         "retrieval_low_confidence": response_dict.get("retrieval_low_confidence"),
         "retrieval_feedback_retry_count": response_dict.get("retrieval_feedback_retry_count", 0),
         "retrieval_attempts": response_dict.get("retrieval_attempts", []),
+        "retrieval_explanation": response_dict.get("retrieval_explanation", []),
+        "empty_result_reason": response_dict.get("empty_result_reason"),
         "processing_time_ms": response_dict.get("processing_time_ms", 0),
     })
 

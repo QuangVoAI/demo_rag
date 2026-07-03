@@ -65,11 +65,36 @@ Body:
   "retrieval_low_confidence": false,
   "retrieval_feedback_retry_count": 0,
   "retrieval_attempts": [],
+  "retrieval_explanation": [],
+  "empty_result_reason": null,
   "processing_time_ms": 123,
   "request_id": "req-123",
   "correlation_id": "req-123"
 }
 ```
+
+`retrieval_attempts[]` (each item):
+
+| Field | Type | Notes |
+|---|---|---|
+| `query` | string | Query text used for this rank attempt (may differ after feedback retry) |
+| `result_count` | int | Rooms returned after authoritative readback |
+| `confidence` | number | Best combined/rerank score |
+| `top_room_ids` | string[] | Room IDs in rank order |
+| `semantic_result_count` | int | Hits from Qdrant hybrid search on `candidate_ids` |
+| `semantic_error` | bool | `true` if Qdrant raised (Mongo fallback used) |
+| `fallback_used` | bool | `true` if semantic rank returned no rooms and Mongo metadata fallback ranked |
+
+`empty_result_reason` (only when `rooms` is empty):
+
+| Code | Meaning |
+|---|---|
+| `NO_HARD_FILTER_CANDIDATES` | Mongo hard filter returned zero candidates |
+| `QDRANT_NO_RANKED_RESULTS` | Candidates existed but semantic rank returned nothing (fallback may still return rooms) |
+| `QDRANT_UNAVAILABLE_FALLBACK_USED` | Qdrant error; fallback ranking used |
+| `AUTHORITATIVE_READBACK_EMPTY` | Rank produced IDs but Mongo readback returned none |
+
+`null` when `rooms` is non-empty. User-facing `reply` stays friendly; use these fields for debugging and monitors.
 
 ## Standard error contract
 
@@ -174,7 +199,13 @@ The bot only recommends rooms visible in **public web/app inventory** (Mongo aut
 | `RETRIEVAL_CANDIDATE_LIMIT` | `100` | Max rooms after Mongo hard filter before Qdrant BGE-M3 rank (~9k index). Override via env if recall drops in dense districts. |
 | `TOP_K_RETRIEVAL` | `6` | Final rooms returned to client after rank |
 
-Pipeline: **Mongo hard filter → semantic rank on `candidate_ids` → authoritative `rent_price` from Mongo**.
+Pipeline: **Mongo hard filter → Qdrant hybrid rank on `candidate_ids` only → authoritative `rent_price` from Mongo**.
+
+Qdrant does **not** re-apply district filters via payload metadata (constraint values like `binh thanh` do not match display names like `Quận Bình Thạnh` in the index). Hard filters are enforced entirely by Mongo; `candidate_ids` is the allow-list passed to Qdrant.
+
+Room-type filter `phong_tro` is applied in Mongo **post-filter** (not in the Mongo query): rooms without `category` metadata still match when they are generic listings, unless embedding text clearly indicates another type (e.g. studio, căn hộ).
+
+Session **category constraints are cleared** on a fresh search pivot (new district/budget without repeating room type) so a prior `phong_tro` filter does not zero out later queries in the same session.
 
 ### Room reference resolution
 
@@ -198,10 +229,14 @@ Clients should treat `rooms=[]` + sales wording as **handoff**, not hard error.
 
 ### Streaming status events
 
-`/api/rag/stream/` emits progress before tokens, e.g.:
+`/api/rag/stream/` emits structured progress tokens before answer text, e.g.:
 
-- `[status:Phân tích|Hệ thống] Đang phân tích yêu cầu...`
-- `[status:Truy vấn|Cơ sở dữ liệu] Đang tìm kiếm các phòng phù hợp...`
-- `[status:Tổng hợp|Trợ lý AI] Đang tổng hợp câu trả lời...`
+- `[status:PHÂN TÍCH|gateway] Đang phân tích yêu cầu...`
+- `[status:ĐỊNH HƯỚNG|intent_router] Đang nhận diện nhu cầu và điều kiện chính...`
+- `[status:LÀM RÕ|intent_router] Đang phân tích ngữ cảnh hội thoại...`
+- `[status:NGỮ CẢNH|session_store] Đang đồng bộ trạng thái hội thoại...`
+- `[status:TRUY VẤN|retriever] Đang tìm kiếm các phòng phù hợp...`
+- `[status:ĐỐI CHIẾU|grounding_checker] Đang đối chiếu dữ liệu thực tế...`
+- `[status:SOẠN THẢO|response_writer] Đang soạn thảo câu trả lời...`
 
-Template answers (search hits, sales handoff, ordinal errors, verified price) may stream without LLM.
+The demo UI renders these as **chat status cards** (see `apps/rooms/static/rooms/demo.css`). Template answers (search hits, sales handoff, ordinal errors, verified price) may stream without LLM.

@@ -74,9 +74,33 @@ Example response (trimmed):
   "sources": [{"type": "room", "room_id": "A101"}],
   "verification": {"approved": true},
   "retrieval_confidence": 0.82,
+  "retrieval_attempts": [
+    {
+      "query": "Tìm phòng dưới 5 triệu ở Bình Thạnh",
+      "result_count": 5,
+      "confidence": 0.26,
+      "top_room_ids": ["6741770ef0dcd06be1634f17"],
+      "semantic_result_count": 6,
+      "semantic_error": false,
+      "fallback_used": false
+    }
+  ],
+  "retrieval_explanation": [
+    "Lọc quận: binh thanh",
+    "Ngân sách tối đa: 5,000,000 VND",
+    "Sau lọc cứng MongoDB: 100 phòng ứng viên",
+    "Kết quả trả về: 5 phòng"
+  ],
+  "empty_result_reason": null,
   "processing_time_ms": 1234
 }
 ```
+
+## Multi-turn budget refinement
+
+Turn 1: `"Tìm phòng Bình Thạnh dưới 5 triệu"` → `session_state.constraints.budget.max = 5000000`, `location.districts = ["binh thanh"]`.
+
+Turn 2: `"Nới ngân sách thêm 1 triệu"` → `intent: REFINE_SEARCH`, `budget.max = 6000000` (cộng từ state, không parse “1 triệu” thành max tuyệt đối), quận giữ nguyên, retrieval chạy lại.
 
 ## No-result sales handoff
 
@@ -87,10 +111,19 @@ When inventory miss is confirmed for district/budget constraints:
   "success": true,
   "intent": "SEARCH_ROOM",
   "rooms": [],
+  "empty_result_reason": "NO_HARD_FILTER_CANDIDATES",
+  "retrieval_explanation": [
+    "Lọc quận: quan 7",
+    "Ngân sách tối đa: 100,000 VND",
+    "Sau lọc cứng MongoDB: 0 phòng ứng viên",
+    "Kết quả trả về: 0 phòng"
+  ],
   "reply": "Dạ em tìm mỏi mắt mà chưa thấy phòng nào khớp 100% điều kiện của mình ạ...",
   "suggested_questions": ["Nới ngân sách lên 6 triệu", "Xem phòng quận lân cận"]
 }
 ```
+
+`empty_result_reason` helps distinguish true inventory miss from retrieval/index failures. User-facing `reply` remains the sales handoff template.
 
 ## Request action refusal
 
