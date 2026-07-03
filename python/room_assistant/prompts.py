@@ -166,7 +166,8 @@ REQUEST_ACTION_ANSWERS: dict[str, str] = {
         "hoặc hủy lịch cũ rồi đặt lại giúp em nha."
     ),
     "negotiate": (
-        "Dạ em **không có quyền thương lượng hay giảm giá** thay chủ nhà ạ. "
+        "Dạ em **không có quyền thương lượng hay giảm giá** thay chủ nhà, "
+        "nên em chưa hỗ trợ bớt giá được ạ. "
         "Mình xem phòng ưng ý trước, rồi trao đổi trực tiếp với chủ nhà khi ký HĐ nha. "
         "Nếu cần tầm giá dễ thở hơn, em lọc thêm khu lân cận giúp anh/chị được ạ."
     ),
@@ -175,7 +176,8 @@ REQUEST_ACTION_ANSWERS: dict[str, str] = {
         "để trao đổi trực tiếp với chủ nhà nha."
     ),
     "payment": (
-        "Dạ em **không thu tiền hay giữ cọc hộ** ạ. Anh/chị chỉ thanh toán sau khi xác minh trực tiếp "
+        "Dạ em **không thu tiền hay giữ cọc hộ**, nên em chưa hỗ trợ thanh toán được ạ. "
+        "Anh/chị chỉ thanh toán sau khi xác minh trực tiếp "
         "với bên cho thuê hoặc qua kênh chính thức trên nhatrovn nha."
     ),
     "hold_room": (

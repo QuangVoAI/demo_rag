@@ -435,6 +435,25 @@ def _is_relative_budget_increase(normalized: str) -> bool:
     )
 
 
+def _is_price_complaint(normalized: str) -> bool:
+    """Than phiền giá ('giá cao thế', 'đắt quá') — không phải hỏi chính sách/FAQ."""
+    if re.search(r"\b(?:giam gia|bot gia|thuong luong)\b", normalized):
+        return False
+    return bool(re.search(
+        r"\b(?:gia cao|dat qua|mac qua|qua tam tien|sao (?:ma )?thue noi|thue khong noi)\b",
+        normalized,
+    ))
+
+
+def _has_search_constraint_operations(ops: list[dict[str, Any]]) -> bool:
+    """Câu có ràng buộc tìm kiếm cụ thể (quận/ngân sách/mốc gần) → là search, không phải FAQ."""
+    return any(
+        op.get("path") in {"location.districts", "location.near_landmarks", "budget.max", "budget.min"}
+        and op.get("op") in {"set", "append", "replace"}
+        for op in ops
+    )
+
+
 def _append_unique(ops: list[dict[str, Any]], op: str, path: str, value: Any = None) -> None:
     """Thêm operation vào danh sách nếu hợp lệ và chưa tồn tại."""
     if op not in OP_TYPES or path not in ALLOWED_OPERATION_PATHS:
@@ -506,6 +525,9 @@ def _normalize_room_reference(value: Any) -> str:
 def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
     """Trích xuất ngân sách tối đa / tối thiểu từ câu hỏi."""
     from .money import extract_colloquial_budget_vnd
+
+    if _is_relative_budget_increase(normalized):
+        return
 
     colloquial = extract_colloquial_budget_vnd(normalized)
     if colloquial is not None:
@@ -934,7 +956,7 @@ def _is_search_availability_question(normalized: str) -> bool:
     """'Có phòng ... không?' — tìm kiếm, không phải hỏi thuộc tính phòng đang xem."""
     if _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
         return False
-    if re.search(r"\b(?:can|phong|nha)\s+(?:nay|do|kia|tren|duoi|dang xem)\b", normalized):
+    if re.search(r"\b(?:can|phong|nha)\s+(?:nay|do|kia|tren|duoi(?!\s*(?:\d|trieu|tr\b|t\b|m\b|cu\b|chuc\b|tram\b))|dang xem)\b", normalized):
         return False
     return bool(re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\b", normalized))
 
@@ -944,6 +966,8 @@ def _looks_like_room_attribute_question(
     current_state: dict[str, Any] | None,
 ) -> bool:
     if not _has_current_room(current_state):
+        return False
+    if _is_location_pivot_phrase(normalized):
         return False
     if _is_search_availability_question(normalized):
         return False
@@ -1020,6 +1044,8 @@ def _is_location_pivot_phrase(normalized: str) -> bool:
 
 
 def _is_room_detail_question(normalized: str, ids: list[str], current_state: dict[str, Any] | None) -> bool:
+    if _is_location_pivot_phrase(normalized):
+        return False
     if re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\s+nao\b", normalized):
         return False
     if re.search(r"\b(?:can|phong|nha)\s+nao\s+(?:co|con)\b", normalized):
@@ -1252,7 +1278,7 @@ def _selected_room_id_from_deictic(normalized: str, current_state: dict[str, Any
     if re.search(r"\b(?:can|phong|cai)\s+(?:o\s+)?tren\b", normalized):
         return _pick(0)
 
-    if re.search(r"\b(?:can|phong|cai)\s+(?:o\s+)?duoi\b", normalized):
+    if re.search(r"\b(?:can|phong|cai)\s+(?:o\s+)?duoi(?!\s*(?:\d|trieu|tr\b|t\b|m\b|cu\b|chuc\b|tram\b))\b", normalized):
         return _pick(1) if len(ids) > 1 else _pick(-1)
 
     if re.search(r"\b(?:can|phong)\s+cuoi\b", normalized):
@@ -1314,6 +1340,7 @@ def _maybe_replace_location_filters(
             _prepend_clear("location.districts")
             if (current_state.get("constraints") or {}).get("amenities_preferred"):
                 _prepend_clear("amenities_preferred")
+            _maybe_clear_stale_scope_on_pivot(ops)
         if current_wards:
             _prepend_clear("location.wards")
         if current_landmarks:
@@ -1326,6 +1353,46 @@ def _maybe_replace_location_filters(
         normalized_current = {_norm(item) for item in current_landmarks}
         if not normalized_new.issubset(normalized_current):
             _prepend_clear("location.near_landmarks")
+
+
+def _maybe_clear_stale_scope_on_pivot(ops: list[dict[str, Any]]) -> None:
+    """Khi đổi quận/khu vực, bỏ loại phòng và tiện ích cứng từ lượt trước nếu lượt này không nhắc lại."""
+    if any(op.get("path") == "categories" for op in ops):
+        return
+    clear_op = {"op": "clear", "path": "categories"}
+    if clear_op not in ops:
+        ops.insert(0, clear_op)
+    if not any(
+        op.get("path") in {"amenities_required", "amenities_preferred", "excluded_features"}
+        for op in ops
+    ):
+        for path in ("amenities_required", "excluded_features"):
+            item = {"op": "clear", "path": path}
+            if item not in ops:
+                ops.insert(0, item)
+
+
+def _maybe_clear_stale_search_scope(normalized: str, ops: list[dict[str, Any]]) -> None:
+    """Tìm kiếm mới (có 'tìm phòng' + điều kiện) nhưng không nhắc loại phòng → bỏ category cũ trong session."""
+    if _is_relative_budget_increase(normalized):
+        return
+    if any(op.get("path") == "categories" for op in ops):
+        return
+    has_search_pivot = any(
+        op.get("path") in {"location.districts", "budget.max", "location.near_landmarks"}
+        and op.get("op") in {"append", "set", "clear", "replace"}
+        for op in ops
+    )
+    if not has_search_pivot:
+        return
+    is_full_search = bool(
+        re.search(r"\b(?:tim|muon thue|can thue|thue phong|phong tro|nha tro|can ho)\b", normalized)
+    )
+    if not is_full_search:
+        return
+    clear_op = {"op": "clear", "path": "categories"}
+    if clear_op not in ops:
+        ops.insert(0, clear_op)
 
 
 def _coerce_llm_payload(raw: Any) -> tuple[dict[str, Any], float]:
@@ -1821,6 +1888,7 @@ def parse_intent_and_constraint_patch(
     _apply_relative_budget_refinement(text, normalized, current_state, operations)
     _maybe_replace_budget_filters(normalized, current_state, operations)
     _maybe_replace_location_filters(normalized, current_state, operations)
+    _maybe_clear_stale_search_scope(normalized, operations)
 
     referenced_room_ids = [_normalize_room_reference(item) for item in _extract_room_ids(text)]
     ordinal_out_of_range = False
@@ -1860,6 +1928,8 @@ def parse_intent_and_constraint_patch(
             is_policy_question(text, current_state)
             and not action
             and not referenced_room_ids
+            and not _has_search_constraint_operations(operations)
+            and not _is_price_complaint(normalized)
             and not _is_room_detail_question(normalized, referenced_room_ids, current_state)
         ):
             intent = "REQUEST_FAQ"
@@ -1870,6 +1940,17 @@ def parse_intent_and_constraint_patch(
     if not action and (_has_keyword(normalized, COST_FIELD_KEYWORDS) or _is_action_capability_question(normalized)):
         if "dat coc" in normalized or "đặt cọc" in text.lower():
             intent = "REQUEST_FAQ"
+    # "sinh viên"/"hợp lý"… là keyword FAQ, nhưng câu có ràng buộc tìm kiếm cụ thể
+    # (quận + ngân sách) là một search; than phiền giá là GENERAL_HELP (script đồng cảm).
+    if intent == "REQUEST_FAQ" and not action:
+        if _has_search_constraint_operations(operations):
+            intent = (
+                "REFINE_SEARCH"
+                if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"}
+                else "SEARCH_ROOM"
+            )
+        elif _is_price_complaint(normalized):
+            intent = "GENERAL_HELP"
     if operations and intent == "GENERAL_HELP":
         intent = "REFINE_SEARCH" if current_state and current_state.get("last_intent") in {"SEARCH_ROOM", "REFINE_SEARCH"} else "SEARCH_ROOM"
     if (
@@ -1924,6 +2005,7 @@ def parse_intent_and_constraint_patch(
 async def parse_intent_async(
     question: str,
     current_state: dict[str, Any] | None = None,
+    status_callback: Any = None,
 ) -> ParsedRequest:
     """
     Phân tích một lượt người dùng bằng regex trước, chỉ dùng LLM để cứu
@@ -1946,6 +2028,10 @@ async def parse_intent_async(
         regex_parsed.get("referenced_room_ids", []),
         current_state,
     )
+
+    if status_callback:
+        await status_callback("[status:ĐỊNH HƯỚNG|intent_router] Đang nhận diện nhu cầu và điều kiện chính...\n")
+        await status_callback("[status:LÀM RÕ|intent_router] Đang phân tích ngữ cảnh hội thoại...\n")
 
     raw_llm = await _llm_classify_intent(text, current_state)
     data, llm_confidence = _coerce_llm_payload(raw_llm)
@@ -1973,6 +2059,8 @@ async def parse_intent_async(
 
     verifier: dict[str, Any] = {}
     if _should_call_router_verifier(regex_candidate, llm_candidate):
+        if status_callback:
+            await status_callback("[status:ĐỐI CHIẾU|intent_router] Đang kiểm tra logic điều hướng...\n")
         verifier = await _llm_verify_routing_decision(
             text,
             current_state,

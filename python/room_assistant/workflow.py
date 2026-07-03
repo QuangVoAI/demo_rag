@@ -268,12 +268,19 @@ async def run_room_assistant(
         return result
 
     if stream_callback:
-        await stream_callback("[status:Phân tích|Hệ thống] Đang phân tích yêu cầu...\n")
+        await stream_callback("[status:PHÂN TÍCH|gateway] Đang phân tích yêu cầu...\n")
 
     if semantic_index is _UNSET:
         semantic_index = _get_semantic_index()
-    parsed = await parse_intent_async(question, state_before)
+    parsed = await parse_intent_async(
+        question,
+        state_before,
+        status_callback=stream_callback,
+    )
     merged_state, applied_operations = apply_operations(state_before, parsed["operations"])
+
+    if stream_callback:
+        await stream_callback("[status:NGỮ CẢNH|session_store] Đang đồng bộ trạng thái hội thoại...\n")
 
     user_mood = "normal"
     try:
@@ -283,7 +290,7 @@ async def run_room_assistant(
         pass
 
     if stream_callback:
-        await stream_callback("[status:Truy vấn|Cơ sở dữ liệu] Đang tìm kiếm các phòng phù hợp...\n")
+        await stream_callback("[status:TRUY VẤN|retriever] Đang tìm kiếm các phòng phù hợp...\n")
 
     context = ToolExecutionContext(repository=repo, semantic_index=semantic_index)
     tool_results: dict[str, Any] = {}
@@ -298,7 +305,10 @@ async def run_room_assistant(
         tool_results = {"error": "tool_budget_exceeded"}
 
     if stream_callback:
-        await stream_callback("[status:Tổng hợp|Trợ lý AI] Đang tổng hợp câu trả lời...\n")
+        await stream_callback("[status:ĐỐI CHIẾU|grounding_checker] Đang đối chiếu dữ liệu thực tế...\n")
+
+    if stream_callback:
+        await stream_callback("[status:SOẠN THẢO|response_writer] Đang soạn thảo câu trả lời...\n")
 
     rooms = _extract_rooms(tool_results)
     if tool_results.get("relaxed_search"):
@@ -354,6 +364,7 @@ async def run_room_assistant(
         "retrieval_feedback_retry_count": context.retrieval_trace.get("retrieval_feedback_retry_count", 0),
         "retrieval_attempts": context.retrieval_trace.get("retrieval_attempts", []),
         "retrieval_explanation": retrieval_explanation,
+        "empty_result_reason": context.retrieval_trace.get("empty_result_reason") if not rooms else None,
         "agent_trace": {
             "workflow": [
                 "normalize_input", "parse_intent_async", "analyze_mood",
@@ -1099,6 +1110,8 @@ async def _compose_answer_async(
     try:
         from config import ENABLE_REVIEWER
         if ENABLE_REVIEWER:
+            if stream_callback:
+                await stream_callback("[status:KIỂM DUYỆT|reviewer] Đang kiểm duyệt chất lượng phản hồi...\n")
             from agents.reviewer import review_with_retry
             answer, review_result = await review_with_retry(
                 question=question,
@@ -1115,6 +1128,9 @@ async def _compose_answer_async(
             if not verification["approved"]:
                 abstain, reason = True, "reviewer_rejected"
                 return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
+        else:
+            if stream_callback:
+                await stream_callback("[status:KIỂM DUYỆT|reviewer] Đang tối ưu hóa định dạng phản hồi...\n")
     except Exception:
         pass
 

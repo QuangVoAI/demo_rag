@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from copy import deepcopy
 from typing import Any, Protocol
+
+_logger = logging.getLogger(__name__)
 
 from .schemas import (
     ALLOWED_OPERATION_PATHS,
@@ -73,7 +76,12 @@ class RedisSessionStore:
         value = json.dumps(state, ensure_ascii=False)
         try:
             self._redis.setex(self.key(session_id), ttl_seconds, value)
-        except Exception:
+        except Exception as exc:
+            _logger.warning(
+                "room_assistant_session_store_redis_save_failed session_id=%s error=%s",
+                session_id,
+                exc,
+            )
             return
 
 
@@ -90,8 +98,16 @@ def create_session_store() -> SessionStore:
     if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
         try:
             return RedisSessionStore(UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
-        except Exception:
+        except Exception as exc:
+            _logger.warning(
+                "room_assistant_session_store_redis_failed fallback=in_memory error=%s",
+                exc,
+            )
             return InMemorySessionStore()
+    _logger.warning(
+        "room_assistant_session_store_redis_not_configured fallback=in_memory "
+        "(set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN for durable session memory)",
+    )
     return InMemorySessionStore()
 
 

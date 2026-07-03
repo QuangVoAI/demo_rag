@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -13,6 +14,14 @@ from .repository import (
     _room_has_positive_amenity,
 )
 from retrieval.metadata_search import extract_metadata_signals, score_metadata_hit
+
+_logger = logging.getLogger(__name__)
+
+# Reason codes for empty results (trace-only, user message stays friendly).
+EMPTY_NO_HARD_FILTER_CANDIDATES = "NO_HARD_FILTER_CANDIDATES"
+EMPTY_QDRANT_NO_RANKED_RESULTS = "QDRANT_NO_RANKED_RESULTS"
+EMPTY_QDRANT_UNAVAILABLE_FALLBACK_USED = "QDRANT_UNAVAILABLE_FALLBACK_USED"
+EMPTY_AUTHORITATIVE_READBACK_EMPTY = "AUTHORITATIVE_READBACK_EMPTY"
 
 
 class RoomSemanticIndex(Protocol):
@@ -63,6 +72,9 @@ def search_rooms_with_hard_filters(
     best_low_confidence = True
     retry_count = 0
     query_for_attempt = query_text
+    semantic_error_seen = False
+    fallback_used = False
+    semantic_zero_seen = False
 
     if candidate_ids:
         for attempt_index in range(feedback_retries + 1):
@@ -77,6 +89,13 @@ def search_rooms_with_hard_filters(
                 top_k=top_k,
             )
             attempts.append(attempt["trace"])
+            semantic_error_seen = semantic_error_seen or attempt["trace"].get("semantic_error", False)
+            fallback_used = fallback_used or attempt["trace"].get("fallback_used", False)
+            semantic_zero_seen = semantic_zero_seen or (
+                semantic_index is not None
+                and not attempt["trace"].get("semantic_error")
+                and attempt["trace"].get("semantic_result_count", 0) == 0
+            )
             confidence = attempt["confidence"]
             low_confidence = _is_low_confidence(
                 attempt["rooms"],
@@ -97,6 +116,17 @@ def search_rooms_with_hard_filters(
             retry_count += 1
             query_for_attempt = _build_retry_query(query_text, constraints, metadata_candidates)
 
+    empty_result_reason = None
+    if not best_rooms:
+        if not candidate_ids:
+            empty_result_reason = EMPTY_NO_HARD_FILTER_CANDIDATES
+        elif semantic_error_seen:
+            empty_result_reason = EMPTY_QDRANT_UNAVAILABLE_FALLBACK_USED
+        elif semantic_zero_seen:
+            empty_result_reason = EMPTY_QDRANT_NO_RANKED_RESULTS
+        else:
+            empty_result_reason = EMPTY_AUTHORITATIVE_READBACK_EMPTY
+
     if trace is not None:
         trace.clear()
         trace.update({
@@ -107,6 +137,9 @@ def search_rooms_with_hard_filters(
             "metadata_signals": signals,
             "metadata_hit_count": len(metadata_candidates),
             "candidate_count": len(candidate_ids),
+            "empty_result_reason": empty_result_reason,
+            "fallback_used": fallback_used,
+            "semantic_error": semantic_error_seen,
         })
 
     _write_feedback_log(
@@ -136,14 +169,23 @@ def _rank_attempt(
     cfg = _retrieval_config()
     signals = extract_metadata_signals(original_query)
     semantic_results: list[dict[str, Any]] = []
+    semantic_error = False
     if semantic_index and query_text.strip():
-        metadata_filter = _metadata_filter_from_constraints(constraints)
-        semantic_results = semantic_index.search_rooms(
-            query_text=query_text,
-            candidate_ids=candidate_ids,
-            top_k=max(top_k, cfg["top_k_retrieval"]),
-            metadata_filter=metadata_filter,
-        )
+        # candidate_ids already enforce every hard filter (district, price, status)
+        # from Mongo. Do NOT re-filter by district in Qdrant: constraint values are
+        # normalized ("binh thanh") while payload stores display names
+        # ("Quận Bình Thạnh"), so an exact-match filter silently drops all points.
+        try:
+            semantic_results = semantic_index.search_rooms(
+                query_text=query_text,
+                candidate_ids=candidate_ids,
+                top_k=max(top_k, cfg["top_k_retrieval"]),
+                metadata_filter=None,
+            )
+        except Exception as exc:
+            semantic_error = True
+            semantic_results = []
+            _logger.warning("room_retrieval_semantic_index_failed error=%s", exc)
     semantic_by_id = {
         str(item.get("room_id")): item
         for item in semantic_results
@@ -201,7 +243,9 @@ def _rank_attempt(
         room["retrieval_score"] = _preferred_source_score(room)
         rooms.append(room)
 
+    fallback_used = False
     if not rooms:
+        fallback_used = True
         rooms = _fallback_constrained_ranked_rooms(
             candidates=candidates,
             constraints=constraints,
@@ -222,6 +266,8 @@ def _rank_attempt(
             "confidence": confidence,
             "top_room_ids": [item.get("room_id") for item in rooms],
             "semantic_result_count": len(semantic_results),
+            "semantic_error": semantic_error,
+            "fallback_used": fallback_used,
         },
     }
 
@@ -341,14 +387,6 @@ def _preferred_amenities_boost(room: dict[str, Any], preferred: list[str]) -> fl
         elif _room_has_positive_amenity(room, canonical):
             boost += 0.08
     return boost
-
-
-def _metadata_filter_from_constraints(constraints: dict[str, Any]) -> dict[str, Any]:
-    location = constraints.get("location") or {}
-    metadata: dict[str, Any] = {}
-    if location.get("districts"):
-        metadata["district"] = location["districts"]
-    return metadata
 
 
 def _merge_rooms(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:

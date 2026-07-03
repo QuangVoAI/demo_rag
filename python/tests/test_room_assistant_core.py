@@ -17,10 +17,11 @@ from room_assistant.repository import (
     MongoRoomRepository,
     _available_status_query,
     build_mongo_query,
+    create_room_repository,
     room_matches_constraints,
 )
 from room_assistant.schemas import default_session_state, normalize_room
-from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
+from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state, update_turn_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
 from room_assistant.workflow import _build_llm_context, _compose_answer_async, _compose_answer_template, run_room_assistant
 from room_assistant.prompts import format_request_action_answer
@@ -769,9 +770,13 @@ class RoomAssistantCoreTests(unittest.TestCase):
         ))
         self.assertEqual(result["intent"], "SEARCH_ROOM")
         joined = "".join(events)
-        self.assertIn("[status:Phân tích|Hệ thống]", joined)
-        self.assertIn("[status:Truy vấn|Cơ sở dữ liệu]", joined)
-        self.assertIn("[status:Tổng hợp|Trợ lý AI]", joined)
+        self.assertIn("[status:PHÂN TÍCH|gateway]", joined)
+        self.assertIn("[status:ĐỊNH HƯỚNG|intent_router]", joined)
+        self.assertIn("[status:LÀM RÕ|intent_router]", joined)
+        self.assertIn("[status:NGỮ CẢNH|session_store]", joined)
+        self.assertIn("[status:TRUY VẤN|retriever]", joined)
+        self.assertIn("[status:ĐỐI CHIẾU|grounding_checker]", joined)
+        self.assertIn("[status:SOẠN THẢO|response_writer]", joined)
 
     def test_compose_answer_streams_only_final_answer_after_review(self):
         from unittest.mock import AsyncMock
@@ -1135,6 +1140,24 @@ class RoomAssistantCoreTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("tìm cho tôi nhà quận 5", state)
         self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
         self.assertIn({"op": "append", "path": "location.districts", "value": "quan 5"}, parsed["operations"])
+
+    def test_search_below_budget_does_not_select_previous_lower_room(self):
+        state = default_session_state("search-below-budget")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["current_room_id"] = "BINH_THANH_2"
+        state["last_result_ids"] = ["BINH_THANH_1", "BINH_THANH_2"]
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "binh thanh"},
+            {"op": "set", "path": "budget.max", "value": 5_000_000},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng dưới 5 triệu ở quận 7", state)
+
+        self.assertIn(parsed["intent"], {"SEARCH_ROOM", "REFINE_SEARCH"})
+        self.assertIsNone(parsed["current_room_id"])
+        self.assertEqual(parsed["referenced_room_ids"], [])
+        self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "location.districts", "value": "quan 7"}, parsed["operations"])
 
     def test_repeated_same_district_clears_stale_ward_and_landmark(self):
         state = default_session_state("s-stale-loc")
@@ -1552,6 +1575,321 @@ class RoomAssistantCoreTests(unittest.TestCase):
             _preferred_amenities_boost(with_balcony, ["balcony"]),
             _preferred_amenities_boost(without, ["balcony"]),
         )
+
+    def test_stale_category_cleared_on_full_search_without_room_type(self):
+        state = default_session_state("sticky-category")
+        state, _ = apply_operations(state, [{"op": "append", "path": "categories", "value": "phong_tro"}])
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng dưới 5tr ở bình thạnh", state)
+        self.assertIn({"op": "clear", "path": "categories"}, parsed["operations"])
+
+        next_state, _ = apply_operations(state, parsed["operations"])
+        self.assertEqual(next_state["constraints"].get("categories"), [])
+
+    def test_district_pivot_clears_sticky_category(self):
+        state = default_session_state("pivot-category")
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "binh thanh"},
+            {"op": "append", "path": "categories", "value": "phong_tro"},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("tim phong o Binh Tan duoi 1 trieu", state)
+        self.assertIn({"op": "clear", "path": "categories"}, parsed["operations"])
+
+    def test_phong_tro_matches_room_without_category_metadata(self):
+        room = {
+            "room_id": "BT-1",
+            "category": None,
+            "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận Bình Thạnh",
+            "rent_price": 4_800_000,
+            "available": True,
+        }
+        self.assertTrue(room_matches_constraints(room, {"categories": ["phong_tro"]}))
+
+        studio_room = dict(room, embedding_text="Studio cao cap Quan 1")
+        self.assertFalse(room_matches_constraints(studio_room, {"categories": ["phong_tro"]}))
+
+    def test_location_pivot_after_landmark_search_clears_tdtu(self):
+        state = default_session_state("pivot-tdtu")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["room-a", "room-b", "room-c"]
+        state, _ = apply_operations(state, [
+            {"op": "set", "path": "budget.max", "value": 5_000_000},
+            {"op": "append", "path": "location.near_landmarks", "value": "tdtu"},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("đổi sang quận 2", state)
+        self.assertIn(parsed["intent"], {"SEARCH_ROOM", "REFINE_SEARCH"})
+        self.assertIn({"op": "clear", "path": "location.near_landmarks"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "location.districts", "value": "quan 2"}, parsed["operations"])
+
+        next_state, _ = apply_operations(state, parsed["operations"])
+        location = next_state["constraints"]["location"]
+        self.assertEqual(location["districts"], ["quan 2"])
+        self.assertEqual(location["near_landmarks"], [])
+
+    def test_relative_budget_without_state_skips_absolute_parse(self):
+        parsed = parse_intent_and_constraint_patch("Nới ngân sách thêm 1 triệu", None)
+        budget_ops = [op for op in parsed["operations"] if str(op.get("path", "")).startswith("budget.")]
+        self.assertEqual(budget_ops, [])
+
+    def test_conversation_flow_binh_thanh_returns_rooms(self):
+        try:
+            repo = create_room_repository()
+        except Exception:
+            self.skipTest("Mongo repository unavailable")
+        if not isinstance(repo, MongoRoomRepository):
+            self.skipTest("MONGODB_URI not configured; Mongo integration not exercised")
+
+        from room_assistant.workflow import _execute_workflow
+        from room_assistant.session_store import load_session_state, save_session_state
+
+        store = InMemorySessionStore()
+        session_id = "conv-binh-thanh"
+        state = load_session_state(session_id, store)
+        queries = [
+            "tim phong tro Binh Thanh duoi 5 trieu",
+            "Nới ngân sách thêm 1 triệu",
+            "Tim phong duoi 5tr o binh thanh",
+        ]
+        for question in queries:
+            parsed = parse_intent_and_constraint_patch(question, state)
+            merged, _ = apply_operations(state, parsed["operations"])
+            ctx = ToolExecutionContext(repository=repo)
+            results = _execute_workflow(question, parsed, merged, ctx)
+            state = update_turn_state(
+                merged,
+                parsed["intent"],
+                None,
+                [],
+                [item.get("room_id") for item in (results.get("rooms") or []) if item.get("room_id")],
+            )
+            save_session_state(state, store, 3600)
+
+        self.assertGreater(len(results.get("rooms") or []), 0)
+
+
+def _acceptance_rooms() -> list[dict]:
+    """Fixture matching production Mongo shape: Room A/B (Bình Thạnh), Room C (Quận 11)."""
+    return [
+        {
+            "room_id": "ROOM_A",
+            "metadata": {"price": 4_500_000, "status_code": "0", "district_name": "Quận Bình Thạnh"},
+            "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận Bình Thạnh",
+            "available": True,
+            "status": "active",
+        },
+        {
+            "room_id": "ROOM_B",
+            "metadata": {"price": 5_500_000, "status_code": "0", "district_name": "Quận Bình Thạnh"},
+            "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận Bình Thạnh",
+            "available": True,
+            "status": "active",
+        },
+        {
+            "room_id": "ROOM_C",
+            "metadata": {"price": 1_500_000, "status_code": "0", "district_name": "Quận 11"},
+            "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 11",
+            "available": True,
+            "status": "active",
+        },
+    ]
+
+
+class _ZeroResultSemanticIndex:
+    """Semantic index that ranks nothing (Qdrant filter/index mismatch)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def search_rooms(self, query_text, candidate_ids, top_k, metadata_filter=None):
+        self.calls.append({"metadata_filter": metadata_filter, "candidate_ids": list(candidate_ids)})
+        return []
+
+
+class _BrokenSemanticIndex:
+    """Semantic index that raises (Qdrant unavailable)."""
+
+    def search_rooms(self, query_text, candidate_ids, top_k, metadata_filter=None):
+        raise ConnectionError("qdrant down")
+
+
+class FreshSearchAcceptanceTests(unittest.TestCase):
+    """Section-12 acceptance matrix: fresh search on a deterministic fake repo."""
+
+    def _run_turn(self, question, state, repo, semantic_index=None):
+        parsed = parse_intent_and_constraint_patch(question, state)
+        merged, _ = apply_operations(state, parsed["operations"])
+        from room_assistant.workflow import _execute_workflow
+        ctx = ToolExecutionContext(repository=repo, semantic_index=semantic_index)
+        results = _execute_workflow(question, parsed, merged, ctx)
+        next_state = update_turn_state(
+            merged,
+            parsed["intent"],
+            None,
+            [],
+            [item.get("room_id") for item in (results.get("rooms") or []) if item.get("room_id")],
+        )
+        return results, next_state, ctx
+
+    def test_binh_thanh_under_5m_returns_room_a(self):
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        results, _, _ = self._run_turn(
+            "Tìm phòng Bình Thạnh dưới 5 triệu", default_session_state("fs-1"), repo,
+        )
+        self.assertEqual(
+            [room["room_id"] for room in results["rooms"]], ["ROOM_A"],
+        )
+
+    def test_binh_thanh_under_5m_without_accents_returns_room_a(self):
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        results, _, _ = self._run_turn(
+            "Binh Thanh duoi 5 trieu", default_session_state("fs-2"), repo,
+        )
+        self.assertEqual(
+            [room["room_id"] for room in results["rooms"]], ["ROOM_A"],
+        )
+
+    def test_phong_tro_binh_thanh_under_5m_returns_room_a(self):
+        """The original production failure: 'phong tro' category must not drop rooms without category metadata."""
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        results, _, _ = self._run_turn(
+            "tim phong tro Binh Thanh duoi 5 trieu", default_session_state("fs-3"), repo,
+        )
+        self.assertEqual(
+            [room["room_id"] for room in results["rooms"]], ["ROOM_A"],
+        )
+
+    def test_binh_thanh_under_6m_returns_rooms_a_and_b(self):
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        results, _, _ = self._run_turn(
+            "Tìm phòng Bình Thạnh dưới 6 triệu", default_session_state("fs-4"), repo,
+        )
+        self.assertEqual(
+            sorted(room["room_id"] for room in results["rooms"]), ["ROOM_A", "ROOM_B"],
+        )
+
+    def test_quan_11_under_1m_returns_zero_with_reason_code(self):
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        results, _, ctx = self._run_turn(
+            "Tìm phòng ở Quận 11 dưới 1 triệu", default_session_state("fs-5"), repo,
+        )
+        self.assertEqual(results["rooms"], [])
+        self.assertEqual(
+            ctx.retrieval_trace.get("empty_result_reason"), "NO_HARD_FILTER_CANDIDATES",
+        )
+
+
+class MultiTurnRefinementAcceptanceTests(unittest.TestCase):
+    """Section-12 critical acceptance: relative budget relax keeps location and reruns retrieval."""
+
+    def _run_turn(self, question, state, repo):
+        parsed = parse_intent_and_constraint_patch(question, state)
+        merged, _ = apply_operations(state, parsed["operations"])
+        from room_assistant.workflow import _execute_workflow
+        ctx = ToolExecutionContext(repository=repo)
+        results = _execute_workflow(question, parsed, merged, ctx)
+        next_state = update_turn_state(
+            merged,
+            parsed["intent"],
+            None,
+            [],
+            [item.get("room_id") for item in (results.get("rooms") or []) if item.get("room_id")],
+        )
+        return results, next_state
+
+    def test_binh_thanh_relax_budget_makes_room_b_eligible(self):
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        state = default_session_state("mt-bt")
+
+        results, state = self._run_turn("Tìm phòng Bình Thạnh dưới 5 triệu", state, repo)
+        self.assertEqual([room["room_id"] for room in results["rooms"]], ["ROOM_A"])
+
+        results, state = self._run_turn("Nới ngân sách thêm 1 triệu", state, repo)
+        constraints = state["constraints"]
+        self.assertEqual(constraints["budget"]["max"], 6_000_000)
+        self.assertEqual(constraints["location"]["districts"], ["binh thanh"])
+        self.assertIn("ROOM_B", [room["room_id"] for room in results["rooms"]])
+
+    def test_quan_11_zero_then_relax_budget_returns_room_c(self):
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        state = default_session_state("mt-q11")
+        version_start = state["state_version"]
+
+        results, state = self._run_turn("Tìm phòng ở Quận 11 dưới 1 triệu", state, repo)
+        self.assertEqual(results["rooms"], [])
+        self.assertEqual(state["constraints"]["budget"]["max"], 1_000_000)
+        version_after_t1 = state["state_version"]
+        self.assertGreater(version_after_t1, version_start)
+
+        results, state = self._run_turn("Nới ngân sách thêm 1 triệu", state, repo)
+        constraints = state["constraints"]
+        self.assertEqual(constraints["budget"]["max"], 2_000_000)
+        self.assertEqual(constraints["location"]["districts"], ["quan 11"])
+        self.assertGreater(state["state_version"], version_after_t1)
+        self.assertEqual([room["room_id"] for room in results["rooms"]], ["ROOM_C"])
+
+
+class SemanticRankingFallbackTests(unittest.TestCase):
+    """Section-12 pipeline tests: Qdrant failures must not become false empty results."""
+
+    def test_semantic_zero_results_falls_back_to_mongo_ranked(self):
+        from room_assistant.retrieval import search_rooms_with_hard_filters
+
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        index = _ZeroResultSemanticIndex()
+        trace = {}
+        rooms = search_rooms_with_hard_filters(
+            "Tìm phòng Bình Thạnh dưới 6 triệu",
+            {"location": {"districts": ["binh thanh"]}, "budget": {"max": 6_000_000}},
+            repository=repo,
+            semantic_index=index,
+            top_k=5,
+            trace=trace,
+        )
+        self.assertEqual(
+            sorted(room["room_id"] for room in rooms), ["ROOM_A", "ROOM_B"],
+        )
+        self.assertIsNone(trace["empty_result_reason"])
+        self.assertEqual(trace["retrieval_attempts"][0]["semantic_result_count"], 0)
+        # Hard filters live in candidate_ids; no district metadata filter may reach Qdrant
+        # (normalized constraint values never match display-name payloads).
+        for call in index.calls:
+            self.assertIsNone(call["metadata_filter"])
+            self.assertTrue(call["candidate_ids"])
+
+    def test_semantic_index_exception_falls_back_instead_of_raising(self):
+        from room_assistant.retrieval import search_rooms_with_hard_filters
+
+        repo = InMemoryRoomRepository(_acceptance_rooms())
+        trace = {}
+        rooms = search_rooms_with_hard_filters(
+            "Tìm phòng Bình Thạnh dưới 5 triệu",
+            {"location": {"districts": ["binh thanh"]}, "budget": {"max": 5_000_000}},
+            repository=repo,
+            semantic_index=_BrokenSemanticIndex(),
+            top_k=5,
+            trace=trace,
+        )
+        self.assertEqual([room["room_id"] for room in rooms], ["ROOM_A"])
+        self.assertTrue(trace["semantic_error"])
+        self.assertIsNone(trace["empty_result_reason"])
+
+    def test_no_candidates_reports_reason_not_qdrant(self):
+        from room_assistant.retrieval import search_rooms_with_hard_filters
+
+        repo = InMemoryRoomRepository([])
+        trace = {}
+        rooms = search_rooms_with_hard_filters(
+            "Tìm phòng Bình Thạnh dưới 5 triệu",
+            {"location": {"districts": ["binh thanh"]}, "budget": {"max": 5_000_000}},
+            repository=repo,
+            semantic_index=_BrokenSemanticIndex(),
+            top_k=5,
+            trace=trace,
+        )
+        self.assertEqual(rooms, [])
+        self.assertEqual(trace["empty_result_reason"], "NO_HARD_FILTER_CANDIDATES")
 
 
 if __name__ == "__main__":

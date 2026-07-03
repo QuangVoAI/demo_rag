@@ -588,6 +588,14 @@ def _room_matches_category(room: dict[str, Any], category: str) -> bool:
     if not terms:
         return True
     text = _normalize_location_value(_room_searchable_text(room))
+    if not room_category and canonical == "phong_tro":
+        for other in ROOM_TYPE_CATEGORIES:
+            if other == "phong_tro":
+                continue
+            other_terms = CATEGORY_SEARCH_TERMS.get(other) or ()
+            if any(_normalize_location_value(term) in text for term in other_terms):
+                return False
+        return True
     return any(_normalize_location_value(term) in text for term in terms)
 
 
