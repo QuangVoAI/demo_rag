@@ -1545,6 +1545,38 @@ class RoomAssistantCoreTests(unittest.TestCase):
         )
         self.assertEqual(next_state["last_result_ids"], ["OLD1", "OLD2", "OLD3"])
 
+    def test_compare_turn_sets_selected_room_ids(self):
+        from room_assistant.session_store import update_turn_state
+        state = default_session_state("compare-selected")
+        state["last_result_ids"] = ["R1", "R2", "R3", "R4"]
+        next_state = update_turn_state(
+            state,
+            intent="COMPARE_ROOMS",
+            current_room_id=None,
+            referenced_room_ids=["R1", "R3"],
+            result_ids=["R1", "R3"],
+        )
+        self.assertEqual(next_state["selected_room_ids"], ["R1", "R3"])
+        self.assertEqual(next_state["last_result_ids"], ["R1", "R2", "R3", "R4"])
+
+    def test_take_top_n_rooms_is_refine_not_single_ordinal(self):
+        state = default_session_state("top-n")
+        state["last_intent"] = "REFINE_SEARCH"
+        state["last_result_ids"] = ["A101", "B202", "C303", "D404"]
+        parsed = parse_intent_and_constraint_patch("lấy 3 phòng tốt nhất", state)
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+        self.assertIsNone(parsed.get("current_room_id"))
+
+    def test_area_size_question_does_not_set_rent_budget(self):
+        state = default_session_state("area-q")
+        state["last_intent"] = "REFINE_SEARCH"
+        state["last_result_ids"] = ["A101", "B202"]
+        parsed = parse_intent_and_constraint_patch("có phòng nào lớn hơn 25m2 không", state)
+        self.assertNotIn(
+            {"op": "set", "path": "budget.min", "value": 25_000_000},
+            parsed["operations"],
+        )
+
     def test_find_similar_without_current_room_asks_for_source(self):
         result = asyncio.run(run_room_assistant(
             "Tìm phòng tương tự",

@@ -1650,6 +1650,9 @@ def _relax_hard_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], li
     if relaxed.get("excluded_features"):
         relaxed["excluded_features"] = []
         dropped.append("excluded_features")
+    if relaxed.get("vehicles"):
+        relaxed["vehicles"] = []
+        dropped.append("vehicles")
     return relaxed, dropped
 
 

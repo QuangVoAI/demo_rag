@@ -94,10 +94,16 @@ AMENITY_ALIASES: dict[str, str] = {
     "toilet riêng": "private_bathroom",
     "nhà vệ sinh riêng": "private_bathroom",
     "nha ve sinh rieng": "private_bathroom",
-    # Không gian
+    # Không gian / nội thất
     "gác": "mezzanine",
     "gac": "mezzanine",
     "gác lửng": "mezzanine",
+    "nội thất": "furnished",
+    "noi that": "furnished",
+    "full nội thất": "furnished",
+    "full noi that": "furnished",
+    "có nội thất": "furnished",
+    "co noi that": "furnished",
     # Bếp
     "bếp": "kitchen",
     "bep": "kitchen",
@@ -446,10 +452,23 @@ def _is_price_complaint(normalized: str) -> bool:
 
 
 def _has_search_constraint_operations(ops: list[dict[str, Any]]) -> bool:
-    """Câu có ràng buộc tìm kiếm cụ thể (quận/ngân sách/mốc gần) → là search, không phải FAQ."""
+    """Câu có ràng buộc tìm kiếm cụ thể → là search/refine, không phải FAQ hay hỏi chi tiết phòng."""
+    _SEARCH_OP_PATHS = {
+        "location.districts",
+        "location.near_landmarks",
+        "location.wards",
+        "location.province",
+        "budget.max",
+        "budget.min",
+        "categories",
+        "amenities_required",
+        "vehicles",
+        "occupants",
+        "pets_required",
+    }
     return any(
-        op.get("path") in {"location.districts", "location.near_landmarks", "budget.max", "budget.min"}
-        and op.get("op") in {"set", "append", "replace"}
+        op.get("path") in _SEARCH_OP_PATHS
+        and op.get("op") in {"set", "append", "replace", "remove"}
         for op in ops
     )
 
@@ -525,6 +544,9 @@ def _normalize_room_reference(value: Any) -> str:
 def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
     """Trích xuất ngân sách tối đa / tối thiểu từ câu hỏi."""
     from .money import extract_colloquial_budget_vnd
+
+    if re.search(r"\b(?:lon hon|lớn hơn|rong hon|rộng hơn|nho hon|nhỏ hơn|it hon|ít hơn)\s*\d+\s*m2\b", normalized):
+        return
 
     if _is_relative_budget_increase(normalized):
         return
@@ -889,6 +911,8 @@ def _extract_amenities(
     for alias, canonical in SOFT_PREFERENCE_ALIASES.items():
         if _is_location_pivot_phrase(normalized) and canonical == "bright":
             continue
+        if canonical == "newly_renovated" and re.search(r"\bmoi\s+dung\b", normalized):
+            continue
         if _contains_phrase(normalized, alias):
             if _looks_like_room_attribute_question(normalized, current_state):
                 continue
@@ -967,6 +991,8 @@ def _looks_like_room_attribute_question(
 ) -> bool:
     if not _has_current_room(current_state):
         return False
+    if _looks_like_session_constraint_refinement(normalized, current_state):
+        return False
     if _is_location_pivot_phrase(normalized):
         return False
     if _is_search_availability_question(normalized):
@@ -1037,13 +1063,76 @@ def _is_chitchat_or_closing(normalized: str) -> bool:
 
 
 def _is_location_pivot_phrase(normalized: str) -> bool:
-    return bool(re.search(
+    if re.search(
         r"\b(?:doi|đổi|chuyen|chuyển|sang|ve|về)\b.*\b(?:quan|q\.?|phuong|phường|khu)\b",
         normalized,
-    ))
+    ):
+        return True
+    if re.match(r"^(?:khong|không)\s*,", normalized) and re.search(
+        r"\b(?:quan|q\.?|phuong|phường)\b",
+        normalized,
+    ):
+        return True
+    if re.search(r"\bmoi\s+dung\b", normalized) and re.search(r"\b(?:quan|q\.?)\b", normalized):
+        return True
+    return False
+
+
+def _is_attribute_confirmation_question(normalized: str) -> bool:
+    """'Có máy lạnh không?' — hỏi thuộc tính phòng đang xem, không phải refine tìm kiếm."""
+    if re.match(r"^(?:khong|không)\s*,", normalized):
+        return False
+    if re.search(r"\b(?:duoc khong|được không|co khong|có không)\s*\??\s*$", normalized):
+        return True
+    if re.search(r"\b(?:khong|không)\s*\??\s*$", normalized):
+        return True
+    return False
+
+
+def _looks_like_session_constraint_refinement(
+    normalized: str,
+    current_state: dict[str, Any] | None,
+) -> bool:
+    """Refine điều kiện tìm kiếm giữa phiên — không nhầm với hỏi chi tiết một phòng."""
+    if not current_state:
+        return False
+    if current_state.get("last_intent") not in {"SEARCH_ROOM", "REFINE_SEARCH"}:
+        return False
+    if _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+        return False
+    if _selected_room_id_from_ordinal(normalized, current_state):
+        return False
+    if _selected_room_id_from_deictic(normalized, current_state):
+        return False
+    if _is_attribute_confirmation_question(normalized):
+        return False
+    if _is_location_pivot_phrase(normalized):
+        return True
+    if re.search(
+        r"\b(?:them|thêm|bo|bỏ|uu tien|ưu tiên|loai|loại|xoa|xóa|tang|tăng|giam|giảm|"
+        r"nang|nâng|chi|chỉ|muon|muốn|can them|cần thêm)\b",
+        normalized,
+    ):
+        return True
+    if re.search(
+        r"\b(?:co|con)\s+(?:may lanh|máy lạnh|noi that|nội thất|cho de xe|chỗ để xe|"
+        r"ban cong|ban công|may giat|máy giặt|tu lanh|tủ lạnh|wifi)\b",
+        normalized,
+    ):
+        return True
+    if re.search(r"\b(?:muon|muốn|can|need)\s+.*\b(?:co|con)\b", normalized):
+        return True
+    if re.search(
+        r"\b(?:lay|lấy)\s+\d{1,2}\s+(?:phong|phòng|can|căn)\s+(?:tot|tốt|phu hop|phù hợp)",
+        normalized,
+    ):
+        return True
+    return False
 
 
 def _is_room_detail_question(normalized: str, ids: list[str], current_state: dict[str, Any] | None) -> bool:
+    if _looks_like_session_constraint_refinement(normalized, current_state):
+        return False
     if _is_location_pivot_phrase(normalized):
         return False
     if re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\s+nao\b", normalized):
@@ -1086,6 +1175,18 @@ def _is_result_set_compare_request(normalized: str) -> bool:
         or re.search(r"\b(?:cac|nhung|may)\s+phong\b", normalized)
         or re.search(r"\bphong\s+(?:nay|tren|vua|dau tien)\b", normalized)
     )
+
+
+def _requested_compare_count(normalized: str, available_count: int) -> int:
+    if match := re.search(r"\b(\d{1,2})\s*phong\b", normalized):
+        return min(int(match.group(1)), available_count, 3)
+    if re.search(r"\b(?:3|ba)\s*phong\b", normalized):
+        return min(3, available_count)
+    if re.search(r"\b(?:2|hai)\s*phong\b", normalized):
+        return min(2, available_count)
+    if re.search(r"\bphong\s+(?:dau tien|đầu tiên)\b", normalized):
+        return min(1, available_count)
+    return min(3, available_count)
 
 
 _ORDINAL_WORD_INDEX: dict[str, int] = {
@@ -1144,6 +1245,8 @@ def _ordinal_indices_from_text(normalized: str) -> list[int]:
             index = _ORDINAL_WORD_INDEX.get(match.group(1))
             if index is not None:
                 hits.append((match.start(), index))
+        for match in re.finditer(r"\b(?:va|và|and)\s*(\d{1,2})\b", normalized):
+            hits.append((match.start(), int(match.group(1)) - 1))
     hits.sort(key=lambda item: item[0])
     indices: list[int] = []
     for _, index in hits:
@@ -1155,9 +1258,13 @@ def _ordinal_indices_from_text(normalized: str) -> list[int]:
 def _ordinal_request_index(normalized: str, current_state: dict[str, Any] | None) -> int | None:
     if not current_state:
         return None
+    if re.search(r"\b(?:lay|lấy|cho|đưa|dua)\s+\d{1,2}\s+(?:phong|phòng|can|căn)\b", normalized):
+        return None
     match = re.search(r"\b(?:chon|chọn|lay|lấy)\s+(?:phong|phòng)?\s*(?:so|số|#)?\s*(\d{1,2})\b", normalized)
     if not match:
         match = re.search(r"\b(?:phong|phòng)\s*(?:so|số|thu|thứ|#)\s*(\d{1,2})\b", normalized)
+    if not match:
+        match = re.search(r"\b(?:phong|phòng)\s*(\d{1,2})\b", normalized)
     if match:
         return int(match.group(1)) - 1
     if re.search(r"\b(?:phong|phòng)\s+(?:dau tien|đầu tiên|thu nhat|thứ nhất|so mot|số một|1)\b", normalized):
@@ -1184,6 +1291,9 @@ _DETAIL_SEARCH_OP_PATHS = frozenset({
     "location.wards",
     "location.province",
     "location.near_landmarks",
+    "vehicles",
+    "occupants",
+    "pets_required",
 })
 
 
@@ -1356,20 +1466,12 @@ def _maybe_replace_location_filters(
 
 
 def _maybe_clear_stale_scope_on_pivot(ops: list[dict[str, Any]]) -> None:
-    """Khi đổi quận/khu vực, bỏ loại phòng và tiện ích cứng từ lượt trước nếu lượt này không nhắc lại."""
+    """Khi đổi quận/khu vực, bỏ loại phòng từ lượt trước nếu lượt này không nhắc lại."""
     if any(op.get("path") == "categories" for op in ops):
         return
     clear_op = {"op": "clear", "path": "categories"}
     if clear_op not in ops:
         ops.insert(0, clear_op)
-    if not any(
-        op.get("path") in {"amenities_required", "amenities_preferred", "excluded_features"}
-        for op in ops
-    ):
-        for path in ("amenities_required", "excluded_features"):
-            item = {"op": "clear", "path": path}
-            if item not in ops:
-                ops.insert(0, item)
 
 
 def _maybe_clear_stale_search_scope(normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -1912,6 +2014,10 @@ def parse_intent_and_constraint_patch(
         if not selected_room_id:
             selected_room_id = _selected_room_id_from_deictic(normalized, current_state)
         compare_room_ids, compare_unresolved = _selected_room_ids_from_ordinals(normalized, current_state)
+    elif current_state:
+        pool = current_state.get("last_result_ids") or current_state.get("selected_room_ids") or []
+        if pool:
+            referenced_room_ids = pool[:_requested_compare_count(normalized, len(pool))]
     if len(compare_room_ids) >= 2:
         referenced_room_ids = compare_room_ids
     elif selected_room_id and selected_room_id not in referenced_room_ids:

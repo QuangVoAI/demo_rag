@@ -119,6 +119,7 @@ RELAX_FIELD_LABELS: dict[str, str] = {
     "amenities_preferred": "vài tiện nghi ưu tiên",
     "amenities_required": "đủ tiện nghi yêu cầu",
     "excluded_features": "điều kiện loại trừ",
+    "vehicles": "chỗ để xe",
     "budget": "mức ngân sách",
 }
 

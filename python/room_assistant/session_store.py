@@ -205,9 +205,11 @@ def update_turn_state(
         next_state["current_room_id"] = current_room_id
     if referenced_room_ids:
         next_state["selected_room_ids"] = referenced_room_ids[:3]
-    if result_ids and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR", "COMPARE_ROOMS"}:
+    elif intent == "COMPARE_ROOMS" and result_ids:
+        next_state["selected_room_ids"] = result_ids[:3]
+    if result_ids and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
         # Giữ danh sách so sánh khi refine chỉ trả 1 phòng (vd. đổi quận/ngân sách).
-        if intent in {"SEARCH_ROOM", "FIND_SIMILAR", "COMPARE_ROOMS"} or len(result_ids) >= 2:
+        if intent in {"SEARCH_ROOM", "FIND_SIMILAR"} or len(result_ids) >= 2:
             next_state["last_result_ids"] = result_ids
     next_state["last_intent"] = intent
     next_state["updated_at"] = utc_now_iso()

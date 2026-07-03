@@ -784,6 +784,7 @@ AMENITY_VIETNAMESE_MAP: dict[str, str] = {
     "wifi": "Wifi",
     "ev_charging": "Xe điện",
     "free_hours": "Giờ giấc.*Tự do",
+    "furnished": "Nội thất",
 }
 
 
@@ -800,6 +801,8 @@ def _amenity_positive_pattern(amenity: str) -> str | None:
         return rf"{_accent_flexible_regex('Toilet')}\s*:\s*(?:ri[eê]ng|rieng)"
     if amenity == "free_hours":
         return rf"{_accent_flexible_regex('Giờ giấc')}\s*:\s*(?:t[uự]\s*do|tu\s*do)"
+    if amenity == "furnished":
+        return rf"(?:{_accent_flexible_regex('Nội thất')}|full\s*{_accent_flexible_regex('nội thất')})\s*:\s*{positive}"
     return rf"{_accent_flexible_regex(label)}\s*:\s*{positive}"
 
 

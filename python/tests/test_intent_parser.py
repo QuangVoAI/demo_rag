@@ -546,6 +546,99 @@ class IntentParserTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("Sinh viên nên lưu ý gì khi thuê trọ?", state)
         self.assertEqual(parsed["intent"], "REQUEST_FAQ")
 
+    def test_session_constraint_refinement_not_misrouted_as_room_detail(self):
+        state = default_session_state("s-ctx-refine")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "go vap"},
+            {"op": "set", "path": "budget.max", "value": 5_000_000},
+        ])
+
+        cases = [
+            (
+                "ưu tiên có máy lạnh",
+                "REFINE_SEARCH",
+                {"op": "append", "path": "amenities_required", "value": "air_conditioner"},
+            ),
+            (
+                "có chỗ để xe máy",
+                "REFINE_SEARCH",
+                {"op": "append", "path": "vehicles", "value": "motorbike"},
+            ),
+            (
+                "không, quận 3 mới đúng",
+                "REFINE_SEARCH",
+                {"op": "append", "path": "location.districts", "value": "quan 3"},
+            ),
+            (
+                "có nội thất",
+                "REFINE_SEARCH",
+                {"op": "append", "path": "amenities_required", "value": "furnished"},
+            ),
+        ]
+        for question, expected_intent, expected_op in cases:
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, state)
+                self.assertEqual(parsed["intent"], expected_intent, question)
+                self.assertIn(expected_op, parsed["operations"], question)
+
+    def test_attribute_confirmation_stays_ask_about_room(self):
+        state = default_session_state("s-ctx-detail")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["current_room_id"] = "A101"
+
+        for question in (
+            "Có nội thất không?",
+            "Có chỗ để xe không?",
+            "Phòng này có máy lạnh không?",
+        ):
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, state)
+                self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM", question)
+                self.assertEqual(parsed["current_room_id"], "A101", question)
+
+    def test_location_pivot_replaces_district_in_session(self):
+        state = default_session_state("s-pivot")
+        state["last_intent"] = "REFINE_SEARCH"
+        state["last_result_ids"] = ["A101", "B202"]
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 10"},
+            {"op": "append", "path": "amenities_required", "value": "washing_machine"},
+        ])
+        parsed = parse_intent_and_constraint_patch("không, quận 3 mới đúng", state)
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+        self.assertIn({"op": "clear", "path": "location.districts"}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "location.districts", "value": "quan 3"}, parsed["operations"])
+        next_state, _ = apply_operations(state, parsed["operations"])
+        self.assertEqual(next_state["constraints"]["location"]["districts"], ["quan 3"])
+        self.assertIn("washing_machine", next_state["constraints"]["amenities_required"])
+
+    def test_result_set_compare_populates_referenced_room_ids(self):
+        state = default_session_state("s-compare-set")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["A101", "B202", "C303", "D404", "E505"]
+        parsed = parse_intent_and_constraint_patch("so sánh 3 phòng đầu tiên", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+        self.assertEqual(parsed["referenced_room_ids"], ["A101", "B202", "C303"])
+
+    def test_compare_room_1_and_3_by_bare_ordinals(self):
+        state = default_session_state("s-compare-1-3")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        parsed = parse_intent_and_constraint_patch("so sánh phòng 1 và 3", state)
+        self.assertEqual(parsed["intent"], "COMPARE_ROOMS")
+        self.assertEqual(parsed["referenced_room_ids"], ["A101", "C303"])
+
+    def test_bare_phong_digit_resolves_from_last_result_ids(self):
+        state = default_session_state("s-phong-3")
+        state["last_intent"] = "COMPARE_ROOMS"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        parsed = parse_intent_and_constraint_patch("phòng 3 có nuôi mèo được không", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], "C303")
+
 
 if __name__ == "__main__":
     unittest.main()

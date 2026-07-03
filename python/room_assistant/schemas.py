@@ -437,6 +437,7 @@ _AMENITY_CANONICAL_TO_LABEL: dict[str, str] = {
     "ev_charging": "Xe điện",
     "free_hours": "Giờ giấc",
     "pets_allowed": "Thú cưng",
+    "furnished": "Nội thất",
 }
 
 _AMENITY_LABEL_TO_CANONICAL: dict[str, str] = {
