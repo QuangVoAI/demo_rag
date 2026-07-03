@@ -297,17 +297,14 @@ python -m pytest tests/ -q
 python manage.py test apps.rooms.tests
 ```
 
-**Replay từng cặp Q&A (transcript production + kịch bản bổ sung):**
+**Regression nhanh (không MongoDB):**
 
 ```bash
-# In-memory fixture Q7 (nhanh, CI-friendly)
-python scripts/run_qa_audit.py --mode local
-
-# Stack thật qua agents.graph + MongoDB
-python scripts/run_qa_audit.py --mode live
+cd python
+python -m pytest tests/test_intent_parser.py tests/test_intent_regression_matrix.py tests/test_landmark_aliases.py tests/test_room_assistant_core.py tests/test_money_parsing.py -q
 ```
 
-**Kiểm tra data MongoDB trước demo:**
+**Kiểm tra data MongoDB trước demo (tùy chọn):**
 
 ```bash
 python scripts/pre_demo_mongo_audit.py
@@ -319,13 +316,14 @@ python scripts/pre_demo_mongo_audit.py
 |---|---|
 | `python/tests/test_room_assistant_core.py` | Workflow, intent, retrieval, session |
 | `python/tests/test_intent_parser.py` | Parse constraint / landmark / quận |
+| `python/tests/test_intent_regression_matrix.py` | Ma trận routing intent (deictic, FAQ, schedule…) |
 | `python/tests/test_landmark_aliases.py` | Chuẩn hóa TDTU, TTTM, đường, trường… |
-| `python/tests/test_transcript_qa_regression.py` | Multi-turn Q&A transcript (in-memory) |
+| `python/tests/test_money_parsing.py` | Parse giá / ngân sách |
 | `python/tests/test_mongo_behavior_scenarios.py` | Integration MongoDB + Qdrant (skip nếu thiếu URI) |
 | `python/tests/test_production_integration.py` | Abstain / rerank guardrails |
+| `python/tests/test_indexing_contract.py` | Contract index Qdrant / embedding text |
 | `python/tests/test_sources.py` | Source attribution |
 | `apps/rooms/tests.py` | REST chat, RAG API, rate limit, persistence |
-| `scripts/run_qa_audit.py` | Audit từng lượt Q&A + báo cáo JSON |
 | `python/scripts/mine_landmark_phrases.py` | Dev: quét alias địa danh từ MongoDB |
 
 **Đã loại khỏi runtime (legacy LangGraph):** `agents/router.py`, `grader.py`, `rewriter.py`, `extractor.py` — không còn import trong luồng chính.

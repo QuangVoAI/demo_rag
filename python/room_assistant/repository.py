@@ -444,14 +444,34 @@ def build_mongo_query(constraints: dict[str, Any]) -> dict[str, Any]:
                 ])
         query["$and"].append({"$or": landmark_clauses})
 
-    # Amenities/features — prefer structured amenities array; post-filter handles edge cases.
+    # Amenities/features — current live Mongo rows may only expose amenity facts in
+    # embedding_text, so query both structured fields and positive text evidence.
     required = constraints.get("amenities_required") or []
     for amenity in required:
-        query["$and"].append({"amenities": str(amenity).strip().lower()})
+        canonical = str(amenity).strip().lower()
+        amenity_clauses: list[dict[str, Any]] = [
+            {"amenities": canonical},
+            {"amenities_canonical": canonical},
+        ]
+        readable = _amenity_to_vietnamese(canonical)
+        if readable:
+            amenity_clauses.append({"amenities": {"$regex": readable, "$options": "i"}})
+        positive_pattern = _amenity_positive_pattern(canonical)
+        if positive_pattern:
+            amenity_clauses.append({"embedding_text": {"$regex": positive_pattern, "$options": "i"}})
+        query["$and"].append({"$or": amenity_clauses})
 
     excluded = constraints.get("excluded_features") or []
     for feature in excluded:
-        query["$and"].append({"amenities": {"$ne": str(feature).strip().lower()}})
+        canonical = str(feature).strip().lower()
+        excluded_clauses: list[dict[str, Any]] = [
+            {"amenities": canonical},
+            {"amenities_canonical": canonical},
+        ]
+        positive_pattern = _amenity_positive_pattern(canonical)
+        if positive_pattern:
+            excluded_clauses.append({"embedding_text": {"$regex": positive_pattern, "$options": "i"}})
+        query["$and"].append({"$nor": excluded_clauses})
 
     categories = constraints.get("categories") or []
     category_groups = _group_category_constraints([str(item) for item in categories])
@@ -767,11 +787,12 @@ def _amenity_positive_pattern(amenity: str) -> str | None:
     label = _amenity_to_vietnamese(amenity)
     if not label:
         return None
+    positive = r"(?:c[oó]|ri[eê]ng|rieng|t[uự]\s*do|tu\s*do|true|yes|free)"
     if amenity == "private_bathroom":
-        return r"Toilet\s*:\s*Riêng"
+        return rf"{_accent_flexible_regex('Toilet')}\s*:\s*(?:ri[eê]ng|rieng)"
     if amenity == "free_hours":
-        return r"Giờ giấc\s*:\s*Tự do"
-    return rf"{label}\s*:\s*(?:Có|Riêng|Tự do|True|Yes|Free)"
+        return rf"{_accent_flexible_regex('Giờ giấc')}\s*:\s*(?:t[uự]\s*do|tu\s*do)"
+    return rf"{_accent_flexible_regex(label)}\s*:\s*{positive}"
 
 
 def _room_has_positive_amenity(room: dict[str, Any], amenity: str) -> bool:

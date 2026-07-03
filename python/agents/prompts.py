@@ -52,9 +52,19 @@ Danh sách intent hợp lệ:
 - COMPARE_ROOMS: So sánh nhiều phòng với nhau
 - FIND_SIMILAR: Tìm phòng tương tự phòng đang xem
 - SUMMARIZE_ROOM: Tóm tắt ưu / nhược điểm hoặc đánh giá tổng quan phòng
-- REQUEST_FAQ: Hỏi về quy trình thuê, hợp đồng, thủ tục
-- REQUEST_ACTION: Yêu cầu hành động nghiệp vụ (đặt lịch, nhắn chủ, thanh toán...)
+- REQUEST_FAQ: Hỏi quy trình thuê, hợp đồng, thủ tục nền tảng; HOẶC tư vấn thuê trọ chung (mẹo thuê, lừa đảo, cọc hợp lý, hoàn cọc, sinh viên nên lưu ý gì...)
+- REQUEST_ACTION: Yêu cầu hành động nghiệp vụ mà bot read-only KHÔNG được tự làm (đặt/hủy/đổi lịch, nhắn chủ, thanh toán, giảm giá thay chủ...)
 - GENERAL_HELP: Câu hỏi chung hoặc không xác định được
+
+Phân biệt quan trọng:
+- "Giảm giá được không?" / "Có thể đặt lịch qua web không?" → REQUEST_FAQ (hỏi khả năng/quy trình), KHÔNG phải REQUEST_ACTION.
+- "Giảm giá cho em đi" / "Hủy lịch hẹn giúp tôi" → REQUEST_ACTION.
+- "Phòng này có wifi không?" với ngữ cảnh đang xem phòng → ASK_ABOUT_ROOM; cần gắn phòng ngữ cảnh (current_room_id).
+- "Khu này an ninh không?" / "Phòng yên tĩnh không?" khi đang xem phòng → ASK_ABOUT_ROOM, KHÔNG thêm amenities_preferred vào operations.
+- "Sinh viên nên lưu ý gì khi thuê trọ?" → REQUEST_FAQ, không phải GENERAL_HELP.
+
+Giá trị requested_action hợp lệ (chỉ khi intent = REQUEST_ACTION):
+dat_lich | huy_lich | doi_lich | message_owner | save_favorite | hold_room | payment | edit_room | negotiate
 
 Output BẮT BUỘC phải là JSON hợp lệ theo định dạng sau (không giải thích thêm):
 {
@@ -73,7 +83,7 @@ Output BẮT BUỘC phải là JSON hợp lệ theo định dạng sau (không g
     {"op": "set", "path": "occupants.adults", "value": 2}
   ],
   "referenced_room_ids": ["Mã phòng nếu người dùng nhắc đến, ví dụ: 62849aeb00eff17936fdf5c2"],
-  "requested_action": "Hành động khách muốn nếu intent là REQUEST_ACTION, ví dụ: đặt lịch"
+  "requested_action": "Mã hành động nếu intent là REQUEST_ACTION: dat_lich | huy_lich | doi_lich | negotiate | message_owner | payment | ..."
 }
 Lưu ý: 
 - "operations" chỉ thêm vào nếu khách có đề cập tiêu chí. 
@@ -88,7 +98,9 @@ Nhiệm vụ: so sánh 2 phương án phân tích câu hỏi:
 2. LLM classifier
 
 Nguyên tắc:
-- Ưu tiên ĐÚNG cho các tín hiệu cứng: room_id, district/ward, budget min/max, ordinal room, intent REQUEST_ACTION read-only.
+- Ưu tiên ĐÚNG cho các tín hiệu cứng: room_id, district/ward, budget min/max, ordinal room, intent REQUEST_ACTION read-only, phòng này/đó → current_room_id.
+- REQUEST_FAQ gồm cả tư vấn thuê trọ chung (lừa đảo, mẹo thuê, hoàn cọc) — không ép về GENERAL_HELP hay REFINE_SEARCH.
+- Hủy/đổi lịch là REQUEST_ACTION với requested_action = huy_lich hoặc doi_lich, KHÔNG gộp dat_lich.
 - Nếu LLM khác regex ở tín hiệu cứng, chỉ được chấp nhận phương án LLM khi có bằng chứng rất rõ từ chính câu hỏi.
 - Nếu regex và LLM khác nhau ở tín hiệu mềm như near_landmarks, có thể giữ bổ sung mềm nếu không mâu thuẫn tín hiệu cứng.
 - Nếu không chắc, chọn phương án an toàn hơn và KHÔNG bịa thêm field.

@@ -171,11 +171,14 @@ def validate_room_changed_event(event: dict[str, Any]) -> dict[str, Any]:
 def build_canonical_embedding_text(room: dict[str, Any]) -> str:
     """Build embedding text for a room document.
 
-    If the room already has embedding_text from the rooms collection, use it directly.
-    Otherwise, build from individual fields.
+    If the room already has embedding_text from the rooms collection, use it and
+    append ``tien_ich_xq`` when present (nearby is stored separately in Mongo).
+  Otherwise, build from individual fields.
     """
-    if room.get("embedding_text"):
-        return room["embedding_text"]
+    from .landmark_aliases import merge_nearby_into_embedding_text
+
+    if room.get("embedding_text") or room.get("tien_ich_xq"):
+        return merge_nearby_into_embedding_text(room)
 
     fields = [
         ("Tiêu đề", room.get("title")),

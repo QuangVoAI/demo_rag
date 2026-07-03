@@ -139,6 +139,67 @@ REQUEST_ACTION_ANSWER = (
 )
 REQUEST_ACTION_DEFAULT = "thao tác nghiệp vụ"
 
+REQUEST_ACTION_LABELS: dict[str, str] = {
+    "dat_lich": "đặt lịch xem phòng",
+    "huy_lich": "hủy lịch hẹn",
+    "doi_lich": "đổi lịch hẹn",
+    "message_owner": "nhắn tin cho chủ nhà",
+    "save_favorite": "lưu phòng yêu thích",
+    "hold_room": "giữ chỗ",
+    "payment": "thanh toán / đặt cọc",
+    "edit_room": "sửa thông tin tin đăng",
+    "negotiate": "thương lượng / giảm giá",
+}
+
+REQUEST_ACTION_ANSWERS: dict[str, str] = {
+    "dat_lich": (
+        "Dạ em **chưa được phép tự đặt lịch hộ** anh/chị trên hệ thống ạ. "
+        "Anh/chị chọn căn ưng ý rồi bấm **Đặt lịch xem phòng** trên tin đăng, "
+        "hoặc nhắn em khu vực + giờ rảnh để em gợi ý mấy căn phù hợp trước nha 😊"
+    ),
+    "huy_lich": (
+        "Dạ em **chưa hủy lịch hộ** được ạ. Anh/chị vào mục **Lịch hẹn** trên tài khoản nhatrovn "
+        "để hủy, hoặc liên hệ hotline nếu cần hỗ trợ gấp nha."
+    ),
+    "doi_lich": (
+        "Dạ em **chưa đổi lịch hộ** được ạ. Anh/chị mở **Lịch hẹn** trên app/website để đổi giờ xem, "
+        "hoặc hủy lịch cũ rồi đặt lại giúp em nha."
+    ),
+    "negotiate": (
+        "Dạ em **không có quyền thương lượng hay giảm giá** thay chủ nhà ạ. "
+        "Mình xem phòng ưng ý trước, rồi trao đổi trực tiếp với chủ nhà khi ký HĐ nha. "
+        "Nếu cần tầm giá dễ thở hơn, em lọc thêm khu lân cận giúp anh/chị được ạ."
+    ),
+    "message_owner": (
+        "Dạ em **chưa nhắn tin hộ** chủ nhà được ạ. Anh/chị bấm **Chat/Liên hệ** trên tin đăng "
+        "để trao đổi trực tiếp với chủ nhà nha."
+    ),
+    "payment": (
+        "Dạ em **không thu tiền hay giữ cọc hộ** ạ. Anh/chị chỉ thanh toán sau khi xác minh trực tiếp "
+        "với bên cho thuê hoặc qua kênh chính thức trên nhatrovn nha."
+    ),
+    "hold_room": (
+        "Dạ em **chưa giữ chỗ hộ** được ạ. Anh/chị đặt lịch xem phòng trước, ưng ý rồi trao đổi "
+        "cọc/giữ phòng trực tiếp với chủ nhà nha."
+    ),
+    "save_favorite": (
+        "Dạ em **chưa lưu yêu thích hộ** được ạ. Anh/chị bấm biểu tượng **Yêu thích** trên tin đăng "
+        "để lưu lại căn mình quan tâm nha."
+    ),
+    "edit_room": (
+        "Dạ em **chỉ tư vấn tin đăng**, không sửa thông tin hộ chủ nhà được ạ. "
+        "Chủ nhà cần đăng nhập tài khoản để cập nhật tin nha."
+    ),
+}
+
+
+def format_request_action_answer(action: str | None) -> str:
+    key = str(action or "").strip()
+    if key in REQUEST_ACTION_ANSWERS:
+        return REQUEST_ACTION_ANSWERS[key]
+    label = REQUEST_ACTION_LABELS.get(key, REQUEST_ACTION_DEFAULT)
+    return REQUEST_ACTION_ANSWER.format(action=label)
+
 FIND_SIMILAR_MISSING_SOURCE = (
     "Dạ em chưa rõ anh/chị muốn tìm phòng tương tự căn nào. "
     "Anh/chị gửi mã phòng hoặc chọn một phòng trong danh sách giúp em nha!"

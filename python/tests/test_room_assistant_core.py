@@ -23,6 +23,7 @@ from room_assistant.schemas import default_session_state, normalize_room
 from room_assistant.session_store import InMemorySessionStore, apply_operations, load_session_state
 from room_assistant.tools import ReadOnlyToolRegistry, ToolExecutionContext, ToolBudgetExceeded
 from room_assistant.workflow import _build_llm_context, _compose_answer_async, _compose_answer_template, run_room_assistant
+from room_assistant.prompts import format_request_action_answer
 
 
 class FakeMongoCursor:
@@ -166,6 +167,51 @@ class RoomAssistantCoreTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("Tìm phòng tối đa 4 triệu")
         self.assertIn({"op": "set", "path": "budget.max_operator", "value": "lte"}, parsed["operations"])
 
+    def test_price_refinement_cheaper_than_replaces_previous_range_min(self):
+        state = default_session_state("s-cheaper")
+        state, _ = apply_operations(state, [
+            {"op": "set", "path": "budget.min", "value": 10_000_000},
+            {"op": "set", "path": "budget.min_operator", "value": "gte"},
+            {"op": "set", "path": "budget.max", "value": 20_000_000},
+            {"op": "set", "path": "budget.max_operator", "value": "lte"},
+            {"op": "append", "path": "location.districts", "value": "quan 1"},
+        ])
+        state["last_intent"] = "SEARCH_ROOM"
+
+        for question in ("rẻ hơn 10 triệu", "thấp hơn 10 triệu", "dưới 10 triệu", "rẻ hơn 10 củ"):
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, state)
+                self.assertIn({"op": "set", "path": "budget.max", "value": 10_000_000}, parsed["operations"])
+                self.assertIn({"op": "set", "path": "budget.max_operator", "value": "lt"}, parsed["operations"])
+                next_state, _ = apply_operations(state, parsed["operations"])
+                budget = next_state["constraints"]["budget"]
+                self.assertIsNone(budget["min"])
+                self.assertIsNone(budget["min_operator"])
+                self.assertEqual(budget["max"], 10_000_000)
+
+    def test_price_refinement_above_conflicting_old_max_clears_max(self):
+        state = default_session_state("s-pricier")
+        state, _ = apply_operations(state, [
+            {"op": "set", "path": "budget.min", "value": 10_000_000},
+            {"op": "set", "path": "budget.min_operator", "value": "gte"},
+            {"op": "set", "path": "budget.max", "value": 20_000_000},
+            {"op": "set", "path": "budget.max_operator", "value": "lte"},
+        ])
+        parsed = parse_intent_and_constraint_patch("cao hơn 20 triệu", state)
+        self.assertIn({"op": "set", "path": "budget.min", "value": 20_000_000}, parsed["operations"])
+        self.assertIn({"op": "set", "path": "budget.min_operator", "value": "gt"}, parsed["operations"])
+        next_state, _ = apply_operations(state, parsed["operations"])
+        budget = next_state["constraints"]["budget"]
+        self.assertEqual(budget["min"], 20_000_000)
+        self.assertIsNone(budget["max"])
+        self.assertIsNone(budget["max_operator"])
+
+    def test_colloquial_higher_than_budget_uses_min_not_max(self):
+        parsed = parse_intent_and_constraint_patch("Tìm phòng trên 5 củ")
+        self.assertIn({"op": "set", "path": "budget.min", "value": 5_000_000}, parsed["operations"])
+        self.assertIn({"op": "set", "path": "budget.min_operator", "value": "gt"}, parsed["operations"])
+        self.assertNotIn({"op": "set", "path": "budget.max", "value": 5_000_000}, parsed["operations"])
+
     def test_contextual_booking_selection_and_detail_intents(self):
         state = default_session_state("s")
         state["last_result_ids"] = ["A101", "B202", "C303"]
@@ -190,6 +236,7 @@ class RoomAssistantCoreTests(unittest.TestCase):
     def test_site_detail_questions_route_to_room_detail(self):
         state = default_session_state("s-detail")
         state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101", "B202"]
         for question in (
             "Phòng này diện tích bao nhiêu?",
             "Phòng này có ban công không?",
@@ -199,8 +246,10 @@ class RoomAssistantCoreTests(unittest.TestCase):
         ):
             parsed = parse_intent_and_constraint_patch(question, state)
             self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+            self.assertEqual(parsed["current_room_id"], "A101", question)
         parsed = parse_intent_and_constraint_patch("Giá điện nước phòng này thế nào?", state)
         self.assertEqual(parsed["intent"], "CALCULATE_COST")
+        self.assertEqual(parsed["current_room_id"], "A101")
 
     def test_search_context_includes_verified_required_amenities(self):
         context = _build_llm_context(
@@ -308,6 +357,50 @@ class RoomAssistantCoreTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("Có thể đặt phòng qua web không?")
         self.assertEqual(parsed["intent"], "REQUEST_FAQ")
         self.assertIsNone(parsed["requested_action"])
+
+    def test_request_action_templates_are_action_specific(self):
+        cases = {
+            "huy_lich": "chưa hủy lịch hộ",
+            "doi_lich": "chưa đổi lịch hộ",
+            "negotiate": "không có quyền thương lượng",
+            "dat_lich": "chưa được phép tự đặt lịch hộ",
+        }
+        for action, snippet in cases.items():
+            answer = format_request_action_answer(action)
+            self.assertIn(snippet, answer.lower(), action)
+
+        parsed = {"intent": "REQUEST_ACTION", "requested_action": "huy_lich"}
+        answer = _compose_answer_template(parsed, {"rooms": [], "constraints": {}}, {})
+        self.assertIn("hủy lịch", answer.lower())
+
+    def test_schedule_cancel_and_reschedule_actions(self):
+        for question, expected_action in (
+            ("Hủy lịch hẹn xem phòng", "huy_lich"),
+            ("Đổi lịch hẹn sang chiều mai", "doi_lich"),
+        ):
+            parsed = parse_intent_and_constraint_patch(question)
+            self.assertEqual(parsed["intent"], "REQUEST_ACTION", question)
+            self.assertEqual(parsed["requested_action"], expected_action, question)
+
+    def test_rental_advice_questions_route_to_faq(self):
+        for question in (
+            "Sinh viên nên lưu ý gì khi thuê trọ?",
+            "Làm sao nhận biết tin lừa đảo?",
+            "Hoàn cọc khi chuyển đi thế nào?",
+        ):
+            parsed = parse_intent_and_constraint_patch(question)
+            self.assertEqual(parsed["intent"], "REQUEST_FAQ", question)
+
+    def test_soft_preference_room_question_does_not_mutate_search(self):
+        state = default_session_state("s-soft")
+        state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101", "B202"]
+        state["last_intent"] = "SEARCH_ROOM"
+        parsed = parse_intent_and_constraint_patch("Khu này an ninh không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], "A101")
+        preferred = [op for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
+        self.assertEqual(preferred, [])
 
     def test_compare_by_result_ordinals_collects_multiple_room_ids(self):
         state = default_session_state("s-compare")
@@ -433,7 +526,29 @@ class RoomAssistantCoreTests(unittest.TestCase):
         })
         serialized = json.dumps(query, ensure_ascii=False)
         self.assertIn('"amenities": "air_conditioner"', serialized)
-        self.assertNotIn("embedding_text", serialized)
+        self.assertIn("amenities_canonical", serialized)
+        self.assertIn("embedding_text", serialized)
+        self.assertIn("Máy", serialized)
+
+    def test_current_mongo_shape_amenity_text_is_enough_for_required_filter(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "Q7-NOAC",
+                "metadata": {"price": 4_800_000, "status_code": "0", "district_name": "Quận 7"},
+                "embedding_text": "## Tiện ích\n- Máy lạnh: Không\n- Wifi: Không có",
+            },
+            {
+                "room_id": "Q7-AC",
+                "metadata": {"price": 4_600_000, "status_code": "0", "district_name": "Quận 7"},
+                "embedding_text": "## Tiện ích\n- Máy lạnh: Có\n- Wifi: Có",
+            },
+        ])
+        constraints = {
+            "location": {"districts": ["quan 7"]},
+            "amenities_required": ["air_conditioner"],
+        }
+        rooms = repo.search_by_constraints(constraints)
+        self.assertEqual([room["room_id"] for room in rooms], ["Q7-AC"])
 
     def test_normalize_room_treats_blank_status_code_as_available(self):
         room = normalize_room({

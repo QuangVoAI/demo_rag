@@ -103,10 +103,9 @@ from .prompts import (
     RELAXED_NOTE_DEFAULT,
     RELAXED_NOTE_WITH_FIELDS,
     RELAX_FIELD_LABELS,
-    REQUEST_ACTION_ANSWER,
-    REQUEST_ACTION_DEFAULT,
     REQUEST_FAQ_FALLBACK,
     SEARCH_ALTERNATIVE_CTA,
+    format_request_action_answer,
     SEARCH_ALTERNATIVE_OPENING,
     SEARCH_ALTERNATIVE_ROOM_LINE,
     SEARCH_NO_RESULT_BUDGET_FRUSTRATED_PREFIX,
@@ -772,8 +771,7 @@ def _compose_answer_template(
     if tool_results.get("error") == "tool_budget_exceeded":
         return TOOL_BUDGET_EXCEEDED_ANSWER
     if intent == "REQUEST_ACTION":
-        action = parsed.get("requested_action") or REQUEST_ACTION_DEFAULT
-        return REQUEST_ACTION_ANSWER.format(action=action)
+        return format_request_action_answer(parsed.get("requested_action"))
     rooms = grounding["rooms"]
     constraints = grounding.get("constraints", {})
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:

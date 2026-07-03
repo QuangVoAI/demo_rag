@@ -85,6 +85,52 @@ STAFF_FAQ: list[dict[str, Any]] = [
             "hoặc qua kênh chính thức trên nhatrovn nha."
         ),
     },
+    {
+        "topic": "rental_tips",
+        "keywords": (
+            "sinh viên", "sinh vien", "lưu ý", "luu y", "nên chú ý", "nen chu y",
+            "mẹo thuê", "meo thue", "kinh nghiệm thuê", "kinh nghiem thue",
+            "cọc mấy tháng", "coc may thang", "hợp lý", "hop ly",
+        ),
+        "answer": (
+            "Dạ em gợi ý nhanh cho anh/chị ạ:\n"
+            "- **Cọc** thường 1–2 tháng tiền phòng, nên hỏi rõ điều kiện hoàn cọc trước khi chuyển.\n"
+            "- **Xem phòng thực tế** trước khi cọc; kiểm tra điện nước, giờ giấc, nội thất.\n"
+            "- **Hợp đồng** nên ghi rõ giá, cọc, thời hạn, ai chịu phí sửa chữa.\n"
+            "- Sinh viên nên ưu tiên khu gần trường, an ninh, và chi phí đi lại.\n"
+            "Anh/chị cho em khu vực + ngân sách, em lọc vài căn phù hợp nha."
+        ),
+    },
+    {
+        "topic": "scam_awareness",
+        "keywords": (
+            "lừa đảo", "lua dao", "nhận biết tin", "nhan biet tin", "tin giả", "tin gia",
+            "bị lừa", "bi lua",
+        ),
+        "answer": (
+            "Dạ anh/chị cẩn thận các dấu hiệu sau ạ:\n"
+            "- Giá **rẻ bất thường**, ép cọc gấp trước khi xem phòng.\n"
+            "- **Không cho xem thực tế**, chỉ gửi ảnh mạng hoặc đổi địa chỉ liên tục.\n"
+            "- Yêu cầu **chuyển khoản cá nhân** không có hợp đồng rõ ràng.\n"
+            "- Tin **chưa xác thực** hoặc thông tin mâu thuẫn (giá, địa chỉ, chủ nhà).\n"
+            "Trên nhatrovn, anh/chị ưu tiên tin đã xác thực và đặt lịch xem phòng qua hệ thống nha."
+        ),
+    },
+    {
+        "topic": "deposit_refund",
+        "keywords": (
+            "hoàn cọc", "hoan coc", "lấy lại cọc", "lay lai coc",
+            "chấm dứt hợp đồng", "cham dut hop dong", "gia hạn hợp đồng", "gia han hop dong",
+        ),
+        "answer": (
+            "Dạ **hoàn cọc, gia hạn hay chấm dứt hợp đồng** tùy điều khoản từng chủ nhà ạ. "
+            "Em không thay chủ nhà quyết định được, nhưng em khuyên anh/chị:\n"
+            "- Giữ **biên bản bàn giao** và hóa đơn điện nước khi trả phòng.\n"
+            "- **Báo trước** theo hợp đồng (thường 15–30 ngày).\n"
+            "- Trao đổi **bằng văn bản** (Zalo/email) để có căn cứ.\n"
+            "Nếu cần, anh/chị xem phòng và trao đổi trực tiếp với chủ nhà khi ký HĐ nha."
+        ),
+    },
 ]
 
 

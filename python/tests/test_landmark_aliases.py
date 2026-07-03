@@ -8,6 +8,7 @@ from room_assistant.intent import parse_intent_and_constraint_patch
 from room_assistant.landmark_aliases import (
     expand_landmark_tokens,
     landmark_matches_text,
+    merge_nearby_into_embedding_text,
     normalize_landmark,
 )
 from room_assistant.repository import InMemoryRoomRepository, room_matches_constraints
@@ -107,6 +108,71 @@ class LandmarkAliasTests(unittest.TestCase):
         ids = [room.get("room_id") for room in hits]
         self.assertIn("tdtu-room", ids)
         self.assertNotIn("other-room", ids)
+
+    def test_dhct_resolves_to_ctu_not_huit(self):
+        self.assertEqual(normalize_landmark("dhct"), "ctu")
+        self.assertEqual(normalize_landmark("dai hoc can tho"), "ctu")
+        self.assertEqual(normalize_landmark("DHCT", province_slug="Cần Thơ"), "ctu")
+
+    def test_bare_district_binh_tan_not_aeon(self):
+        self.assertIsNone(normalize_landmark("binh tan"))
+        self.assertIsNone(normalize_landmark("quan binh tan"))
+        self.assertEqual(
+            normalize_landmark("aeon mall binh tan"),
+            "aeon binh tan",
+        )
+
+    def test_airports_are_geo_scoped(self):
+        self.assertEqual(normalize_landmark("san bay can tho"), "san bay can tho")
+        self.assertEqual(normalize_landmark("san bay tan son nhat"), "tan son nhat")
+        self.assertEqual(normalize_landmark("san bay noi bai"), "noi bai")
+        self.assertNotEqual(
+            normalize_landmark("san bay can tho"),
+            normalize_landmark("san bay tan son nhat"),
+        )
+
+    def test_ambiguous_bach_khoa_requires_province(self):
+        self.assertIsNone(normalize_landmark("bach khoa"))
+        self.assertEqual(
+            normalize_landmark("bach khoa tp", province_slug="TP.HCM"),
+            "hcmut",
+        )
+        self.assertEqual(
+            normalize_landmark("dai hoc bach khoa ha noi"),
+            "hust",
+        )
+
+    def test_no_false_positive_go_to_huflit(self):
+        self.assertIsNone(normalize_landmark("go"))
+        tokens = expand_landmark_tokens("go")
+        self.assertNotIn("huflit", tokens)
+
+    def test_numeric_one_not_benh_vien_175(self):
+        tokens = expand_landmark_tokens("1")
+        self.assertNotIn("benh vien 175", tokens)
+        self.assertEqual(tokens, [])
+
+    def test_merge_nearby_into_embedding_text(self):
+        room = {
+            "embedding_text": "## Giá & phí\n- 3tr",
+            "tien_ich_xq": "Gần TDTU, Vincom",
+        }
+        merged = merge_nearby_into_embedding_text(room)
+        self.assertIn("## Tiện ích xung quanh", merged)
+        self.assertIn("Gần TDTU", merged)
+        self.assertIn("## Giá & phí", merged)
+
+    def test_district_blocklist_sample_from_city_txt(self):
+        """Một số quận/huyện phổ biến không được nhận nhầm thành landmark."""
+        for district in (
+            "tan binh",
+            "go vap",
+            "thu duc",
+            "quan 7",
+            "nha be",
+        ):
+            with self.subTest(district=district):
+                self.assertIsNone(normalize_landmark(district))
 
 
 if __name__ == "__main__":

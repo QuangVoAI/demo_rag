@@ -47,6 +47,13 @@ pre-demo-audit.json
 pre-demo-audit.md
 deep-research-report.md
 
+# BO / audit artifacts (regenerated locally)
+python/tests/_bo_test_case_extracted.txt
+python/tests/fixtures/bo_test_case_*.json
+
+# Local agent routing artifacts
+.ai-router/
+
 # Local reference docs (content encoded in staff_knowledge.py)
 *.xlsx
 *.docx

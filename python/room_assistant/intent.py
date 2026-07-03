@@ -16,13 +16,24 @@ import unicodedata
 from typing import Any
 
 from .schemas import ALLOWED_OPERATION_PATHS, INTENTS, OP_TYPES, ParsedRequest
-from .landmark_aliases import normalize_landmark
+from .landmark_aliases import normalize_landmark, _norm_landmark, _should_drop_unresolved_landmark
 
 
 # ---------------------------------------------------------------------------
 # Từ khóa hành động nghiệp vụ mà assistant KHÔNG được tự thực hiện
 # ---------------------------------------------------------------------------
 ACTION_KEYWORDS = {
+    # Kiểm tra hủy/đổi trước dat_lich vì các cụm này có thể chứa "lịch hẹn".
+    "huy_lich": (
+        "hủy lịch", "huy lich", "huỷ lịch", "hủy hẹn", "huy hen",
+        "hủy lịch hẹn", "huy lich hen", "hủy hẹn xem", "huy hen xem",
+        "bỏ lịch", "bo lich", "bỏ hẹn", "bo hen",
+    ),
+    "doi_lich": (
+        "đổi lịch", "doi lich", "đổi hẹn", "doi hen",
+        "đổi lịch hẹn", "doi lich hen", "dời lịch", "doi lich xem",
+        "đổi giờ xem", "doi gio xem", "đổi ngày xem", "doi ngay xem",
+    ),
     "dat_lich": (
         "đặt lịch", "dat lich", "hẹn xem", "hen xem",
         "xem phòng giúp", "lịch hẹn", "lich hen",
@@ -55,6 +66,7 @@ ACTION_KEYWORDS = {
     "negotiate": (
         "thương lượng", "thuong luong", "trả giá", "tra gia",
         "ép giá", "ep gia", "bớt giá", "bot gia",
+        "giảm giá", "giam gia",
     ),
 }
 
@@ -269,6 +281,12 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "dan xem", "xem tan noi", "mien phi", "mat phi",
         "anhome", "tai app", "ky gui", "lap mang", "chu nha",
         "dang tin", "hoa hong",
+        # Tư vấn thuê trọ chung (không gắn phòng cụ thể)
+        "luu y", "nen chu y", "meo thue", "kinh nghiem thue",
+        "lua dao", "luừa đảo", "nhan biet tin", "tin gia",
+        "hop ly", "bao nhieu thang", "sinh vien",
+        "gia han hop dong", "cham dut hop dong", "hoan coc", "hoàn cọc",
+        "khieu nai", "khiếu nại", "bi lua", "bị lừa",
     ),
 }
 
@@ -287,7 +305,8 @@ DETAIL_FIELD_KEYWORDS: tuple[str, ...] = (
 ROOM_REFERENCE_KEYWORDS: tuple[str, ...] = (
     "phong nay", "phong do", "phong tren", "phong kia", "can tren", "can kia",
     "cai tren", "cai duoi", "cai kia", "cai vua roi", "vua roi", "vua noi",
-    "dang xem", "can ho nay", "cho nay", "nha nay", "muc nay", "tin nay",
+    "dang xem", "can ho nay", "can nay", "cho nay", "nha nay", "muc nay", "tin nay",
+    "khu nay",
 )
 
 COST_FIELD_KEYWORDS: tuple[str, ...] = (
@@ -367,6 +386,11 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", _strip_accents(text).lower().replace("đ", "d")).strip()
 
 
+_SOFT_PREFERENCE_DETAIL_KEYWORDS: tuple[str, ...] = tuple(
+    sorted({_norm(alias) for alias in SOFT_PREFERENCE_ALIASES})
+)
+
+
 def _is_off_topic_request(normalized: str) -> bool:
     if not normalized:
         return False
@@ -381,6 +405,34 @@ def _money_to_vnd(raw: str, unit: str | None) -> int:
     from .money import money_to_vnd
 
     return money_to_vnd(raw, unit)
+
+
+def _has_strict_upper_budget_phrase(normalized: str) -> bool:
+    return bool(re.search(
+        r"\b(?:duoi|re hon|thap hon|nho hon|it hon|mem hon|khong den|khong toi|chua toi)\b",
+        normalized,
+    ))
+
+
+def _has_inclusive_upper_budget_phrase(normalized: str) -> bool:
+    return bool(re.search(r"\b(?:toi da|khong qua|ngan sach|budget|tro xuong|do lai)\b", normalized))
+
+
+def _has_strict_lower_budget_phrase(normalized: str) -> bool:
+    if _has_strict_upper_budget_phrase(normalized):
+        return False
+    return bool(re.search(r"\b(?:tren|cao hon|dat hon|lon hon|hon)\b", normalized))
+
+
+def _has_inclusive_lower_budget_phrase(normalized: str) -> bool:
+    return bool(re.search(r"\b(?:toi thieu|tu)\b", normalized))
+
+
+def _is_relative_budget_increase(normalized: str) -> bool:
+    return bool(
+        re.search(r"\b(?:noi|tang|them)\b.*\bngan sach\b.*\bthem\b", normalized)
+        or re.search(r"\b(?:noi|tang|them)\s+them\b", normalized)
+    )
 
 
 def _append_unique(ops: list[dict[str, Any]], op: str, path: str, value: Any = None) -> None:
@@ -457,8 +509,13 @@ def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> No
 
     colloquial = extract_colloquial_budget_vnd(normalized)
     if colloquial is not None:
+        if _has_strict_lower_budget_phrase(normalized) or _has_inclusive_lower_budget_phrase(normalized):
+            _append_unique(ops, "set", "budget.min", colloquial)
+            operator = "gte" if _has_inclusive_lower_budget_phrase(normalized) else "gt"
+            _append_unique(ops, "set", "budget.min_operator", operator)
+            return
         _append_unique(ops, "set", "budget.max", colloquial)
-        if any(token in normalized for token in ("duoi", "dưới", "tro xuong", "trở xuống", "khong qua", "không quá")):
+        if _has_strict_upper_budget_phrase(normalized):
             _append_unique(ops, "set", "budget.max_operator", "lt")
         else:
             _append_unique(ops, "set", "budget.max_operator", "lte")
@@ -493,35 +550,47 @@ def _extract_budget(text: str, normalized: str, ops: list[dict[str, Any]]) -> No
         return
 
     max_patterns = (
-        rf"(?:tối đa|toi da|duoi|dưới|không quá|khong qua|ngân sách|ngan sach|budget).*?{money}",
-        rf"{money}\s*(?:đổ lại|do lai|tro xuong|trở xuống)",
+        (
+            rf"(?:duoi|re hon|thap hon|nho hon|it hon|mem hon|khong den|khong toi|chua toi)\s*{money}",
+            "lt",
+        ),
+        (
+            rf"(?:toi da|khong qua|ngan sach|budget).*?{money}",
+            "lte",
+        ),
+        (
+            rf"{money}\s*(?:do lai|tro xuong)",
+            "lte",
+        ),
     )
     min_patterns = (
-        rf"(?:tối thiểu|toi thieu|trên|tren|hơn|hon|từ|tu)\s*{money}",
+        (
+            rf"(?:tren|cao hon|dat hon|lon hon|hon)\s*{money}",
+            "gt",
+        ),
+        (
+            rf"(?:toi thieu|tu)\s*{money}",
+            "gte",
+        ),
     )
 
-    for pattern in max_patterns:
+    matched_single_bound = False
+    for pattern, operator in max_patterns:
         match = re.search(pattern, normalized)
         if match:
             max_val = _money_to_vnd(match.group(1), match.group(2))
             _append_unique(ops, "set", "budget.max", max_val)
-            matched_segment = match.group(0)
-            if "duoi" in matched_segment or "dưới" in matched_segment:
-                _append_unique(ops, "set", "budget.max_operator", "lt")
-            else:
-                _append_unique(ops, "set", "budget.max_operator", "lte")
+            _append_unique(ops, "set", "budget.max_operator", operator)
+            matched_single_bound = True
             break
-    for pattern in min_patterns:
-        match = re.search(pattern, normalized)
-        if match:
-            min_val = _money_to_vnd(match.group(1), match.group(2))
-            _append_unique(ops, "set", "budget.min", min_val)
-            matched_segment = match.group(0)
-            if "tren" in matched_segment or "trên" in matched_segment or "hon" in matched_segment or "hơn" in matched_segment:
-                _append_unique(ops, "set", "budget.min_operator", "gt")
-            else:
-                _append_unique(ops, "set", "budget.min_operator", "gte")
-            break
+    if not matched_single_bound:
+        for pattern, operator in min_patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                min_val = _money_to_vnd(match.group(1), match.group(2))
+                _append_unique(ops, "set", "budget.min", min_val)
+                _append_unique(ops, "set", "budget.min_operator", operator)
+                break
 
     # Xử lý "tăng ngân sách lên X triệu"
     if "tang ngan sach" in normalized or "tăng ngân sách" in text.lower():
@@ -558,6 +627,46 @@ def _apply_relative_budget_refinement(
     if budget.get("max_operator"):
         ops[:] = [op for op in ops if op.get("path") != "budget.max_operator"]
         _append_unique(ops, "set", "budget.max_operator", budget.get("max_operator"))
+
+
+def _maybe_replace_budget_filters(
+    normalized: str,
+    current_state: dict[str, Any] | None,
+    ops: list[dict[str, Any]],
+) -> None:
+    if not current_state:
+        return
+    budget = (current_state.get("constraints") or {}).get("budget") or {}
+    set_paths = {
+        op.get("path")
+        for op in ops
+        if op.get("op") in {"set", "replace"} and str(op.get("path") or "").startswith("budget.")
+    }
+    sets_min = "budget.min" in set_paths
+    sets_max = "budget.max" in set_paths
+    if sets_min == sets_max:
+        return
+
+    def _prepend_clear(path: str) -> None:
+        clear_op = {"op": "clear", "path": path}
+        if clear_op not in ops:
+            ops.insert(0, clear_op)
+
+    if sets_max and budget.get("min") is not None and not _is_relative_budget_increase(normalized):
+        _prepend_clear("budget.min_operator")
+        _prepend_clear("budget.min")
+        return
+
+    if sets_min and budget.get("max") is not None:
+        new_min = next((op.get("value") for op in ops if op.get("path") == "budget.min"), None)
+        current_max = budget.get("max")
+        if (
+            isinstance(new_min, (int, float))
+            and isinstance(current_max, (int, float))
+            and new_min >= current_max
+        ):
+            _prepend_clear("budget.max_operator")
+            _prepend_clear("budget.max")
 
 
 def _extract_location(normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -713,7 +822,12 @@ def _clean_landmark(value: str) -> str | None:
         return None
     if result in _LANDMARK_REFERENCE_ONLY:
         return None
-    return normalize_landmark(result) or result
+    normalized = normalize_landmark(result)
+    if normalized:
+        return normalized
+    if _should_drop_unresolved_landmark(_norm_landmark(result)):
+        return None
+    return result
 
 
 def _extract_categories(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
@@ -723,7 +837,12 @@ def _extract_categories(text: str, normalized: str, ops: list[dict[str, Any]]) -
             _append_unique(ops, "append", "categories", canonical)
 
 
-def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) -> None:
+def _extract_amenities(
+    text: str,
+    normalized: str,
+    ops: list[dict[str, Any]],
+    current_state: dict[str, Any] | None = None,
+) -> None:
     """Trích xuất tiện ích bắt buộc và tùy chọn từ câu hỏi."""
     negated_features: set[str] = set()
     if re.search(r"khong\s*may\s*lanh", normalized) or "không máy lạnh" in text.lower():
@@ -749,6 +868,8 @@ def _extract_amenities(text: str, normalized: str, ops: list[dict[str, Any]]) ->
         if _is_location_pivot_phrase(normalized) and canonical == "bright":
             continue
         if _contains_phrase(normalized, alias):
+            if _looks_like_room_attribute_question(normalized, current_state):
+                continue
             _append_unique(ops, "append", "amenities_preferred", canonical)
 
     # Lệnh xóa toàn bộ điều kiện tìm kiếm
@@ -776,9 +897,90 @@ def _is_amenity_remove_request(normalized: str, alias: str) -> bool:
     return bool(re.search(rf"\b{remove_prefix}\b{filler}{escaped}(?!\w)", normalized))
 
 
+def _first_or_none(values: list[Any]) -> Any | None:
+    return values[0] if values else None
+
+
+def _current_context_room_id(current_state: dict[str, Any] | None) -> str | None:
+    if not current_state:
+        return None
+    current = str(current_state.get("current_room_id") or "").strip()
+    if current:
+        return current
+    return _first_or_none(current_state.get("last_result_ids") or [])
+
+
+def _resolve_parsed_current_room_id(
+    *,
+    intent: str,
+    referenced_room_ids: list[str],
+    current_state: dict[str, Any] | None,
+    ordinal_out_of_range: bool,
+) -> str | None:
+    if ordinal_out_of_range:
+        return None
+    if referenced_room_ids:
+        return referenced_room_ids[0]
+    if current_state and intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "FIND_SIMILAR"}:
+        return _current_context_room_id(current_state)
+    return None
+
+
+def _has_soft_preference_keyword(normalized: str) -> bool:
+    return _has_keyword(normalized, _SOFT_PREFERENCE_DETAIL_KEYWORDS)
+
+
+def _is_search_availability_question(normalized: str) -> bool:
+    """'Có phòng ... không?' — tìm kiếm, không phải hỏi thuộc tính phòng đang xem."""
+    if _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+        return False
+    if re.search(r"\b(?:can|phong|nha)\s+(?:nay|do|kia|tren|duoi|dang xem)\b", normalized):
+        return False
+    return bool(re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\b", normalized))
+
+
+def _looks_like_room_attribute_question(
+    normalized: str,
+    current_state: dict[str, Any] | None,
+) -> bool:
+    if not _has_current_room(current_state):
+        return False
+    if _is_search_availability_question(normalized):
+        return False
+    if _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
+        return True
+    if not _has_soft_preference_keyword(normalized):
+        return False
+    if re.search(r"\b(?:can|phong|nha)\s+nao\b", normalized):
+        return False
+    return bool(
+        re.search(
+            r"\b(co|có|khong|không|the nao|thế nào|bao nhieu|bao nhiêu|la gi|là gì|"
+            r"duoc khong|được không|co khong|có không|an toan|an ninh|yen tinh)\b",
+            normalized,
+        )
+    )
+
+
+def _is_negotiate_capability_question(normalized: str) -> bool:
+    """Hỏi khả năng mặc cả — tư vấn, không phải yêu cầu thực hiện."""
+    if not re.search(r"\b(giam gia|giảm giá|thuong luong|thương lượng|tra gia|trả giá|bot gia|bớt giá)\b", normalized):
+        return False
+    return bool(
+        re.search(
+            r"\b(co the|liệu có|duoc khong|được không|co khong|có không|co duoc|có được|"
+            r"bao nhieu|bao nhiêu|the nao|thế nào|ra sao)\b",
+            normalized,
+        )
+        or re.search(r"\b(co|con)\s+(?:giam gia|thuong luong|tra gia)\b", normalized)
+    )
+
+
 def _requested_action(normalized: str) -> str | None:
     """Kiểm tra xem người dùng có yêu cầu thao tác nghiệp vụ không."""
     if _is_action_capability_question(normalized):
+        return None
+    if _is_negotiate_capability_question(normalized):
         return None
     for action, keywords in ACTION_KEYWORDS.items():
         if any(_norm(keyword) in normalized for keyword in keywords):
@@ -828,6 +1030,16 @@ def _is_room_detail_question(normalized: str, ids: list[str], current_state: dic
         return False
     if _has_keyword(normalized, COST_FIELD_KEYWORDS):
         return False
+    if _has_soft_preference_keyword(normalized) and (
+        ids
+        or _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS)
+        or _has_current_room(current_state)
+    ):
+        if re.search(r"\b(?:can|phong|nha)\s+nao\b", normalized):
+            return False
+        if _is_search_availability_question(normalized):
+            return False
+        return True
     if not _has_keyword(normalized, DETAIL_FIELD_KEYWORDS):
         return False
     if ids or _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
@@ -959,6 +1171,7 @@ def _strip_detail_question_search_ops(
 ) -> list[dict[str, Any]]:
     about_current_room = (
         intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"}
+        or _looks_like_room_attribute_question(normalized, current_state)
         or (
             _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS)
             and _has_current_room(current_state)
@@ -1013,9 +1226,18 @@ def _selected_room_ids_from_ordinals(
 
 
 def _selected_room_id_from_deictic(normalized: str, current_state: dict[str, Any] | None) -> str | None:
-    """Resolve chỉ định ngữ cảnh: cái trên, phòng kia, căn vừa rồi…"""
+    """Resolve chỉ định ngữ cảnh: phòng này/đó, cái trên, phòng kia, căn vừa rồi…"""
     if not current_state:
         return None
+
+    context_room = _current_context_room_id(current_state)
+    if context_room and (
+        re.search(r"\b(?:can|phong|cai|tin|muc|nha|cho|khu)\s+nay\b", normalized)
+        or re.search(r"\bdang\s+xem\b", normalized)
+        or re.search(r"\b(?:can|phong|cai)\s+do\b", normalized)
+    ):
+        return str(context_room)
+
     ids = [str(item) for item in (current_state.get("last_result_ids") or []) if item]
     if not ids:
         return None
@@ -1294,7 +1516,7 @@ def _merge_router_decision(
     elif referenced_room_ids:
         current_room_id = referenced_room_ids[0]
     elif not current_room_id and current_state and approved_intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "FIND_SIMILAR"}:
-        current_room_id = current_state.get("current_room_id") or _first_or_none(current_state.get("last_result_ids") or [])
+        current_room_id = _current_context_room_id(current_state)
 
     merged = {
         "intent": approved_intent if approved_intent in INTENTS else "GENERAL_HELP",
@@ -1422,6 +1644,9 @@ def _regex_classify(
         return "REQUEST_ACTION", 1.0
     if _is_result_set_compare_request(normalized):
         return "COMPARE_ROOMS", 1.0
+    for priority_intent in ("FIND_SIMILAR", "SUMMARIZE_ROOM", "CALCULATE_COST"):
+        if any(kw in normalized for kw in _INTENT_KEYWORDS[priority_intent]):
+            return priority_intent, 1.0
     if _selected_room_id_from_ordinal(normalized, current_state):
         return "ASK_ABOUT_ROOM", 1.0
     if _selected_room_id_from_deictic(normalized, current_state):
@@ -1591,9 +1816,10 @@ def parse_intent_and_constraint_patch(
     _extract_location(normalized, operations)
     _extract_move_in_date(normalized, operations)
     _extract_people_and_pets(normalized, operations)
-    _extract_amenities(text, normalized, operations)
+    _extract_amenities(text, normalized, operations, current_state)
     _extract_categories(text, normalized, operations)
     _apply_relative_budget_refinement(text, normalized, current_state, operations)
+    _maybe_replace_budget_filters(normalized, current_state, operations)
     _maybe_replace_location_filters(normalized, current_state, operations)
 
     referenced_room_ids = [_normalize_room_reference(item) for item in _extract_room_ids(text)]
@@ -1668,9 +1894,18 @@ def parse_intent_and_constraint_patch(
         current_state=current_state,
     )
 
-    current_room_id = referenced_room_ids[0] if referenced_room_ids else None
-    if ordinal_out_of_range:
-        current_room_id = None
+    current_room_id = _resolve_parsed_current_room_id(
+        intent=intent,
+        referenced_room_ids=referenced_room_ids,
+        current_state=current_state,
+        ordinal_out_of_range=ordinal_out_of_range,
+    )
+    if (
+        current_room_id
+        and not referenced_room_ids
+        and intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "FIND_SIMILAR"}
+    ):
+        referenced_room_ids = [current_room_id]
 
     return {
         "intent": intent,
@@ -1762,10 +1997,4 @@ async def parse_intent_async(
         current_state=current_state,
     )
     return merged
-
-
-def _first_or_none(values: list[Any]) -> Any | None:
-    return values[0] if values else None
-
-
 

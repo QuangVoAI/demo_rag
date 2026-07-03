@@ -1,0 +1,21 @@
+Tỉnh/Thành phố	Số mục	Quận/Huyện xuất hiện trên website
+TP. Hồ Chí Minh	22	Huyện Bình Chánh; Huyện Hóc Môn; Huyện Nhà Bè; Quận 1; Quận 2; Quận 3; Quận 4; Quận 5; Quận 6; Quận 7; Quận 8; Quận 9; Quận 10; Quận 11; Quận 12; Quận Bình Thạnh; Quận Bình Tân; Quận Gò Vấp; Quận Phú Nhuận; Quận Tân Bình; Quận Tân Phú; Thành phố Thủ Đức.
+Cần Thơ	6	Huyện Phong Điền; Huyện Vĩnh Thạnh; Quận Bình Thủy; Quận Cái Răng; Quận Ninh Kiều; Quận Ô Môn.
+Bình Dương	7	Huyện Bàu Bàng; Huyện Bắc Tân Uyên; Thành phố Dĩ An; Thành phố Thuận An; Thành phố Thủ Dầu Một; Thị xã Bến Cát; Thị xã Tân Uyên.
+Hà Nội	14	Huyện Hoài Đức; Huyện Thanh Trì; Huyện Đông Anh; Quận Ba Đình; Quận Bắc Từ Liêm; Quận Cầu Giấy; Quận Hai Bà Trưng; Quận Hoàn Kiếm; Quận Hoàng Mai; Quận Hà Đông; Quận Nam Từ Liêm; Quận Thanh Xuân; Quận Tây Hồ; Quận Đống Đa.
+Đà Nẵng	8	Huyện Hòa Vang; Quận Cẩm Lệ; Quận Hải Châu; Quận Liên Chiểu; Quận Ngũ Hành Sơn; Quận Sơn Trà; Quận Thanh Khê; Thị xã Điện Bàn.
+Vĩnh Long	3	Huyện Long Hồ; Thành phố Vĩnh Long; Thị xã Bình Minh.
+Long An	3	Huyện Bến Lức; Huyện Cần Giuộc; Huyện Đức Hòa.
+Thừa Thiên Huế	3	Huyện Phú Lộc; Thành phố Huế; Thị xã Hương Thủy.
+Tây Ninh	7	Huyện Châu Thành; Huyện Dương Minh Châu; Huyện Gò Dầu; Huyện Tân Biên; Thành phố Tây Ninh; Thị xã Hòa Thành; Thị xã Trảng Bàng.
+Quảng Nam	1	Thị xã Điện Bàn.
+Trà Vinh	2	Huyện Châu Thành; Thành phố Trà Vinh.
+Đồng Tháp	3	Huyện Lai Vung; Thành phố Cao Lãnh; Thành phố Sa Đéc.
+Sóc Trăng	1	Thành phố Sóc Trăng.
+Hậu Giang	2	Huyện Châu Thành; Thành phố Vị Thanh.
+Đồng Nai	1	Huyện Nhơn Trạch.
+Đắk Lắk	1	Thành phố Buôn Ma Thuột.
+Tiền Giang	≥1	Xác nhận được Thành phố Mỹ Tho
+Kiên Giang	2	Thành phố Phú Quốc, Rạch Giá
+Quảng Ngãi	1	Huyện Sơn Tịnh
+Bà Rịa - Vũng Tàu	1	Thành phố Bà Rịa

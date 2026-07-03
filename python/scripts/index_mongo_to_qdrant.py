@@ -28,9 +28,11 @@ from retrieval.qdrant_client import QdrantWrapper
 
 def extract_text_for_embedding(doc: dict[str, Any]) -> str:
     """Trích xuất text để tạo vector từ document Mongo."""
-    if doc.get("embedding_text"):
-        return str(doc["embedding_text"])
-    
+    from room_assistant.landmark_aliases import merge_nearby_into_embedding_text
+
+    if doc.get("embedding_text") or doc.get("tien_ich_xq"):
+        return merge_nearby_into_embedding_text(doc)
+
     parts = []
     metadata = doc.get("metadata") or {}
     if "house_name" in metadata:

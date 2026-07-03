@@ -250,7 +250,7 @@ Chạy tuần tự và **không cutover** nếu gate bắt buộc fail:
 | Qdrant inventory | `rooms_v1` point count ≈ Mongo available rooms | lệch >1% cần reindex |
 | Kafka CDC (nếu bật) | worker consume + upsert 1 event test | `result=upserted` |
 | RAG smoke | `POST /api/rag/query/` 1 câu search thật | `success=true`, có `intent` |
-| QA transcript (khuyến nghị) | `python -m pytest python/tests/test_transcript_qa_regression.py -q` | không regression routing |
+| Intent regression | `python -m pytest python/tests/test_intent_regression_matrix.py python/tests/test_landmark_aliases.py -q` | routing + landmark |
 
 Ghi chú:
 - `GET /api/health/` giữ nhanh (không gọi Mongo/Qdrant).

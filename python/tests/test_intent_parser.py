@@ -449,6 +449,103 @@ class IntentParserTests(unittest.TestCase):
         preferred = [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
         self.assertNotIn("bright", preferred)
 
+    def test_deictic_this_that_viewing_resolves_current_room_id(self):
+        state = default_session_state("s-deictic-this")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        cases = [
+            ("Phòng này có tiện ích gì?", "B202"),
+            ("Phòng đó có wifi không?", "B202"),
+            ("Căn đang xem giá bao nhiêu?", "B202"),
+            ("Khu này an ninh không?", "B202"),
+        ]
+        for question, expected_id in cases:
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, state)
+                self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM", question)
+                self.assertEqual(parsed["current_room_id"], expected_id, question)
+                self.assertEqual(parsed["referenced_room_ids"], [expected_id], question)
+                preferred = [op for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
+                self.assertEqual(preferred, [], question)
+
+    def test_soft_preference_room_question_without_explicit_reference(self):
+        state = default_session_state("s-soft-pref")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Phòng có yên tĩnh không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], "B202")
+        preferred = [op for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
+        self.assertEqual(preferred, [])
+
+    def test_deictic_resolves_with_only_current_room_id(self):
+        state = default_session_state("s-detail-only")
+        state["current_room_id"] = "62963aae137e2a3d7e03c9d0"
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Phòng này có máy lạnh không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], "62963aae137e2a3d7e03c9d0")
+
+    def test_schedule_action_keywords_distinguish_cancel_reschedule(self):
+        state = default_session_state("s-schedule")
+        state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101"]
+
+        parsed = parse_intent_and_constraint_patch("Hủy lịch hẹn xem phòng giúp tôi", state)
+        self.assertEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertEqual(parsed["requested_action"], "huy_lich")
+
+        parsed = parse_intent_and_constraint_patch("Đổi lịch hẹn xem phòng sang chiều mai", state)
+        self.assertEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertEqual(parsed["requested_action"], "doi_lich")
+
+        parsed = parse_intent_and_constraint_patch("Đặt lịch hẹn xem phòng giúp em", state)
+        self.assertEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertEqual(parsed["requested_action"], "dat_lich")
+
+    def test_negotiate_action_vs_capability_question(self):
+        state = default_session_state("s-negotiate")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202"]
+
+        parsed = parse_intent_and_constraint_patch("Giảm giá cho em đi", state)
+        self.assertEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertEqual(parsed["requested_action"], "negotiate")
+
+        parsed = parse_intent_and_constraint_patch("Giảm giá được không?", state)
+        self.assertNotEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertIsNone(parsed.get("requested_action"))
+
+        parsed = parse_intent_and_constraint_patch("Phòng này giảm giá được không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], "B202")
+        self.assertIsNone(parsed.get("requested_action"))
+
+    def test_rental_advice_routes_to_request_faq(self):
+        cases = [
+            "Sinh viên nên lưu ý gì khi thuê trọ?",
+            "Làm sao nhận biết tin lừa đảo?",
+            "Cọc mấy tháng là hợp lý?",
+            "Hoàn cọc khi chuyển đi thế nào?",
+        ]
+        for question in cases:
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, None)
+                self.assertEqual(parsed["intent"], "REQUEST_FAQ", question)
+
+    def test_rental_advice_not_overridden_to_refine_search(self):
+        state = default_session_state("s-advice")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = ["A101", "B202"]
+
+        parsed = parse_intent_and_constraint_patch("Sinh viên nên lưu ý gì khi thuê trọ?", state)
+        self.assertEqual(parsed["intent"], "REQUEST_FAQ")
+
 
 if __name__ == "__main__":
     unittest.main()

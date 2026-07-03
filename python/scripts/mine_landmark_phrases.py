@@ -1,10 +1,12 @@
-"""One-off: mine landmark/location phrases from MongoDB for alias building."""
+"""Mine landmark phrases from MongoDB — grouped by province, safer regex."""
+
 from __future__ import annotations
 
-import os
+import argparse
+import json
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,33 +15,80 @@ sys.path.insert(0, str(ROOT))
 from config import MONGODB_DATABASE, MONGODB_ROOMS_COLLECTION, MONGODB_URI
 from pymongo import MongoClient
 
+from room_assistant.landmark_aliases import _norm_landmark
+
 PATTERNS = [
-    (r"(?i)(?:gan|gần|cach|cách|khu vuc|khu vực|đối diện|doi dien|sát|sat)\s+([^,\n\.]{3,50})", "near"),
-    (r"(?i)(?:duong|đường|d\.)\s*([^,\n\.]{3,40})", "street"),
-    (r"(?i)(tttm|trung tam thuong mai|trung tâm thương mại)\s*([^,\n\.]{0,40})", "mall"),
-    (r"(?i)(truong|trường|dai hoc|đại học|dh|đh)\s+([^,\n\.]{3,40})", "school"),
-    (r"(?i)(benh vien|bệnh viện|bv)\s+([^,\n\.]{3,40})", "hospital"),
-    (r"(?i)(cho|chợ)\s+([^,\n\.]{3,30})", "market"),
     (
-        r"(?i)(vincom|aeon|lotte|big c|coopmart|saigon centre|landmark|estella|sc vivo|thiso|gigamall|van hanh|van hanh mall)\s*([^,\n\.]{0,30})",
+        r"(?i)(?:gan|gần|cach|cách|khu vuc|khu vực|đối diện|doi dien|sát|sat)\s+"
+        r"(?P<place>[^,\n\.]{3,50})",
+        "near",
+    ),
+    (r"(?i)(?:duong|đường|d\.)\s*(?P<place>[^,\n\.]{3,40})", "street"),
+    (r"(?i)(?:tttm|trung tam thuong mai|trung tâm thương mại)\s*(?P<place>[^,\n\.]{0,40})", "mall"),
+    (r"(?i)(?:truong|trường|dai hoc|đại học|dh|đh)\s+(?P<place>[^,\n\.]{3,40})", "school"),
+    (r"(?i)(?:benh vien|bệnh viện|bv)\s+(?P<place>[^,\n\.]{3,40})", "hospital"),
+    (
+        r"(?i)(?:\bchợ\b|\bcho\b(?!\s+thuê\b)(?!\s+thue\b)(?!\s+sinh\b)(?!\s+nu\b)(?!\s+nam\b))"
+        r"\s+(?P<place>[^,\n\.]{3,30})",
+        "market",
+    ),
+    (
+        r"(?i)(vincom|aeon|lotte|big c|coopmart|saigon centre|landmark\s*81|estella|"
+        r"sc vivo|thiso|gigamall|van hanh(?:\s+mall)?)\s*(?P<place>[^,\n\.]{0,30})",
         "brand_mall",
     ),
-    (r"(?i)\b(tdtu|tdt|hutech|uel|ueh|hcmus|hcmut|ftu|ufm|huflit|hcmute|hcmussh|hcmussh|hcmussh|hcmussh)\b", "uni_abbr"),
+    (
+        r"(?i)\b(tdtu|tdt|hutech|uel|ueh|hcmus|hcmut|huflit|hcmussh|ctu|dhct|hust|dut)\b",
+        "uni_abbr",
+    ),
+    (r"(?i)\b(kcn|vsip|kcx)\s+(?P<place>[^,\n\.]{3,40})", "industrial"),
+    (r"(?i)san bay\s+(?P<place>[^,\n\.]{3,30})", "airport"),
 ]
+
+_STOP_NEAR_TAIL = re.compile(
+    r"\b(?:\d+\s*(?:m|km|p|phut|phút)|thuan tien|tiện|thoai mai|o to|oto)\b.*$",
+    re.IGNORECASE,
+)
+
+UNI_ABBRS = sorted(
+    {"tdtu", "tdt", "hutech", "uel", "ueh", "hcmus", "hcmut", "huflit", "hcmussh", "ctu", "dhct", "hust", "dut"},
+    key=len,
+    reverse=True,
+)
+
+
+def _clean_phrase(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())[:80]
+    text = _STOP_NEAR_TAIL.sub("", text).strip(" ,.;")
+    return text
+
+
+def _split_tien_ich(value: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[,;|]|\s+/\s+", str(value)) if part.strip()]
 
 
 def main() -> None:
-    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=8000)
     col = client[MONGODB_DATABASE][MONGODB_ROOMS_COLLECTION]
-    counters = {key: Counter() for _, key in PATTERNS}
+    counters: dict[str, Counter] = {key: Counter() for _, key in PATTERNS}
+    room_sets: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
     tien_ich = Counter()
+    seen_rooms: dict[str, set] = defaultdict(set)
 
     cursor = col.find(
-        {"$or": [{"metadata.status_code": "0"}, {"metadata.status_code": ""}]},
-        {"embedding_text": 1, "tien_ich_xq": 1, "metadata.house_name": 1},
+        {},
+        {
+            "embedding_text": 1,
+            "tien_ich_xq": 1,
+            "metadata.house_name": 1,
+            "metadata.province_name": 1,
+            "metadata.district_name": 1,
+        },
     )
 
     for doc in cursor:
+        room_id = str(doc.get("_id"))
+        province = _norm_landmark((doc.get("metadata") or {}).get("province_name") or "unknown")
         text = " ".join(
             filter(
                 None,
@@ -51,46 +100,44 @@ def main() -> None:
             )
         )
         if doc.get("tien_ich_xq"):
-            for part in re.split(r"[,;|/]", str(doc["tien_ich_xq"])):
-                p = part.strip()
-                if len(p) >= 3:
-                    tien_ich[p[:80]] += 1
+            for part in _split_tien_ich(str(doc["tien_ich_xq"])):
+                if len(part) >= 3:
+                    phrase = part[:80]
+                    tien_ich[phrase] += 1
+                    seen_rooms[f"tien:{phrase}"].add(room_id)
         for pat, key in PATTERNS:
-            for m in re.finditer(pat, text):
-                phrase = m.group(0).strip()[:80]
-                counters[key][phrase] += 1
+            for match in re.finditer(pat, text):
+                phrase = _clean_phrase(match.group("place") if "place" in match.groupdict() else match.group(0))
+                if len(phrase) >= 3:
+                    bucket = f"{province}::{phrase}"
+                    counters[key][bucket] += 1
+                    room_sets[key][bucket].add(room_id)
 
-    print("=== tien_ich_xq top 100 ===")
-    for phrase, count in tien_ich.most_common(100):
-        print(f"{count:4d} | {phrase}")
+    print("=== tien_ich_xq top 30 (global) ===")
+    for phrase, count in tien_ich.most_common(30):
+        rooms = len(seen_rooms.get(f"tien:{phrase}", set()))
+        print(f"{count:4d} occ | {rooms:4d} rooms | {phrase[:70]}")
 
     for key in counters:
-        print(f"\n=== {key} top 50 ===")
-        for phrase, count in counters[key].most_common(50):
-            print(f"{count:4d} | {phrase}")
+        print(f"\n=== {key} top 20 by province ===")
+        for bucket, count in counters[key].most_common(20):
+            rooms = len(room_sets[key][bucket])
+            print(f"{count:4d} occ | {rooms:4d} rooms | {bucket[:90]}")
 
 
 def keyword_counts() -> None:
     keywords = [
-        "tdtu", "tdt", "ton duc thang", "hutech", "uel", "ueh", "hcmus", "hcmut",
-        "van hien", "cong thuong", "huit", "fpt", "nguyen huu tho", "xvnt",
-        "xuan vinh nguyen", "landmark 81", "vincom", "aeon", "lotte", "thiso",
-        "sc vivo", "estella", "gigamall", "van hanh", "nguyen van cu",
-        "cach mang thang 8", "le van luong", "phan van hon", "tan ky tan quy",
-        "duong 3/2", "nguyen thi thap", "huynh tan phat", "dhqg", "rmtt", "rmit",
-        "nttu", "nguyen tat thanh", "hoa sen", "hong bang", "gtvt", "y duoc",
-        "pasteur", "benh vien cho ray", "cho ray",
+        "tdtu", "ctu", "dhct", "hust", "dut", "huit", "hcmut", "vincom", "aeon",
+        "landmark 81", "san bay can tho", "san bay phu quoc", "tan son nhat",
     ]
-    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=8000)
     col = client[MONGODB_DATABASE][MONGODB_ROOMS_COLLECTION]
-    base = {"$or": [{"metadata.status_code": "0"}, {"metadata.status_code": ""}]}
-    print("=== keyword room counts ===")
+    print("=== keyword room counts (tien_ich_xq or embedding) ===")
     for kw in keywords:
         n = col.count_documents({
-            **base,
             "$or": [
-                {"embedding_text": {"$regex": kw, "$options": "i"}},
-                {"tien_ich_xq": {"$regex": kw, "$options": "i"}},
+                {"embedding_text": {"$regex": re.escape(kw), "$options": "i"}},
+                {"tien_ich_xq": {"$regex": re.escape(kw), "$options": "i"}},
             ],
         })
         if n:
@@ -98,8 +145,6 @@ def keyword_counts() -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="Mine landmark phrases from MongoDB")
     parser.add_argument("--keywords", action="store_true", help="Print keyword room counts")
     args = parser.parse_args()
