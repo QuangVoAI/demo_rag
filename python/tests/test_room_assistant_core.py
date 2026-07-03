@@ -859,6 +859,62 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertNotIn("9 triệu", result["answer"])
         self.assertIn("4.500.000", result["answer"])
 
+    def test_ask_about_room_with_context_skips_llm_writer(self):
+        parsed = {"intent": "ASK_ABOUT_ROOM", "operations": []}
+        grounding = {
+            "rooms": [{
+                "room_id": "A101",
+                "title": "Studio A",
+                "rent_price": 4_500_000,
+                "district": "Bình Thạnh",
+                "embedding_text": "## Tiện ích\n- Máy lạnh: Có",
+            }],
+            "constraints": {},
+        }
+        tool_results = {"rooms": grounding["rooms"]}
+
+        async def fail_write(**_kwargs):
+            raise AssertionError("write_response should not run for grounded room detail")
+
+        with patch("agents.response_writer.write_response", side_effect=fail_write):
+            result = asyncio.run(_compose_answer_async(
+                "Phòng này có máy lạnh không?",
+                parsed,
+                grounding,
+                tool_results,
+                history=[],
+            ))
+
+        self.assertIn("A101", result["answer"])
+        self.assertIn("Máy lạnh", result["answer"])
+
+    def test_finalize_repairs_contradictory_answer_when_rooms_exist(self):
+        from room_assistant.workflow import _finalize_composed_answer
+
+        rooms = [{
+            "room_id": "645a2c675a845d1d07828614",
+            "title": "P.502",
+            "rent_price": 4_200_000,
+            "district": "Gò Vấp",
+        }]
+        grounding = {"rooms": rooms, "constraints": {}}
+        tool_results = {"rooms": rooms, "relaxed_search": True, "relaxed_fields": ["vehicles"]}
+        verification: dict = {}
+
+        result = _finalize_composed_answer(
+            "Dạ em tìm mỏi mắt mà chưa thấy phòng nào phù hợp ạ.",
+            False,
+            "",
+            verification,
+            parsed={"intent": "REFINE_SEARCH", "operations": []},
+            grounding=grounding,
+            tool_results=tool_results,
+            question="có chỗ để xe máy",
+        )
+
+        self.assertIn("645a2c675a845d1d07828614", result["answer"])
+        self.assertTrue(verification.get("answer_repaired"))
+
     def test_cost_template_reads_fixed_items_from_calculator(self):
         parsed = {"intent": "CALCULATE_COST"}
         grounding = {"rooms": [], "constraints": {}}

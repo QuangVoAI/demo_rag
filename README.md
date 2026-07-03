@@ -86,6 +86,7 @@ flowchart TB
 | **Groq FAST** | LLM classify + router verifier khi regex không chắc |
 | **Groq SMART** | Sinh câu trả lời sales (khi bật async writer) |
 | **Reviewer** | Chặn hallucination, abstain khi thiếu grounding |
+| **Faithfulness guard** | Sửa answer mâu thuẫn inventory / room_id trước khi trả khách |
 | **Langfuse** | Trace từng lượt: intent, retrieval, generation |
 
 ---
@@ -126,6 +127,7 @@ sequenceDiagram
         T->>WF: staff_knowledge FAQ
     end
     WF->>WF: grounding_check + compose_answer
+    Note over WF: SEARCH/REFINE/ASK có phòng → template grounded<br/>faithfulness repair nếu LLM mâu thuẫn
     opt LLM writer enabled
         WF->>W: draft từ dữ liệu đã xác minh
         W->>R: safety review
@@ -241,8 +243,11 @@ nhatrovn/
 | `python/room_assistant/staff_knowledge.py` | Kịch bản FAQ / thương lượng giá |
 | `python/agents/response_writer.py` | Sinh câu trả lời sales |
 | `python/agents/reviewer.py` | Kiểm duyệt grounding / abstain |
+| `python/agents/faithfulness.py` | Phát hiện & sửa answer “không có phòng” khi đã retrieve được phòng |
 | `python/retrieval/qdrant_client.py` | Qdrant hybrid wrapper |
-| `apps/rooms/views.py` | `/api/rag/query`, `/api/rag/stream` |
+| `python/scripts/context_memory_audit.py` | Audit memory/state CTX-01..15 (regex-aligned, nhanh) |
+| `python/scripts/context_memory_audit_v2.py` | Audit v2: Groq thật + assert answer + API paths |
+| `apps/rooms/views.py` | `/api/rag/query`, `/api/rag/stream`, `/api/chat` |
 
 ---
 
@@ -313,12 +318,28 @@ python -m pytest tests/test_intent_parser.py tests/test_intent_regression_matrix
 python scripts/pre_demo_mongo_audit.py
 ```
 
+**Audit context memory multi-turn (CTX-01..15):**
+
+```bash
+cd python
+# v1 — nhanh, kiểm state machine (mock intent regex-aligned)
+python scripts/context_memory_audit.py
+
+# v2 — Groq thật, đọc answer text, CTX-11 qua /api/rag/stream/, CTX-15 qua /api/chat/
+python scripts/context_memory_audit_v2.py
+python scripts/context_memory_audit_v2.py --case CTX-02
+python scripts/context_memory_audit_v2.py --rescore   # tái chấm từ tmp/context_memory_audit_v2_report.json
+```
+
+Báo cáo ghi vào `tmp/` (đã gitignore).
+
 #### Cấu trúc test
 
 | File | Mục đích |
 |---|---|
 | `python/tests/test_room_assistant_core.py` | Workflow, intent, retrieval, session; acceptance tests fresh search + multi-turn budget |
-| `python/tests/test_intent_parser.py` | Parse constraint / landmark / quận |
+| `python/tests/test_faithfulness.py` | Guard chống answer mâu thuẫn inventory / room_id |
+| `python/tests/test_intent_parser.py` | Parse constraint / landmark / quận / session refine |
 | `python/tests/test_intent_regression_matrix.py` | Ma trận routing intent (deictic, FAQ, schedule…) |
 | `python/tests/test_landmark_aliases.py` | Chuẩn hóa TDTU, TTTM, đường, trường… |
 | `python/tests/test_money_parsing.py` | Parse giá / ngân sách |
@@ -394,9 +415,22 @@ Cấu hình qua biến môi trường Langfuse trong `.env` (xem `.env.example`)
 
 1. **Hybrid RAG, không vector-only** — filter cứng (giá, quận, còn phòng) trước semantic rank.
 2. **Grounded answers** — giá và tiện ích lấy từ Mongo; reviewer abstain khi thiếu context.
-3. **Sales tone có guardrail** — đồng cảm + CTA xem phòng, không hứa giảm giá / đặt cọc hộ.
-4. **Regex-first routing** — giảm latency và chi phí LLM; LLM chỉ cứu edge case.
-5. **Session-aware** — `REFINE_SEARCH` giữ ngữ cảnh budget/location qua nhiều lượt; relative budget (“thêm 1 triệu”) cộng từ state hiện tại; category cũ được clear khi pivot search mới.
+3. **Template-first khi đã có phòng** — `SEARCH` / `REFINE` / `ASK_ABOUT_ROOM` ưu tiên template từ dữ liệu đã retrieve; LLM chỉ cho edge case (FAQ, off-topic, no-result copy).
+4. **Faithfulness repair** — nếu answer nói “không có phòng” hoặc cite `#room_id` lạ trong khi tool đã trả phòng → tự fallback template.
+5. **Sales tone có guardrail** — đồng cảm + CTA xem phòng, không hứa giảm giá / đặt cọc hộ.
+6. **Regex-first routing** — giảm latency và chi phí LLM; LLM chỉ cứu edge case.
+7. **Session-aware multi-turn** — `REFINE_SEARCH` cộng dồn budget/amenity/vehicle; pivot quận không xóa amenity; ordinal/compare giữ `last_result_ids`; session B không kế thừa session A.
+
+### Context memory (multi-turn)
+
+| Khái niệm session | Mục đích |
+|---|---|
+| `constraints` | Quận, budget, amenity, landmark, vehicles… tích lũy qua refine |
+| `last_result_ids` | Danh sách phòng vừa search — dùng cho ordinal (“phòng 3”) và compare |
+| `current_room_id` | Phòng đang xem chi tiết |
+| `selected_room_ids` | Phòng vừa compare (không ghi đè `last_result_ids`) |
+
+Refine phrases như *"ưu tiên có máy lạnh"*, *"có chỗ để xe"*, *"không, quận 3 mới đúng"* được route `REFINE_SEARCH`, không nhầm `ASK_ABOUT_ROOM`.
 
 ---
 

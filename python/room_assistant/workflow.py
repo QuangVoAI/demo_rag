@@ -1045,27 +1045,26 @@ async def _compose_answer_async(
         )
         if insufficient:
             return await _finalize_composed_answer_async(insufficient, False, "", verification, stream_callback)
+        answer = _template_answer()
+        abstain, reason = _evaluate_abstain(
+            question, intent, grounding, tool_results, answer, from_template=True,
+        )
+        return await _finalize_composed_answer_async(
+            answer, abstain, reason, verification, stream_callback,
+            parsed=parsed, grounding=grounding, tool_results=tool_results,
+            question=question, user_mood=user_mood,
+        )
 
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
         answer = _template_answer()
         abstain, reason = _evaluate_abstain(
             question, intent, grounding, tool_results, answer, from_template=True,
         )
-        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
-
-    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_amenities(question):
-        answer = _template_answer()
-        abstain, reason = _evaluate_abstain(
-            question, intent, grounding, tool_results, answer, from_template=True,
+        return await _finalize_composed_answer_async(
+            answer, abstain, reason, verification, stream_callback,
+            parsed=parsed, grounding=grounding, tool_results=tool_results,
+            question=question, user_mood=user_mood,
         )
-        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
-
-    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and _asks_about_price(question) and rooms:
-        answer = _template_answer()
-        abstain, reason = _evaluate_abstain(
-            question, intent, grounding, tool_results, answer, from_template=True,
-        )
-        return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
 
     faq = tool_results.get("faq_results")
     if not rooms and not faq and intent not in {"GENERAL_HELP", "REQUEST_FAQ"}:
@@ -1149,7 +1148,50 @@ async def _compose_answer_async(
         )
         if specific:
             return await _finalize_composed_answer_async(specific, False, "", verification, stream_callback)
-    return await _finalize_composed_answer_async(answer, abstain, reason, verification, stream_callback)
+    if abstain and rooms and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+        answer = _template_answer()
+        abstain, reason = False, ""
+    return await _finalize_composed_answer_async(
+        answer, abstain, reason, verification, stream_callback,
+        parsed=parsed, grounding=grounding, tool_results=tool_results,
+        question=question, user_mood=user_mood,
+    )
+
+
+def _maybe_repair_answer(
+    answer: str,
+    *,
+    parsed: dict[str, Any] | None,
+    grounding: dict[str, Any] | None,
+    tool_results: dict[str, Any] | None,
+    question: str,
+    user_mood: str,
+    verification: dict[str, Any],
+) -> str:
+    if not parsed or not grounding:
+        return answer
+    rooms = grounding.get("rooms") or []
+    if not rooms:
+        return answer
+    template_answer = _compose_answer_template(
+        parsed,
+        grounding,
+        tool_results or {},
+        question=question,
+        user_mood=user_mood,
+    )
+    from agents.faithfulness import repair_answer_against_grounding
+
+    repaired, meta = repair_answer_against_grounding(
+        answer,
+        intent=parsed.get("intent") or "",
+        rooms=rooms,
+        template_answer=template_answer,
+    )
+    if meta.get("repaired"):
+        verification["answer_repaired"] = True
+        verification["repair_reasons"] = list(meta.get("reasons") or [])
+    return repaired
 
 
 def _evaluate_abstain(
@@ -1184,10 +1226,31 @@ def _finalize_composed_answer(
     abstain: bool,
     abstain_reason: str,
     verification: dict[str, Any],
+    *,
+    parsed: dict[str, Any] | None = None,
+    grounding: dict[str, Any] | None = None,
+    tool_results: dict[str, Any] | None = None,
+    question: str = "",
+    user_mood: str = "normal",
 ) -> dict[str, Any]:
+    rooms = (grounding or {}).get("rooms") or []
+    intent = (parsed or {}).get("intent") or ""
+    if abstain and rooms and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+        abstain = False
+        abstain_reason = ""
     if abstain:
         from agents.reviewer import ABSTAIN_USER_MESSAGE
         answer = ABSTAIN_USER_MESSAGE
+    else:
+        answer = _maybe_repair_answer(
+            answer,
+            parsed=parsed,
+            grounding=grounding,
+            tool_results=tool_results,
+            question=question,
+            user_mood=user_mood,
+            verification=verification,
+        )
     return {
         "answer": answer.strip(),
         "abstain": abstain,
@@ -1202,8 +1265,24 @@ async def _finalize_composed_answer_async(
     abstain_reason: str,
     verification: dict[str, Any],
     stream_callback: Callable[[str], Awaitable[None]] | None = None,
+    *,
+    parsed: dict[str, Any] | None = None,
+    grounding: dict[str, Any] | None = None,
+    tool_results: dict[str, Any] | None = None,
+    question: str = "",
+    user_mood: str = "normal",
 ) -> dict[str, Any]:
-    result = _finalize_composed_answer(answer, abstain, abstain_reason, verification)
+    result = _finalize_composed_answer(
+        answer,
+        abstain,
+        abstain_reason,
+        verification,
+        parsed=parsed,
+        grounding=grounding,
+        tool_results=tool_results,
+        question=question,
+        user_mood=user_mood,
+    )
     await _maybe_stream_answer(result["answer"], stream_callback)
     return result
 

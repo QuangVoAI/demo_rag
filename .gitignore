@@ -50,6 +50,8 @@ deep-research-report.md
 # BO / audit artifacts (regenerated locally)
 python/tests/_bo_test_case_extracted.txt
 python/tests/fixtures/bo_test_case_*.json
+tmp/
+context_memory_testcases.pdf
 
 # Local agent routing artifacts
 .ai-router/
