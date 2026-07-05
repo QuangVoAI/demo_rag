@@ -1416,6 +1416,18 @@ def _targeted_room_answer(
         )
 
     lines: list[str] = []
+    price_line = _price_threshold_line(text, room)
+    if price_line:
+        lines.append(price_line)
+
+    capacity_line = _occupancy_capacity_line(text, room)
+    if capacity_line:
+        lines.append(capacity_line)
+
+    parking_capacity_line = _parking_capacity_line(text, room)
+    if parking_capacity_line:
+        lines.append(parking_capacity_line)
+
     if _question_mentions_availability(text):
         status = room.get("status_desc")
         if room.get("available") is True:
@@ -1475,6 +1487,149 @@ def _targeted_room_answer(
     if not lines:
         return None
     return f"Dạ em kiểm tra theo dữ liệu của **{title}** (#{room_id}) nhé:\n" + "\n".join(lines)
+
+
+def _price_threshold_line(text: str, room: dict[str, Any]) -> str | None:
+    threshold = _extract_price_threshold(text)
+    if not threshold:
+        return None
+    operator, amount = threshold
+    rent = room.get("rent_price")
+    if not isinstance(rent, (int, float)) or rent <= 0:
+        return "- Giá thuê: em chưa có dữ liệu xác minh để so với ngân sách mình hỏi."
+    if operator == "max":
+        fits = rent < amount
+        relation = "dưới"
+        if fits:
+            return f"- Giá thuê: {format_vnd(rent)}/tháng, đang **{relation}** mức {format_vnd(amount)} mình hỏi."
+        return f"- Giá thuê: {format_vnd(rent)}/tháng, **không dưới** mức {format_vnd(amount)} mình hỏi."
+    fits = rent > amount
+    relation = "trên"
+    if fits:
+        return f"- Giá thuê: {format_vnd(rent)}/tháng, đang **{relation}** mức {format_vnd(amount)} mình hỏi."
+    return f"- Giá thuê: {format_vnd(rent)}/tháng, **không trên** mức {format_vnd(amount)} mình hỏi."
+
+
+def _extract_price_threshold(text: str) -> tuple[str, int] | None:
+    import re
+
+    if not re.search(r"\b(?:duoi|toi da|khong qua|nho hon|re hon|tren|hon)\b", text):
+        return None
+    match = re.search(
+        r"\b(duoi|toi da|khong qua|nho hon|re hon|tren|hon)\s*(\d+(?:[.,]\d+)?)\s*(trieu|tr|cu|nghin|ngan|k)?\b",
+        text,
+    )
+    if not match:
+        return None
+    raw_number = match.group(2).replace(",", ".")
+    try:
+        value = float(raw_number)
+    except ValueError:
+        return None
+    unit = match.group(3) or "trieu"
+    if unit in {"nghin", "ngan", "k"}:
+        amount = int(value * 1_000)
+    else:
+        amount = int(value * 1_000_000)
+    operator = "min" if match.group(1) in {"tren", "hon"} else "max"
+    return operator, amount
+
+
+def _occupancy_capacity_line(text: str, room: dict[str, Any]) -> str | None:
+    requested = _requested_occupants(text)
+    if requested is None:
+        return None
+    max_occupants = _room_max_occupants(room)
+    if max_occupants is not None:
+        if requested <= max_occupants:
+            return f"- Số người ở: dữ liệu phòng này cho tối đa {max_occupants} người, nên {requested} người là phù hợp theo dữ liệu hiện có."
+        return f"- Số người ở: dữ liệu phòng này chỉ cho tối đa {max_occupants} người, nên {requested} người là vượt thông tin cho phép."
+    area = room.get("area_m2")
+    area_part = f" Diện tích đang ghi {area} m²." if area else ""
+    return f"- Số người ở: em chưa có dữ liệu xác minh số người tối đa của căn này.{area_part} Mình nên xác nhận lại trước khi chốt."
+
+
+def _requested_occupants(text: str) -> int | None:
+    import re
+
+    match = re.search(r"\b(\d{1,2})\s*(?:nguoi|ban)\b", text)
+    if not match:
+        return None
+    if not (
+        re.search(r"\b(?:o|duoc|phu hop)\b", text)
+        or re.search(r"\b(?:duoc khong|co duoc|co phu hop)\b", text)
+    ):
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
+
+
+def _room_max_occupants(room: dict[str, Any]) -> int | None:
+    import re
+
+    for key in ("max_occupants", "occupants_max", "capacity", "max_people"):
+        value = room.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    text = " ".join(str(part or "") for part in (room.get("embedding_text"), room.get("description"), room.get("house_remark")))
+    patterns = (
+        r"(?:toi da|to[ií]\s+da|max)[^\d]{0,20}(\d{1,2})\s*(?:nguoi|người)",
+        r"so nguoi[^\d]{0,12}(\d{1,2})",
+        r"(\d{1,2})\s*(?:nguoi|người)\s*(?:o|ở)\s*(?:toi da|tối đa|max)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _parking_capacity_line(text: str, room: dict[str, Any]) -> str | None:
+    requested = _requested_vehicle_count(text)
+    if requested is None:
+        return None
+    parking_status = _room_feature_status(room, "Để xe")
+    max_vehicles = _room_max_vehicles(room)
+    if parking_status == "Không":
+        return "- Chỗ để xe: dữ liệu phòng này ghi Không, nên em không xác nhận được việc gửi xe máy."
+    if max_vehicles is not None:
+        if requested <= max_vehicles:
+            return f"- Chỗ để xe: dữ liệu cho tối đa {max_vehicles} xe, nên {requested} xe là phù hợp theo dữ liệu hiện có."
+        return f"- Chỗ để xe: dữ liệu chỉ cho tối đa {max_vehicles} xe, nên {requested} xe là vượt thông tin cho phép."
+    if parking_status == "Có":
+        return f"- Chỗ để xe: dữ liệu có ghi Có, nhưng chưa có số lượng xe tối đa; em chưa dám khẳng định gửi được {requested} xe."
+    return f"- Chỗ để xe: em chưa có dữ liệu xác minh số lượng xe tối đa, nên chưa dám khẳng định gửi được {requested} xe."
+
+
+def _requested_vehicle_count(text: str) -> int | None:
+    import re
+
+    if not re.search(r"\b(?:xe may|xe máy|xe dien|xe)\b", text):
+        return None
+    match = re.search(r"\b(\d{1,2})\s*xe\b", text)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
+
+
+def _room_max_vehicles(room: dict[str, Any]) -> int | None:
+    import re
+
+    for key in ("max_vehicles", "parking_slots", "max_motorbikes"):
+        value = room.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    text = " ".join(str(part or "") for part in (room.get("embedding_text"), room.get("description"), room.get("house_remark")))
+    patterns = (
+        r"(?:toi da|tối đa|max)[^\d]{0,20}(\d{1,2})\s*(?:xe|xe may|xe máy)",
+        r"(?:de|để|gui|gửi|giu|giữ)[^\d]{0,20}(\d{1,2})\s*(?:xe|xe may|xe máy)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _requested_feature_labels(text: str) -> list[str]:

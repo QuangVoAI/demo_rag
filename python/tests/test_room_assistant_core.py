@@ -1151,6 +1151,162 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("Gác: Có", answer)
         self.assertIn("Chiều cao gác", answer)
 
+    def test_hard_room_price_threshold_question_answers_directly(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "PRICEY",
+                "metadata": {"house_name": "Pricey", "room_code": "401", "price": 4_800_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Pricey - 401",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Máy lạnh: Có\n- Ban công: Có",
+            }
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("hard-price-threshold")
+        state["current_room_id"] = "PRICEY"
+        state["last_result_ids"] = ["PRICEY"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        store.save("hard-price-threshold", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Phòng này dưới 4 triệu không?",
+                    session_id="hard-price-threshold",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual([room["room_id"] for room in result["rooms"]], ["PRICEY"])
+        answer = result["answer"]
+        self.assertIn("4.800.000", answer)
+        self.assertIn("không dưới", answer.lower())
+        self.assertIn("4.000.000", answer)
+        self.assertNotIn("Dạ tiện ích có đủ", answer)
+
+    def test_hard_room_capacity_question_abstains_when_unverified(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "CAPACITY_UNKNOWN",
+                "metadata": {"house_name": "Capacity", "room_code": "201", "price": 3_900_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Capacity - 201",
+                "area_m2": 16,
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Máy lạnh: Có",
+            }
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("hard-capacity")
+        state["current_room_id"] = "CAPACITY_UNKNOWN"
+        state["last_result_ids"] = ["CAPACITY_UNKNOWN"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        store.save("hard-capacity", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Phòng này 2 người ở được không?",
+                    session_id="hard-capacity",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
+        answer = result["answer"]
+        self.assertIn("Số người ở", answer)
+        self.assertIn("chưa có dữ liệu xác minh số người tối đa", answer)
+        self.assertIn("16 m²", answer)
+        self.assertNotIn("Dạ tiện ích có đủ", answer)
+
+    def test_hard_parking_capacity_question_does_not_overpromise(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "PARKING_UNKNOWN",
+                "metadata": {"house_name": "Parking", "room_code": "301", "price": 4_200_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Parking - 301",
+                "fees": {"parking": "150k/xe"},
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Để xe: Có\n## Giá & phí\n- Giữ xe: 150k/xe",
+            }
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("hard-parking-capacity")
+        state["current_room_id"] = "PARKING_UNKNOWN"
+        state["last_result_ids"] = ["PARKING_UNKNOWN"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        store.save("hard-parking-capacity", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Phòng này để được 3 xe máy không?",
+                    session_id="hard-parking-capacity",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
+        answer = result["answer"]
+        self.assertIn("Chỗ để xe", answer)
+        self.assertIn("chưa có số lượng xe tối đa", answer)
+        self.assertIn("3 xe", answer)
+        self.assertIn("chưa dám khẳng định", answer)
+        self.assertNotIn("Dạ tiện ích có đủ", answer)
+
+    def test_hard_action_mixed_with_availability_does_not_share_owner_contact(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "OWNER_SAFE",
+                "metadata": {"house_name": "Owner Safe", "room_code": "101", "price": 4_200_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Owner Safe - 101",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7",
+            }
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("hard-owner-contact")
+        state["current_room_id"] = "OWNER_SAFE"
+        state["last_result_ids"] = ["OWNER_SAFE"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        store.save("hard-owner-contact", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Phòng này còn không, nếu còn cho em xin Zalo chủ nhà",
+                    session_id="hard-owner-contact",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(result["intent"], "REQUEST_ACTION")
+        self.assertEqual(result["session_state"]["current_room_id"], "OWNER_SAFE")
+        answer = result["answer"].lower()
+        self.assertIn("chưa nhắn tin hộ", answer)
+        self.assertIn("chat/liên hệ", answer)
+        self.assertNotRegex(answer, r"0\d{8,10}")
+
     def test_negotiation_answer_does_not_commit_discount(self):
         parsed = {"intent": "ASK_ABOUT_ROOM"}
         grounding = {
