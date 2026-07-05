@@ -319,6 +319,9 @@ async def run_room_assistant(
         current_room_id = None
     else:
         current_room_id = parsed.get("current_room_id") or _current_room_from_results(parsed["intent"], rooms)
+    clear_room_context = _should_clear_room_context(parsed, tool_results, rooms, result_ids)
+    if clear_room_context:
+        current_room_id = None
 
     next_state = update_turn_state(
         merged_state,
@@ -326,6 +329,7 @@ async def run_room_assistant(
         current_room_id=current_room_id,
         referenced_room_ids=parsed.get("referenced_room_ids", []),
         result_ids=result_ids,
+        clear_room_context=clear_room_context,
     )
     _update_summary(next_state, question, parsed["intent"])
     save_session_state(next_state, store, ttl_seconds)
@@ -1229,6 +1233,13 @@ def _evaluate_abstain(
         abstain, reason = should_abstain(question, intent, grounding, tool_results, answer)
         if from_template and reason == "unverified_claims":
             return False, ""
+        if from_template and not (grounding.get("rooms") or []) and intent in {
+            "ASK_ABOUT_ROOM",
+            "SUMMARIZE_ROOM",
+            "CALCULATE_COST",
+            "FIND_SIMILAR",
+        }:
+            return False, ""
         return abstain, reason
     except Exception:
         return False, ""
@@ -1317,6 +1328,24 @@ def _current_room_from_results(intent: str, rooms: list[dict[str, Any]]) -> str 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
         return rooms[0].get("room_id")
     return None
+
+
+def _should_clear_room_context(
+    parsed: dict[str, Any],
+    tool_results: dict[str, Any],
+    rooms: list[dict[str, Any]],
+    result_ids: list[str],
+) -> bool:
+    intent = parsed.get("intent")
+    if intent in {"SEARCH_ROOM", "REFINE_SEARCH"} and not result_ids:
+        return True
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and not rooms:
+        return bool(parsed.get("current_room_id") or parsed.get("referenced_room_ids"))
+    if intent == "CALCULATE_COST" and not rooms:
+        return bool(parsed.get("current_room_id") or parsed.get("referenced_room_ids"))
+    if tool_results.get("find_similar_missing_source"):
+        return True
+    return False
 
 
 def _unknown_fields(room: dict[str, Any]) -> list[str]:

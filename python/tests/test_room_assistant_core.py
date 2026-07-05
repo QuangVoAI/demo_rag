@@ -164,6 +164,110 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("BT One", followup["answer"])
         self.assertNotIn("Old Q7", followup["answer"])
 
+    def test_empty_refine_clears_stale_room_context_for_followup(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "OLD_Q7",
+                "metadata": {"house_name": "Old Q7", "room_code": "101", "price": 3_000_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Old Q7 - 101",
+                "amenities": ["air_conditioner"],
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Máy lạnh: Có",
+            },
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("empty-pivot-current")
+        state["current_room_id"] = "OLD_Q7"
+        state["last_result_ids"] = ["OLD_Q7"]
+        state["selected_room_ids"] = ["OLD_Q7"]
+        state["last_intent"] = "SEARCH_ROOM"
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+        ])
+        store.save("empty-pivot-current", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                pivot = asyncio.run(run_room_assistant(
+                    "Đổi sang Bình Thạnh dưới 1 triệu",
+                    session_id="empty-pivot-current",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+                followup = asyncio.run(run_room_assistant(
+                    "Phòng này có máy lạnh không?",
+                    session_id="empty-pivot-current",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(pivot["intent"], "REFINE_SEARCH")
+        self.assertEqual(pivot["rooms"], [])
+        self.assertIsNone(pivot["session_state"]["current_room_id"])
+        self.assertEqual(pivot["session_state"]["last_result_ids"], [])
+        self.assertEqual(pivot["session_state"]["selected_room_ids"], [])
+        self.assertEqual(followup["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(followup["rooms"], [])
+        self.assertIn("mã phòng", followup["answer"].lower())
+        self.assertNotIn("Old Q7", followup["answer"])
+
+    def test_missing_explicit_room_id_clears_stale_room_context(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "OLD_Q7",
+                "metadata": {"house_name": "Old Q7", "room_code": "101", "price": 3_000_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Old Q7 - 101",
+                "amenities": ["air_conditioner"],
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Máy lạnh: Có",
+            },
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("missing-explicit-room")
+        state["current_room_id"] = "OLD_Q7"
+        state["last_result_ids"] = ["OLD_Q7"]
+        state["selected_room_ids"] = ["OLD_Q7"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        store.save("missing-explicit-room", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                missing = asyncio.run(run_room_assistant(
+                    "Phòng #NOPE999 có máy lạnh không?",
+                    session_id="missing-explicit-room",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+                followup = asyncio.run(run_room_assistant(
+                    "Phòng này giá bao nhiêu?",
+                    session_id="missing-explicit-room",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(missing["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(missing["rooms"], [])
+        self.assertIsNone(missing["session_state"]["current_room_id"])
+        self.assertEqual(missing["session_state"]["last_result_ids"], [])
+        self.assertEqual(missing["session_state"]["selected_room_ids"], [])
+        self.assertIn("mã phòng", missing["answer"].lower())
+        self.assertEqual(followup["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(followup["rooms"], [])
+        self.assertIn("mã phòng", followup["answer"].lower())
+        self.assertNotIn("Old Q7", followup["answer"])
+
     def test_search_phrase_after_phong_is_not_room_id(self):
         parsed = parse_intent_and_constraint_patch(
             "tim phong duoi 5 trieu o quan binh thanh co may lanh"

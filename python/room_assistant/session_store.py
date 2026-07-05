@@ -199,18 +199,24 @@ def update_turn_state(
     current_room_id: str | None,
     referenced_room_ids: list[str],
     result_ids: list[str],
+    clear_room_context: bool = False,
 ) -> dict[str, Any]:
     next_state = deepcopy(state)
-    if current_room_id:
+    if clear_room_context:
+        next_state["current_room_id"] = None
+        next_state["selected_room_ids"] = []
+        next_state["last_result_ids"] = []
+    elif current_room_id:
         next_state["current_room_id"] = current_room_id
-    if referenced_room_ids:
-        next_state["selected_room_ids"] = referenced_room_ids[:3]
-    elif intent == "COMPARE_ROOMS" and result_ids:
-        next_state["selected_room_ids"] = result_ids[:3]
-    if result_ids and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
-        # Giữ danh sách so sánh khi refine chỉ trả 1 phòng (vd. đổi quận/ngân sách).
-        if intent in {"SEARCH_ROOM", "FIND_SIMILAR"} or len(result_ids) >= 2:
-            next_state["last_result_ids"] = result_ids
+    if not clear_room_context:
+        if referenced_room_ids:
+            next_state["selected_room_ids"] = referenced_room_ids[:3]
+        elif intent == "COMPARE_ROOMS" and result_ids:
+            next_state["selected_room_ids"] = result_ids[:3]
+        if result_ids and intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+            # Giữ danh sách so sánh khi refine chỉ trả 1 phòng (vd. đổi quận/ngân sách).
+            if intent in {"SEARCH_ROOM", "FIND_SIMILAR"} or len(result_ids) >= 2:
+                next_state["last_result_ids"] = result_ids
     next_state["last_intent"] = intent
     next_state["updated_at"] = utc_now_iso()
     return next_state
