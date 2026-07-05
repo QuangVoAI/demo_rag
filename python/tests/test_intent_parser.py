@@ -67,6 +67,23 @@ class IntentParserTests(unittest.TestCase):
                 self.assertIn({"op": "set", "path": "budget.min", "value": 6_000_000}, parsed["operations"])
                 self.assertIn({"op": "set", "path": "budget.max", "value": 8_000_000}, parsed["operations"])
 
+    def test_search_numbers_are_not_treated_as_ordinals(self):
+        state = default_session_state("s-pdf-ordinal")
+        state["last_intent"] = "SEARCH_ROOM"
+        state["last_result_ids"] = []
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng 4 đến 6 triệu ở quận 7", state)
+        self.assertEqual(parsed["intent"], "SEARCH_ROOM")
+        self.assertFalse(parsed.get("ordinal_out_of_range"))
+        self.assertIn({"op": "set", "path": "budget.min", "value": 4_000_000}, parsed["operations"])
+        self.assertIn({"op": "set", "path": "budget.max", "value": 6_000_000}, parsed["operations"])
+
+        parsed = parse_intent_and_constraint_patch("Tìm phòng 2 người ở, nuôi mèo", state)
+        self.assertEqual(parsed["intent"], "SEARCH_ROOM")
+        self.assertFalse(parsed.get("ordinal_out_of_range"))
+        self.assertIn({"op": "set", "path": "occupants", "value": 2}, parsed["operations"])
+        self.assertIn({"op": "append", "path": "pets_required", "value": "cat"}, parsed["operations"])
+
     def test_move_in_this_month(self):
         parsed = parse_intent_and_constraint_patch("Có thể dọn vào trong tháng này")
         self.assertIn({"op": "set", "path": "move_in_date", "value": "this_month"}, parsed["operations"])
@@ -243,6 +260,20 @@ class IntentParserTests(unittest.TestCase):
             parsed["operations"],
         )
         self.assertEqual(parsed["intent"], "SEARCH_ROOM")
+
+    def test_near_dh_bach_khoa_defaults_to_hcmut_without_bare_alias(self):
+        parsed = parse_intent_and_constraint_patch("Tìm phòng gần ĐH Bách Khoa")
+        self.assertIn(
+            {"op": "append", "path": "location.near_landmarks", "value": "hcmut"},
+            parsed["operations"],
+        )
+
+        bare = parse_intent_and_constraint_patch("Tìm phòng gần Bách Khoa")
+        bare_landmarks = [
+            op["value"] for op in bare["operations"]
+            if op.get("path") == "location.near_landmarks"
+        ]
+        self.assertEqual(bare_landmarks, [])
 
     def test_async_router_verifier_keeps_regex_hard_slots_on_conflict(self):
         state = default_session_state("s-verifier")
@@ -433,6 +464,15 @@ class IntentParserTests(unittest.TestCase):
         self.assertEqual(parsed["intent"], "SEARCH_ROOM")
         self.assertEqual(parsed["referenced_room_ids"], [])
 
+    def test_budget_range_is_not_treated_as_room_reference(self):
+        parsed = parse_intent_and_constraint_patch("Tìm phòng 3-4 triệu cho 2 người")
+        self.assertEqual(parsed["intent"], "SEARCH_ROOM")
+        self.assertEqual(parsed["referenced_room_ids"], [])
+        self.assertIsNone(parsed["current_room_id"])
+        self.assertIn({"op": "set", "path": "budget.min", "value": 3_000_000}, parsed["operations"])
+        self.assertIn({"op": "set", "path": "budget.max", "value": 4_000_000}, parsed["operations"])
+        self.assertIn({"op": "set", "path": "occupants", "value": 2}, parsed["operations"])
+
     def test_compare_first_and_third_item_without_phong_word(self):
         state = default_session_state("s-compare-can")
         state["last_result_ids"] = ["A101", "B202", "C303"]
@@ -448,6 +488,89 @@ class IntentParserTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("đổi sang quận 7", state)
         preferred = [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
         self.assertNotIn("bright", preferred)
+
+    def test_location_pivot_bare_district_does_not_add_bright_or_current_room(self):
+        state = default_session_state("s-pivot-bare-district")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+        parsed = parse_intent_and_constraint_patch("Đổi sang Bình Thạnh nhưng vẫn dưới 5 triệu", state)
+
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+        self.assertIsNone(parsed["current_room_id"])
+        self.assertEqual(parsed["referenced_room_ids"], [])
+        self.assertIn({"op": "append", "path": "location.districts", "value": "binh thanh"}, parsed["operations"])
+        self.assertIn({"op": "set", "path": "budget.max", "value": 5_000_000}, parsed["operations"])
+        preferred = [op["value"] for op in parsed["operations"] if op.get("path") == "amenities_preferred"]
+        self.assertNotIn("bright", preferred)
+
+    def test_refine_remove_amenity_does_not_turn_into_current_room_detail(self):
+        state = default_session_state("s-refine-no-ac")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "amenities_required", "value": "air_conditioner"},
+        ])
+
+        parsed = parse_intent_and_constraint_patch("Không cần máy lạnh nữa", state)
+        self.assertEqual(parsed["intent"], "REFINE_SEARCH")
+        self.assertIsNone(parsed["current_room_id"])
+        self.assertEqual(parsed["referenced_room_ids"], [])
+        self.assertIn(
+            {"op": "remove", "path": "amenities_required", "value": "air_conditioner"},
+            parsed["operations"],
+        )
+
+    def test_comparative_near_there_does_not_create_garbage_landmark(self):
+        state = default_session_state("s-near-there-hon")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Có cái nào gần đó hơn không?", state)
+        landmarks = [op["value"] for op in parsed["operations"] if op.get("path") == "location.near_landmarks"]
+        self.assertEqual(landmarks, [])
+        self.assertNotEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+
+        generic = parse_intent_and_constraint_patch("Căn nào gần trường hơn?", state)
+        generic_landmarks = [
+            op["value"] for op in generic["operations"]
+            if op.get("path") == "location.near_landmarks"
+        ]
+        self.assertEqual(generic_landmarks, [])
+
+    def test_capacity_question_about_current_room_does_not_write_occupants_filter(self):
+        state = default_session_state("s-room-capacity")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "SEARCH_ROOM"
+
+        for question in ("2 người ở được không?", "Lấy phòng 2 người ở được không?"):
+            with self.subTest(question=question):
+                parsed = parse_intent_and_constraint_patch(question, state)
+                self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+                self.assertEqual(parsed["current_room_id"], "B202")
+                self.assertEqual(parsed["referenced_room_ids"], ["B202"])
+                self.assertNotIn(
+                    {"op": "set", "path": "occupants", "value": 2},
+                    parsed["operations"],
+                )
+
+        fresh = parse_intent_and_constraint_patch("Tìm phòng cho 2 người", None)
+        self.assertEqual(fresh["intent"], "SEARCH_ROOM")
+        self.assertIn({"op": "set", "path": "occupants", "value": 2}, fresh["operations"])
+
+    def test_zalo_owner_request_is_read_only_action_not_room_detail(self):
+        state = default_session_state("s-zalo-owner")
+        state["current_room_id"] = "B202"
+        state["last_result_ids"] = ["A101", "B202", "C303"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Gửi Zalo chủ nhà phòng này cho em", state)
+        self.assertEqual(parsed["intent"], "REQUEST_ACTION")
+        self.assertEqual(parsed["requested_action"], "message_owner")
+        self.assertEqual(parsed["current_room_id"], "B202")
 
     def test_deictic_this_that_viewing_resolves_current_room_id(self):
         state = default_session_state("s-deictic-this")
@@ -490,6 +613,26 @@ class IntentParserTests(unittest.TestCase):
         parsed = parse_intent_and_constraint_patch("Phòng này có máy lạnh không?", state)
         self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
         self.assertEqual(parsed["current_room_id"], "62963aae137e2a3d7e03c9d0")
+
+    def test_contextual_period_total_routes_to_cost(self):
+        state = default_session_state("s-cost-period")
+        state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Ở 6 tháng thì tổng bao nhiêu?", state)
+        self.assertEqual(parsed["intent"], "CALCULATE_COST")
+        self.assertEqual(parsed["current_room_id"], "A101")
+
+    def test_unverified_area_attribute_resolves_current_room(self):
+        state = default_session_state("s-area-safety")
+        state["current_room_id"] = "A101"
+        state["last_result_ids"] = ["A101"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+
+        parsed = parse_intent_and_constraint_patch("Khu đó có hay bị ngập không?", state)
+        self.assertEqual(parsed["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual(parsed["current_room_id"], "A101")
 
     def test_schedule_action_keywords_distinguish_cancel_reschedule(self):
         state = default_session_state("s-schedule")

@@ -57,18 +57,19 @@ def _run_session(
 
     with patch("room_assistant.intent._llm_classify_intent", _regex_aligned_llm):
         with patch("room_assistant.intent._llm_verify_routing_decision", return_value={}):
-            for question in questions:
-                result = asyncio.run(run_room_assistant(
-                    question,
-                    history=history,
-                    session_id=session_id,
-                    repository=repo,
-                    session_store=store,
-                    semantic_index=semantic_index,
-                ))
-                results.append(result)
-                history.append({"role": "user", "content": question})
-                history.append({"role": "assistant", "content": result.get("answer") or ""})
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                for question in questions:
+                    result = asyncio.run(run_room_assistant(
+                        question,
+                        history=history,
+                        session_id=session_id,
+                        repository=repo,
+                        session_store=store,
+                        semantic_index=semantic_index,
+                    ))
+                    results.append(result)
+                    history.append({"role": "user", "content": question})
+                    history.append({"role": "assistant", "content": result.get("answer") or ""})
     return results
 
 
@@ -133,7 +134,7 @@ class MongoBehaviorScenarioTests(unittest.TestCase):
             (
                 "Phòng đẹp mà giá hơi cao, em thương chị giảm giá tí được không?",
                 "REQUEST_FAQ",
-                ("linh hoạt", "100"),
+                ("không có dữ liệu", "không tự chốt"),
             ),
             (
                 "Đắt quá em ơi, bớt giá chút cho chị đi",
@@ -206,6 +207,51 @@ class MongoBehaviorScenarioTests(unittest.TestCase):
         rooms = result.get("rooms") or []
         self.assertEqual([room["room_id"] for room in rooms], [YUHOME_ROOM_ID])
         assert_rooms_match_mongo(self, self.repo, rooms)
+
+    def test_hard_pet_denied_current_room_suggests_mongo_backed_alternative(self) -> None:
+        denied, alternatives = self._find_pet_denied_room_with_alternatives()
+        if not denied or not alternatives:
+            self.skipTest("No Mongo pet-denied room with same-district pet-friendly alternative found")
+
+        question = (
+            f"Em có nuôi mèo, phòng #{denied['room_id']} được không? "
+            "Nếu không thì gợi ý căn cùng khu tầm giá gần đó giúp em."
+        )
+        result = _run_session(self.repo, [question], session_id="hard-pet-denied-mongo", use_qdrant=False)[-1]
+        answer = result.get("answer") or ""
+
+        self.assertEqual(result["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual([room["room_id"] for room in (result.get("rooms") or [])], [denied["room_id"]])
+        self.assertIn("Thú cưng", answer)
+        self.assertIn("Không", answer)
+        self.assertNotIn("chưa có dữ liệu xác minh đủ", answer.lower())
+        alt_ids = [room["room_id"] for room in alternatives[:3]]
+        self.assertTrue(any(room_id in answer for room_id in alt_ids), msg=answer[:300])
+        for alt in alternatives[:3]:
+            if alt["room_id"] in answer:
+                expected_price = f"{int(alt['rent_price']):,}".replace(",", ".")
+                self.assertIn(expected_price, answer)
+
+    def _find_pet_denied_room_with_alternatives(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        available_rooms = self.repo.search_by_constraints({}, limit=1000)
+        for room in available_rooms:
+            text = (room.get("embedding_text") or "").lower()
+            rent = room.get("rent_price")
+            district = room.get("district")
+            if "thú cưng: không" not in text or not isinstance(rent, int) or not district:
+                continue
+            constraints = {
+                "location": {"districts": [district]},
+                "budget": {"max": rent + 1_000_000, "max_operator": "lte"},
+                "pets_required": ["cat"],
+            }
+            alternatives = [
+                item for item in self.repo.search_by_constraints(constraints, limit=4)
+                if item.get("room_id") != room.get("room_id")
+            ]
+            if alternatives:
+                return room, alternatives
+        return None, []
 
     def test_warm_session_recovers_after_off_topic_detour(self) -> None:
         questions = [

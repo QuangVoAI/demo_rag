@@ -99,6 +99,71 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertEqual(next_state["constraints"]["location"]["districts"], ["quan 7"])
         self.assertEqual(next_state["constraints"]["location"]["near_landmarks"], ["lotte"])
 
+    def test_refine_search_updates_current_room_for_followup_deictic(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "OLD_Q7",
+                "metadata": {"house_name": "Old Q7", "room_code": "101", "price": 3_000_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "title": "Old Q7 - 101",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7",
+            },
+            {
+                "room_id": "BT_1",
+                "metadata": {"house_name": "BT One", "room_code": "201", "price": 4_500_000, "status_code": "0", "district_name": "Bình Thạnh"},
+                "available": True,
+                "status": "active",
+                "title": "BT One - 201",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Bình Thạnh",
+            },
+            {
+                "room_id": "BT_2",
+                "metadata": {"house_name": "BT Two", "room_code": "202", "price": 4_800_000, "status_code": "0", "district_name": "Bình Thạnh"},
+                "available": True,
+                "status": "active",
+                "title": "BT Two - 202",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Bình Thạnh",
+            },
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("pivot-current")
+        state["current_room_id"] = "OLD_Q7"
+        state["last_result_ids"] = ["OLD_Q7"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        state, _ = apply_operations(state, [
+            {"op": "append", "path": "location.districts", "value": "quan 7"},
+        ])
+        store.save("pivot-current", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                pivot = asyncio.run(run_room_assistant(
+                    "Đổi sang Bình Thạnh nhưng vẫn dưới 5 triệu",
+                    session_id="pivot-current",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+                followup = asyncio.run(run_room_assistant(
+                    "Phòng này giá bao nhiêu?",
+                    session_id="pivot-current",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(pivot["intent"], "REFINE_SEARCH")
+        self.assertEqual([room["room_id"] for room in pivot["rooms"]], ["BT_1", "BT_2"])
+        self.assertEqual(pivot["session_state"]["current_room_id"], "BT_1")
+        self.assertEqual(followup["intent"], "ASK_ABOUT_ROOM")
+        self.assertEqual([room["room_id"] for room in followup["rooms"]], ["BT_1"])
+        self.assertIn("BT One", followup["answer"])
+        self.assertNotIn("Old Q7", followup["answer"])
+
     def test_search_phrase_after_phong_is_not_room_id(self):
         parsed = parse_intent_and_constraint_patch(
             "tim phong duoi 5 trieu o quan binh thanh co may lanh"
@@ -937,6 +1002,199 @@ class RoomAssistantCoreTests(unittest.TestCase):
         self.assertIn("Tiền thuê mỗi tháng", answer)
         self.assertIn("Tiền cọc", answer)
         self.assertIn("Tổng tạm tính 6 tháng", answer)
+
+    def test_generic_availability_search_asks_for_discovery_fields(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "A101",
+                "metadata": {"house_name": "A", "room_code": "101", "price": 3_000_000, "status_code": "0"},
+                "available": True,
+                "status": "active",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7",
+            }
+        ])
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Còn phòng không anh?",
+                    session_id="pdf-discovery",
+                    repository=repo,
+                    session_store=InMemorySessionStore(),
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(result["intent"], "SEARCH_ROOM")
+        self.assertEqual(result["rooms"], [])
+        answer = result["answer"].lower()
+        self.assertIn("khu vực", answer)
+        self.assertIn("ngân sách", answer)
+        self.assertIn("số người", answer)
+
+    def test_targeted_balcony_answer_does_not_dump_all_amenities(self):
+        parsed = {"intent": "ASK_ABOUT_ROOM"}
+        grounding = {
+            "rooms": [{
+                "room_id": "R1",
+                "title": "CN03 LPM - P.03.2",
+                "rent_price": 900_000,
+                "district": "Quận 7",
+                "embedding_text": "## Tiện ích\n- Máy lạnh: Không\n- Ban công: Không\n- Cửa sổ: Không\n- Wifi: Free",
+            }],
+            "constraints": {},
+        }
+
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {"rooms": grounding["rooms"]},
+            question="Phòng này có ban công không?",
+        )
+
+        self.assertIn("Ban công: Không", answer)
+        self.assertNotIn("Máy lạnh: Không, Ban công: Không, Cửa sổ", answer)
+
+    def test_pet_denied_answer_explains_current_room_and_suggests_alternative(self):
+        repo = InMemoryRoomRepository([
+            {
+                "room_id": "NO_PET",
+                "metadata": {"house_name": "No Pet", "room_code": "101", "price": 3_800_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Thú cưng: Không\n- Wifi: Có",
+            },
+            {
+                "room_id": "PET_OK",
+                "metadata": {"house_name": "Pet OK", "room_code": "202", "price": 4_100_000, "status_code": "0", "district_name": "Quận 7"},
+                "available": True,
+                "status": "active",
+                "embedding_text": "## Thông tin nhà\n- Địa chỉ: Quận 7\n## Tiện ích\n- Thú cưng: Có\n- Wifi: Có",
+            },
+        ])
+        store = InMemorySessionStore()
+        state = default_session_state("pdf-pet")
+        state["current_room_id"] = "NO_PET"
+        state["last_result_ids"] = ["NO_PET", "PET_OK"]
+        state["last_intent"] = "ASK_ABOUT_ROOM"
+        store.save("pdf-pet", state, ttl_seconds=3600)
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Em có nuôi mèo, phòng này được không?",
+                    session_id="pdf-pet",
+                    repository=repo,
+                    session_store=store,
+                    semantic_index=None,
+                ))
+
+        answer = result["answer"]
+        self.assertIn("Thú cưng", answer)
+        self.assertIn("Không", answer)
+        self.assertIn("PET_OK", answer)
+        self.assertNotIn("chưa có dữ liệu xác minh đủ", answer.lower())
+
+    def test_unverified_area_attribute_answer_is_safe_and_specific(self):
+        parsed = {"intent": "ASK_ABOUT_ROOM"}
+        grounding = {
+            "rooms": [{
+                "room_id": "R1",
+                "title": "B6 CƯ XÁ PHÚ LÂM B - 302",
+                "rent_price": 4_600_000,
+                "district": "Quận 6",
+                "embedding_text": "## Tiện ích\n- Máy lạnh: Có\n- Ban công: Có",
+            }],
+            "constraints": {},
+        }
+
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {"rooms": grounding["rooms"]},
+            question="Khu đó có hay bị ngập không?",
+        )
+
+        self.assertIn("tình trạng ngập", answer)
+        self.assertIn("không dám khẳng định", answer.lower())
+        self.assertNotIn("Dạ tiện ích có đủ", answer)
+
+    def test_operational_multi_attribute_answer_keeps_known_and_unknown_parts(self):
+        parsed = {"intent": "ASK_ABOUT_ROOM"}
+        grounding = {
+            "rooms": [{
+                "room_id": "R1",
+                "title": "Phòng vận hành",
+                "rent_price": 4_500_000,
+                "district": "Quận 7",
+                "fees": {"electricity": "4k/kWh", "water": "100k/người"},
+                "embedding_text": "## Tiện ích\n- Gác: Có\n- Giờ giấc: Tự do\n## Giá & phí\n- Điện: 4k/kWh\n- Nước: 100k/người",
+            }],
+            "constraints": {},
+        }
+
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {"rooms": grounding["rooms"]},
+            question="Phòng trệt hay lầu, điện nước sao, có cọc không, gác cao không?",
+        )
+
+        self.assertIn("Điện: 4k/kWh", answer)
+        self.assertIn("Nước: 100k/người", answer)
+        self.assertIn("Tiền cọc: em chưa có dữ liệu xác minh", answer)
+        self.assertIn("Gác: Có", answer)
+        self.assertIn("Chiều cao gác", answer)
+
+    def test_negotiation_answer_does_not_commit_discount(self):
+        parsed = {"intent": "ASK_ABOUT_ROOM"}
+        grounding = {
+            "rooms": [{
+                "room_id": "R1",
+                "title": "449/17 TRƯỜNG CHINH - P.217",
+                "rent_price": 3_100_000,
+                "district": "Quận Tân Bình",
+                "embedding_text": "## Tiện ích\n- Giường: Không\n- Tủ quần áo: Không",
+            }],
+            "constraints": {},
+        }
+
+        answer = _compose_answer_template(
+            parsed,
+            grounding,
+            {"rooms": grounding["rooms"]},
+            question="Em không cần nội thất, có thể deal giá lại không?",
+        )
+
+        self.assertIn("không tự chốt mức giảm", answer.lower())
+        self.assertNotRegex(answer, r"100|200|\d+%")
+
+    def test_viewing_fee_faq_answer_stays_on_policy_topic(self):
+        repo = InMemoryRoomRepository([])
+
+        async def no_llm(_question, _state):
+            return {}
+
+        with patch("room_assistant.intent._llm_classify_intent", no_llm):
+            with patch("agents.sentiment_analyzer.analyze_mood", return_value=("normal", 0.0)):
+                result = asyncio.run(run_room_assistant(
+                    "Nhân viên dẫn đi xem có mất phí gì không em?",
+                    session_id="pdf-viewing-fee",
+                    repository=repo,
+                    session_store=InMemorySessionStore(),
+                    semantic_index=None,
+                ))
+
+        self.assertEqual(result["intent"], "REQUEST_FAQ")
+        answer = result["answer"].lower()
+        self.assertIn("phí dẫn xem", answer)
+        self.assertIn("không tự bịa", answer)
+        self.assertNotIn("điện, nước", answer)
 
     def test_general_help_price_objection_uses_empathic_script(self):
         parsed = {"intent": "GENERAL_HELP"}

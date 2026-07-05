@@ -43,6 +43,8 @@ ACTION_KEYWORDS = {
     "message_owner": (
         "nhắn chủ", "nhan chu", "gửi tin", "gui tin",
         "liên hệ chủ", "lien he chu", "nhắn tin cho chủ",
+        "zalo chủ", "zalo chu", "gửi zalo", "gui zalo",
+        "xin zalo", "số zalo", "so zalo", "zalo chủ nhà", "zalo chu nha",
         "chat ngay", "gọi hỗ trợ", "goi ho tro", "gọi tư vấn",
         "goi tu van", "gọi tổng đài", "goi tong dai",
         "số điện thoại", "so dien thoai", "xin số", "xin so",
@@ -305,14 +307,15 @@ DETAIL_FIELD_KEYWORDS: tuple[str, ...] = (
     "gac", "noi that", "full noi that", "nem", "giuong", "tu quan ao", "ke bep", "thang may",
     "may lanh", "dien", "nuoc", "quan ly", "xac thuc", "anhome ho tro",
     "hoi them", "cho biet them", "cho minh biet", "chi tiet", "them chi tiet",
-    "thong tin them", "noi ro them", "noi ro hon",
+    "thong tin them", "noi ro them", "noi ro hon", "view", "view song",
+    "huong dong", "huong tay", "huong nam", "huong bac", "ngap", "bi ngap",
 )
 
 ROOM_REFERENCE_KEYWORDS: tuple[str, ...] = (
     "phong nay", "phong do", "phong tren", "phong kia", "can tren", "can kia",
     "cai tren", "cai duoi", "cai kia", "cai vua roi", "vua roi", "vua noi",
     "dang xem", "can ho nay", "can nay", "cho nay", "nha nay", "muc nay", "tin nay",
-    "khu nay",
+    "khu nay", "khu do",
 )
 
 COST_FIELD_KEYWORDS: tuple[str, ...] = (
@@ -511,6 +514,8 @@ def _looks_like_area_measurement(value: str) -> bool:
 
 def _looks_like_room_id(value: str) -> bool:
     if _looks_like_area_measurement(value):
+        return False
+    if re.fullmatch(r"\d{1,2}\s*[-–]\s*\d{1,2}", str(value or "").strip()):
         return False
     return any(ch.isdigit() for ch in value)
 
@@ -843,10 +848,11 @@ def _contains_phrase(normalized: str, phrase: str) -> bool:
 _LANDMARK_TRAILING_FILLER: frozenset[str] = frozenset({
     "a", "ah", "vay", "v", "z", "nha", "nhe", "nhi", "ne",
     "ko", "k", "kg", "khong", "oi", "luon", "do", "day", "kia",
+    "hon",
 })
 # Đại từ chỉ định thuần — không phải địa danh thật ("gần đó", "gần đây", "gần kia").
 _LANDMARK_REFERENCE_ONLY: frozenset[str] = frozenset({
-    "do", "day", "kia", "nay",
+    "do", "day", "kia", "nay", "truong",
 })
 
 
@@ -869,7 +875,10 @@ def _clean_landmark(value: str) -> str | None:
     normalized = normalize_landmark(result)
     if normalized:
         return normalized
-    if _should_drop_unresolved_landmark(_norm_landmark(result)):
+    norm_result = _norm_landmark(result)
+    if norm_result in {"dh bach khoa", "dai hoc bach khoa", "truong dai hoc bach khoa"}:
+        return "hcmut"
+    if _should_drop_unresolved_landmark(norm_result):
         return None
     return result
 
@@ -1068,6 +1077,9 @@ def _is_location_pivot_phrase(normalized: str) -> bool:
         normalized,
     ):
         return True
+    if re.search(r"\b(?:doi|đổi|chuyen|chuyển|sang|ve|về)\b", normalized):
+        if any(_contains_phrase(normalized, alias) for alias in DISTRICT_ALIASES):
+            return True
     if re.match(r"^(?:khong|không)\s*,", normalized) and re.search(
         r"\b(?:quan|q\.?|phuong|phường)\b",
         normalized,
@@ -1087,6 +1099,24 @@ def _is_attribute_confirmation_question(normalized: str) -> bool:
     if re.search(r"\b(?:khong|không)\s*\??\s*$", normalized):
         return True
     return False
+
+
+def _is_capacity_question_about_current_room(
+    normalized: str,
+    current_state: dict[str, Any] | None,
+) -> bool:
+    if not _has_current_room(current_state):
+        return False
+    if re.search(r"\b(?:tim|tìm|loc|lọc|can thue|cần thuê|muon thue|muốn thuê)\b", normalized):
+        return False
+    if re.search(r"\b(?:co|có|con|còn)\s+(?:can|căn|phong|phòng|nha|nhà)\s+nao\b", normalized):
+        return False
+    has_occupants = bool(re.search(r"\b\d{1,2}\s*(?:nguoi|người|ban|bạn)\b", normalized))
+    asks_fit = bool(
+        re.search(r"\b(?:o|ở)\s+(?:duoc|được)\b", normalized)
+        or re.search(r"\b(?:duoc khong|được không|phu hop|phù hợp)\b", normalized)
+    )
+    return has_occupants and asks_fit
 
 
 def _looks_like_session_constraint_refinement(
@@ -1114,6 +1144,9 @@ def _looks_like_session_constraint_refinement(
         normalized,
     ):
         return True
+    if re.search(r"\b(?:khong|không)\s+(?:can|cần|muon|muốn)\b", normalized):
+        if any(_contains_phrase(normalized, alias) for alias in AMENITY_ALIASES):
+            return True
     if re.search(
         r"\b(?:co|con)\s+(?:may lanh|máy lạnh|noi that|nội thất|cho de xe|chỗ để xe|"
         r"ban cong|ban công|may giat|máy giặt|tu lanh|tủ lạnh|wifi)\b",
@@ -1135,6 +1168,8 @@ def _is_room_detail_question(normalized: str, ids: list[str], current_state: dic
         return False
     if _is_location_pivot_phrase(normalized):
         return False
+    if _is_capacity_question_about_current_room(normalized, current_state):
+        return True
     if re.search(r"\b(?:co|con)\s+(?:can|phong|nha)\s+nao\b", normalized):
         return False
     if re.search(r"\b(?:can|phong|nha)\s+nao\s+(?:co|con)\b", normalized):
@@ -1263,9 +1298,12 @@ def _ordinal_request_index(normalized: str, current_state: dict[str, Any] | None
     match = re.search(r"\b(?:chon|chọn|lay|lấy)\s+(?:phong|phòng)?\s*(?:so|số|#)?\s*(\d{1,2})\b", normalized)
     if not match:
         match = re.search(r"\b(?:phong|phòng)\s*(?:so|số|thu|thứ|#)\s*(\d{1,2})\b", normalized)
-    if not match:
-        match = re.search(r"\b(?:phong|phòng)\s*(\d{1,2})\b", normalized)
     if match:
+        return int(match.group(1)) - 1
+    match = re.search(r"\b(?:phong|phòng)\s*(\d{1,2})\b", normalized)
+    if match:
+        if _bare_room_number_is_search_quantity(normalized, match):
+            return None
         return int(match.group(1)) - 1
     if re.search(r"\b(?:phong|phòng)\s+(?:dau tien|đầu tiên|thu nhat|thứ nhất|so mot|số một|1)\b", normalized):
         return 0
@@ -1276,6 +1314,25 @@ def _ordinal_request_index(normalized: str, current_state: dict[str, Any] | None
     if word_match:
         return _ORDINAL_WORD_INDEX.get(word_match.group(1))
     return None
+
+
+def _bare_room_number_is_search_quantity(normalized: str, match: re.Match[str]) -> bool:
+    """Avoid treating "tìm phòng 2 người" / "phòng 4 đến 6 triệu" as ordinal picks."""
+    head = normalized[:match.start()]
+    tail = normalized[match.end():]
+    if re.search(
+        r"^\s*(?:nguoi|người|ban|bạn|den|đến|toi|tới|-|trieu|triệu|tr\b|cu\b|củ\b|"
+        r"m\b|m2\b|m²|thang|tháng)\b",
+        tail,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:tim|tìm|can|cần|muon|muốn|thue|thuê|loc|lọc)\s+"
+            r"(?:cho\s+)?(?:toi|tôi|minh|mình|em|anh|chị|chi)?\s*$",
+            head,
+        )
+    )
 
 
 _DETAIL_SEARCH_OP_PATHS = frozenset({
@@ -1321,7 +1378,8 @@ def _strip_detail_question_search_ops(
         normalized, referenced_room_ids, current_state
     ):
         if not _has_keyword(normalized, ROOM_REFERENCE_KEYWORDS):
-            return operations
+            if not _is_capacity_question_about_current_room(normalized, current_state):
+                return operations
     return [op for op in operations if op.get("path") not in _DETAIL_SEARCH_OP_PATHS]
 
 
@@ -1370,7 +1428,7 @@ def _selected_room_id_from_deictic(normalized: str, current_state: dict[str, Any
     if context_room and (
         re.search(r"\b(?:can|phong|cai|tin|muc|nha|cho|khu)\s+nay\b", normalized)
         or re.search(r"\bdang\s+xem\b", normalized)
-        or re.search(r"\b(?:can|phong|cai)\s+do\b", normalized)
+        or re.search(r"\b(?:can|phong|cai|khu)\s+do\b", normalized)
     ):
         return str(context_room)
 
@@ -1820,6 +1878,8 @@ def _regex_classify(
         return "ASK_ABOUT_ROOM", 1.0
     if _selected_room_id_from_deictic(normalized, current_state):
         return "ASK_ABOUT_ROOM", 1.0
+    if _is_contextual_cost_question(normalized, current_state):
+        return "CALCULATE_COST", 1.0
     if _is_room_detail_question(normalized, ids, current_state):
         return "ASK_ABOUT_ROOM", 1.0
     if ids and _has_keyword(normalized, DETAIL_FIELD_KEYWORDS):
@@ -1844,6 +1904,14 @@ def _regex_classify(
         return "REFINE_SEARCH", 0.75
 
     return "GENERAL_HELP", 0.6
+
+
+def _is_contextual_cost_question(normalized: str, current_state: dict[str, Any] | None) -> bool:
+    if not _has_current_room(current_state):
+        return False
+    has_period = bool(re.search(r"\b(?:o|ở)\s+\d{1,2}\s*(?:thang|tháng|nam|năm)\b", normalized))
+    asks_total = bool(re.search(r"\b(?:tong|tổng|bao nhieu|bao nhiêu|chi phi|tien|tiền)\b", normalized))
+    return has_period and asks_total
 
 
 # ---------------------------------------------------------------------------

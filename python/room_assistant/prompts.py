@@ -106,6 +106,10 @@ SEARCH_SUCCESS_CTA = (
     "\nAnh/chị ưng căn nào chưa ạ? Nếu rảnh thì sắp xếp ghé qua xem thực tế nha, "
     "phòng bên ngoài đẹp hơn ảnh nhiều ạ 😊"
 )
+SEARCH_NEEDS_DISCOVERY = (
+    "Dạ còn phòng ạ. Anh/chị cho em xin thêm khu vực ưu tiên, tầm ngân sách, "
+    "số người ở hoặc thời điểm dự kiến dọn vào để em lọc đúng phòng còn trống nha."
+)
 
 UNKNOWN_DISTRICT = "chưa rõ khu vực"
 LANDMARK_HINT_SUFFIX = ", {hint}"

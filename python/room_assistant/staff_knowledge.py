@@ -53,11 +53,24 @@ STAFF_FAQ: list[dict[str, Any]] = [
         ),
     },
     {
+        "topic": "viewing_fee",
+        "keywords": (
+            "phí dẫn xem", "phi dan xem", "dẫn đi xem", "dan di xem",
+            "dẫn xem", "dan xem", "mất phí xem", "mat phi xem",
+            "xem có mất phí", "xem co mat phi",
+        ),
+        "answer": (
+            "Dạ em chưa có dữ liệu chính sách đủ chắc để khẳng định có hay không có phí dẫn xem cho mọi trường hợp ạ. "
+            "Anh/chị nên xác nhận trực tiếp trên tin đăng hoặc kênh chính thức của nhatrovn trước khi đi xem; "
+            "em không tự bịa thêm khoản phí ngoài dữ liệu."
+        ),
+    },
+    {
         "topic": "negotiate",
         "keywords": ("giảm giá", "giam gia", "thương lượng", "thuong luong", "cao quá", "cao qua", "đắt quá"),
         "answer": (
-            "Dạ em hiểu mà ạ. Giá phòng đôi khi chủ nhà có thể linh hoạt **100–200k** nếu ở lâu dài, "
-            "nhưng em không hứa trước được — quan trọng là mình xem phòng ưng ý trước đã nha. "
+            "Dạ phần giá có thể trao đổi thêm với chủ nhà, nhưng em không có dữ liệu để tự chốt mức giảm hay cam kết giảm giá ạ. "
+            "Mình xem phòng ưng ý trước rồi hỏi chủ nhà xác nhận trực tiếp sẽ chắc hơn nha. "
             "Anh/chị muốn tầm giá dễ thở hơn, em lọc thêm khu lân cận giúp ạ."
         ),
     },

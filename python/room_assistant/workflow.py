@@ -108,6 +108,7 @@ from .prompts import (
     format_request_action_answer,
     SEARCH_ALTERNATIVE_OPENING,
     SEARCH_ALTERNATIVE_ROOM_LINE,
+    SEARCH_NEEDS_DISCOVERY,
     SEARCH_NO_RESULT_BUDGET_FRUSTRATED_PREFIX,
     SEARCH_NO_RESULT_BUDGET_LINE,
     SEARCH_NO_RESULT_BUDGET_ONLY,
@@ -427,7 +428,9 @@ def _execute_workflow(
                 "retrieve_room_context", {"room_id": lookup_ref}, context,
             )
             if detail.get("room"):
-                return {"room_context": detail, "rooms": [detail["room"]], "fast_path": True}
+                payload = {"room_context": detail, "rooms": [detail["room"]], "fast_path": True}
+                _attach_pet_alternatives(payload, question, context)
+                return payload
 
     # 2. Simple Search vs Complex Planner routing
     # If the user asks a simple question or planner is disabled
@@ -437,6 +440,8 @@ def _execute_workflow(
         if is_complex:
             # Route to planner (simulated here by standard search but indicating complex branch)
             context.planner_invoked = True
+        if _needs_search_discovery(question, constraints):
+            return {"rooms": [], "needs_discovery": True}
 
         rooms = _tool_registry.execute(
             "search_rooms",
@@ -495,6 +500,7 @@ def _execute_workflow(
             "room_context": detail,
             "rooms": [detail["room"]] if detail.get("room") else [],
         }
+        _attach_pet_alternatives(payload, question, context)
         try:
             from room_assistant.staff_knowledge import match_staff_faq
             if match_staff_faq(question):
@@ -786,6 +792,8 @@ def _compose_answer_template(
     rooms = grounding["rooms"]
     constraints = grounding.get("constraints", {})
     if intent in {"SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"}:
+        if tool_results.get("needs_discovery"):
+            return SEARCH_NEEDS_DISCOVERY
         if not rooms:
             alternative_rooms = [item for item in (tool_results.get("alternative_rooms") or []) if item]
             if alternative_rooms:
@@ -841,6 +849,9 @@ def _compose_answer_template(
         if not rooms:
             return ASK_ROOM_MISSING_ID
         room = rooms[0]
+        targeted = _targeted_room_answer(question, room, tool_results)
+        if targeted:
+            return targeted
         insufficient = _verified_data_insufficient_message(
             question,
             room,
@@ -994,6 +1005,9 @@ def _compose_answer_template(
         return GENERAL_HELP_PRICE_OBJECTION
     if intent == "GENERAL_HELP" and _is_off_topic_question(question):
         return GENERAL_HELP_OFF_TOPIC
+    special_general = _special_general_room_help(question)
+    if special_general:
+        return special_general
     return GENERAL_HELP_DEFAULT
 
 
@@ -1037,6 +1051,13 @@ async def _compose_answer_async(
         return await _finalize_composed_answer_async(answer, False, "", verification, stream_callback)
 
     if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM"} and rooms:
+        targeted = _targeted_room_answer(question, rooms[0], tool_results)
+        if targeted:
+            return await _finalize_composed_answer_async(
+                targeted, False, "", verification, stream_callback,
+                parsed=parsed, grounding=grounding, tool_results=tool_results,
+                question=question, user_mood=user_mood,
+            )
         insufficient = _verified_data_insufficient_message(
             question,
             rooms[0],
@@ -1293,7 +1314,7 @@ def _extract_rooms(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _current_room_from_results(intent: str, rooms: list[dict[str, Any]]) -> str | None:
-    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST"} and rooms:
+    if intent in {"ASK_ABOUT_ROOM", "SUMMARIZE_ROOM", "CALCULATE_COST", "SEARCH_ROOM", "REFINE_SEARCH", "FIND_SIMILAR"} and rooms:
         return rooms[0].get("room_id")
     return None
 
@@ -1362,6 +1383,281 @@ def _room_feature_facts(room: dict[str, Any]) -> list[str]:
         for item in (room.get("amenities") or [])
         if item
     ]
+
+
+def _norm_answer_text(question: str) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", str(question or "").lower())
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Mn").replace("đ", "d")
+
+
+def _targeted_room_answer(
+    question: str,
+    room: dict[str, Any],
+    tool_results: dict[str, Any],
+) -> str | None:
+    text = _norm_answer_text(question)
+    title = room.get("title") or f"#{room.get('room_id')}"
+    room_id = room.get("room_id")
+
+    if _is_negotiation_question_text(text):
+        return (
+            f"Dạ với **{title}** (#{room_id}), em chưa có dữ liệu nào cam kết được mức giảm giá ạ. "
+            "Phần bỏ bớt nội thất hoặc deal lại giá mình có thể trao đổi trực tiếp với chủ nhà khi xem phòng, "
+            "còn em không tự chốt mức giảm thay chủ nhà để tránh sai thông tin nha."
+        )
+
+    if _is_unverified_area_attribute_question(text):
+        topic = _unverified_area_topic(text)
+        return (
+            f"Dạ em chưa có dữ liệu xác minh về **{topic}** của khu/phòng này ạ, nên em không dám khẳng định bừa. "
+            "Anh/chị nên hỏi lại khi xem phòng thực tế hoặc kiểm tra thêm trên tin đăng chính thức nha."
+        )
+
+    lines: list[str] = []
+    if _question_mentions_availability(text):
+        status = room.get("status_desc")
+        if room.get("available") is True:
+            lines.append(f"- Tình trạng: {status or 'Còn phòng'}.")
+        elif room.get("available") is False:
+            lines.append(f"- Tình trạng: {status or 'Hết phòng'}.")
+        else:
+            lines.append("- Tình trạng: em chưa có dữ liệu xác minh chắc chắn.")
+
+    if _question_mentions_pet_policy(question):
+        pet_line = _pet_policy_line(room)
+        if pet_line:
+            lines.append(pet_line)
+        alternatives = [item for item in (tool_results.get("alternative_rooms") or []) if item]
+        if alternatives:
+            lines.append("Em có vài phương án khác có hỗ trợ pet để anh/chị tham khảo:")
+            for idx, alt in enumerate(alternatives[:3], 1):
+                lines.append(
+                    f"{idx}. {alt.get('title')} (#{alt.get('room_id')}) - {format_vnd(alt.get('rent_price'))}/tháng, "
+                    f"{alt.get('district') or UNKNOWN_DISTRICT}."
+                )
+
+    if _question_mentions_fees(text):
+        fee_lines = _room_fee_lines(room)
+        if fee_lines:
+            lines.extend(fee_lines)
+        else:
+            lines.append("- Điện/nước/phí: em chưa có dữ liệu xác minh đủ cho căn này.")
+
+    if _question_mentions_deposit(text):
+        deposit = room.get("deposit")
+        options = room.get("deposit_options") or []
+        if deposit is not None:
+            lines.append(f"- Tiền cọc: {format_vnd(deposit)}.")
+        elif options and options[0].get("deposit") is not None:
+            lines.append(f"- Tiền cọc: {format_vnd(options[0].get('deposit'))}.")
+        else:
+            lines.append("- Tiền cọc: em chưa có dữ liệu xác minh.")
+
+    if _question_mentions_floor(text):
+        floor = room.get("floor") or _extract_room_floor_hint(room)
+        if floor:
+            lines.append(f"- Tầng/lầu: {floor}.")
+        else:
+            lines.append("- Tầng/lầu: em chưa có dữ liệu xác minh rõ.")
+
+    feature_labels = _requested_feature_labels(text)
+    for label in feature_labels:
+        status = _room_feature_status(room, label)
+        if status is None:
+            lines.append(f"- {label}: em chưa có dữ liệu xác minh.")
+        else:
+            lines.append(f"- {label}: {status}.")
+        if label == "Gác" and _question_mentions_mezzanine_height(text):
+            lines.append("- Chiều cao gác: em chưa có dữ liệu xác minh.")
+
+    if not lines:
+        return None
+    return f"Dạ em kiểm tra theo dữ liệu của **{title}** (#{room_id}) nhé:\n" + "\n".join(lines)
+
+
+def _requested_feature_labels(text: str) -> list[str]:
+    mapping: tuple[tuple[tuple[str, ...], str], ...] = (
+        (("may lanh", "dieu hoa"), "Máy lạnh"),
+        (("ban cong",), "Ban công"),
+        (("cua so",), "Cửa sổ"),
+        (("wifi",), "Wifi"),
+        (("gac", "gac lung"), "Gác"),
+        (("toilet", "wc", "nha ve sinh"), "Toilet"),
+        (("gio giac", "gio tu do"), "Giờ giấc"),
+        (("may giat",), "Máy giặt"),
+        (("de xe", "gui xe", "giu xe", "cho de xe"), "Để xe"),
+        (("thang may",), "Thang máy"),
+        (("ke bep", "bep"), "Kệ bếp"),
+        (("nuoc nong",), "Nước nóng"),
+        (("tu lanh",), "Tủ lạnh"),
+        (("giuong",), "Giường"),
+        (("nem",), "Nệm"),
+        (("tu quan ao",), "Tủ quần áo"),
+    )
+    labels: list[str] = []
+    for tokens, label in mapping:
+        if any(token in text for token in tokens) and label not in labels:
+            labels.append(label)
+    if "noi that" in text or "full noi that" in text:
+        for label in ("Giường", "Nệm", "Tủ quần áo", "Tủ lạnh", "Kệ bếp"):
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _room_feature_status(room: dict[str, Any], label: str) -> str | None:
+    text = str(room.get("embedding_text") or "")
+    value = _extract_feature_status(text, label)
+    if value:
+        return value
+    aliases = {label.lower(), label}
+    if label == "Toilet":
+        aliases.update({"WC riêng", "private_bathroom"})
+    for item in room.get("amenities") or []:
+        item_str = str(item).strip()
+        if item_str in aliases or item_str.lower() in {alias.lower() for alias in aliases}:
+            return "Có"
+    canonical_by_label = {value: key for key, value in AMENITY_LABELS.items()}
+    canonical = canonical_by_label.get(label)
+    if canonical and canonical in (room.get("amenities_canonical") or []):
+        return "Có"
+    return None
+
+
+def _question_mentions_pet_policy(question: str) -> bool:
+    text = _norm_answer_text(question)
+    return any(token in text for token in ("thu cung", "nuoi meo", "nuoi cho", "pet", "cho nuoi"))
+
+
+def _room_pet_denied(room: dict[str, Any]) -> bool:
+    return _room_feature_status(room, "Thú cưng") == "Không" or str(room.get("pet_policy") or "").lower() == "denied"
+
+
+def _pet_policy_line(room: dict[str, Any]) -> str | None:
+    status = _room_feature_status(room, "Thú cưng")
+    if status == "Có":
+        return "- Thú cưng: dữ liệu phòng này ghi Có, nhưng anh/chị vẫn nên xác nhận lại điều kiện cụ thể với chủ nhà."
+    if status == "Không":
+        return "- Thú cưng: dữ liệu phòng này ghi Không, nên em không khuyến khích mình chọn căn này nếu có nuôi mèo/chó."
+    return "- Thú cưng: em chưa có dữ liệu xác minh đủ cho quy định pet của căn này."
+
+
+def _pet_alternative_constraints(room: dict[str, Any]) -> dict[str, Any]:
+    constraints: dict[str, Any] = {
+        "location": {"districts": [room.get("district")] if room.get("district") else []},
+        "pets_required": ["cat"],
+    }
+    rent = room.get("rent_price")
+    if isinstance(rent, (int, float)) and rent > 0:
+        constraints["budget"] = {"max": int(rent) + 1_000_000, "max_operator": "lte"}
+    return constraints
+
+
+def _attach_pet_alternatives(
+    payload: dict[str, Any],
+    question: str,
+    context: ToolExecutionContext,
+) -> None:
+    rooms = payload.get("rooms") or []
+    room = rooms[0] if rooms else None
+    if not room or not _question_mentions_pet_policy(question) or not _room_pet_denied(room):
+        return
+    alt_constraints = _pet_alternative_constraints(room)
+    if not alt_constraints or context.read_tool_calls >= MAX_READ_TOOL_CALLS_PER_TURN:
+        return
+    alternatives = _tool_registry.execute(
+        "search_rooms",
+        {"query_text": question, "constraints": alt_constraints, "top_k": 4},
+        context,
+    )
+    room_id = room.get("room_id")
+    payload["alternative_rooms"] = [
+        item for item in alternatives if item.get("room_id") != room_id
+    ][:3]
+
+
+def _question_mentions_availability(text: str) -> bool:
+    return any(token in text for token in ("con phong", "phong trong", "het phong", "con trong"))
+
+
+def _question_mentions_fees(text: str) -> bool:
+    return any(token in text for token in ("dien nuoc", "gia dien", "gia nuoc", "tien dien", "tien nuoc", "phi dien", "phi nuoc", "phi quan ly", "wifi bao nhieu"))
+
+
+def _question_mentions_deposit(text: str) -> bool:
+    return any(token in text for token in ("coc", "tien coc", "dat coc"))
+
+
+def _question_mentions_floor(text: str) -> bool:
+    return any(token in text for token in ("tret", "lau", "tang", "lầu"))
+
+
+def _question_mentions_mezzanine_height(text: str) -> bool:
+    return "gac cao" in text or "cao khong" in text
+
+
+def _room_fee_lines(room: dict[str, Any]) -> list[str]:
+    fees = room.get("fees") or {}
+    labels = {
+        "electricity": "Điện",
+        "water": "Nước",
+        "management": "Phí quản lý",
+        "wifi": "Wifi",
+        "parking": "Giữ xe",
+        "washing_machine": "Máy giặt",
+    }
+    lines: list[str] = []
+    for key, label in labels.items():
+        if key in fees and fees[key] not in (None, ""):
+            lines.append(f"- {label}: {fees[key]}.")
+    return lines
+
+
+def _extract_room_floor_hint(room: dict[str, Any]) -> str | None:
+    import re
+
+    text = " ".join(str(part or "") for part in (room.get("title"), room.get("room_code"), room.get("embedding_text")))
+    if re.search(r"\b(?:trệt|tret|ground)\b", text, re.IGNORECASE):
+        return "trệt"
+    match = re.search(r"\b(?:lầu|lau|tầng|tang)\s*(\d{1,2})\b", text, re.IGNORECASE)
+    if match:
+        return f"lầu {match.group(1)}"
+    return None
+
+
+def _is_negotiation_question_text(text: str) -> bool:
+    return any(token in text for token in ("deal gia", "giam gia", "bot gia", "thuong luong", "tra gia"))
+
+
+def _is_unverified_area_attribute_question(text: str) -> bool:
+    return any(token in text for token in ("view song", "huong dong", "huong tay", "huong nam", "huong bac", "ngap", "bi ngap"))
+
+
+def _unverified_area_topic(text: str) -> str:
+    if "view song" in text:
+        return "view sông"
+    if "ngap" in text or "bi ngap" in text:
+        return "tình trạng ngập"
+    if "huong" in text:
+        return "hướng cửa sổ/phòng"
+    return "thuộc tính khu vực"
+
+
+def _special_general_room_help(question: str) -> str | None:
+    text = _norm_answer_text(question)
+    if any(token in text for token in ("khac hinh", "khong giong hinh", "khac anh", "khong giong anh")):
+        return (
+            "Dạ em xin lỗi vì trải nghiệm xem phòng thực tế chưa khớp kỳ vọng ạ. "
+            "Mình cho em biết khu vực, ngân sách và điểm chưa ưng nhất, em sẽ ưu tiên lọc phương án khác có dữ liệu rõ hơn thay vì ép căn cũ nha."
+        )
+    if any(token in text for token in ("xa cho lam", "xa cong ty", "xa qua", "khong tien di lam")):
+        return (
+            "Dạ em hiểu ạ. Nếu căn vừa rồi bị xa chỗ làm, anh/chị cho em xin khu vực hoặc mốc cần gần hơn "
+            "để em đổi ràng buộc vị trí và lọc lại, không lặp lại đúng căn mình vừa chê xa."
+        )
+    return None
 
 
 def _extract_feature_status(text: str, label: str) -> str | None:
@@ -1695,6 +1991,43 @@ def _is_off_topic_question(question: str) -> bool:
 
 def _has_soft_preferences(constraints: dict[str, Any]) -> bool:
     return bool(constraints.get("amenities_preferred"))
+
+
+def _needs_search_discovery(question: str, constraints: dict[str, Any]) -> bool:
+    if _has_meaningful_search_constraints(constraints):
+        return False
+    text = _norm_answer_text(question)
+    return bool(
+        any(
+            token in text
+            for token in (
+                "con phong", "co phong", "phong trong", "tim phong",
+                "muon tim phong", "toi muon tim phong", "can phong",
+                "can thue", "muon thue", "tim nha",
+            )
+        )
+    )
+
+
+def _has_meaningful_search_constraints(constraints: dict[str, Any]) -> bool:
+    location = constraints.get("location") or {}
+    budget = constraints.get("budget") or {}
+    if any(location.get(key) for key in ("districts", "wards", "near_landmarks", "province")):
+        return True
+    if budget.get("min") is not None or budget.get("max") is not None:
+        return True
+    for key in (
+        "categories",
+        "amenities_required",
+        "amenities_preferred",
+        "excluded_features",
+        "vehicles",
+        "pets_required",
+    ):
+        if constraints.get(key):
+            return True
+    occupants = constraints.get("occupants")
+    return isinstance(occupants, int) and occupants > 0
 
 
 def _relax_soft_filters(constraints: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
