@@ -7,6 +7,7 @@ Không tiêu thụ VRAM, không tiêu thụ GPU.
 Graceful degradation: Nếu chưa cấu hình LANGFUSE_SECRET_KEY,
 hệ thống vẫn chạy bình thường mà không crash.
 """
+import inspect
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -28,18 +29,22 @@ def get_langfuse():
     if _langfuse_client is not None:
         return _langfuse_client if _langfuse_available else None
 
-    if not LANGFUSE_SECRET_KEY:
+    if not LANGFUSE_SECRET_KEY or not LANGFUSE_PUBLIC_KEY:
         console.print("[dim]  Langfuse: Not configured, tracing disabled[/]")
         _langfuse_available = False
         return None
 
     try:
         from langfuse import Langfuse
-        _langfuse_client = Langfuse(
-            secret_key=LANGFUSE_SECRET_KEY,
-            public_key=LANGFUSE_PUBLIC_KEY,
-            host=LANGFUSE_HOST,
-        )
+        kwargs = {
+            "secret_key": LANGFUSE_SECRET_KEY,
+            "public_key": LANGFUSE_PUBLIC_KEY,
+        }
+        if "base_url" in inspect.signature(Langfuse).parameters:
+            kwargs["base_url"] = LANGFUSE_HOST
+        else:
+            kwargs["host"] = LANGFUSE_HOST
+        _langfuse_client = Langfuse(**kwargs)
         _langfuse_available = True
         console.print("[green]  Langfuse: Connected ✓[/]")
         return _langfuse_client

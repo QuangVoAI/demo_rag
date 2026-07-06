@@ -28,10 +28,17 @@ from config import (
 # Tích hợp Langfuse observability (bỏ qua nếu chưa cài)
 try:
     from langfuse import observe as _observe
+except Exception:
+    try:
+        from langfuse.decorators import observe as _observe
+    except Exception:
+        _observe = None
+
+if _observe is not None:
     def observe(**kwargs):
         """Wrapper giảm nhẹ nếu Langfuse chưa được cấu hình."""
         return _observe(**kwargs)
-except ImportError:
+else:
     def observe(**kwargs):
         """No-op decorator khi không có langfuse."""
         def decorator(func):

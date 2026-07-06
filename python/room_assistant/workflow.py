@@ -139,10 +139,17 @@ except Exception:
 
 try:
     from langfuse import observe as _observe
+except Exception:
+    try:
+        from langfuse.decorators import observe as _observe
+    except Exception:
+        _observe = None
+
+if _observe is not None:
 
     def observe(**kwargs):
         return _observe(**kwargs)
-except Exception:
+else:
     def observe(**kwargs):
         def decorator(func):
             return func
@@ -2349,6 +2356,21 @@ def _update_langfuse_turn_span(
         kwargs["status_message"] = status_message
     if not kwargs:
         return
+    try:
+        from langfuse import get_client
+        client = get_client()
+        update_current_span = getattr(client, "update_current_span", None)
+        if callable(update_current_span):
+            session_hash = metadata.get("session_hash") if metadata else None
+            if session_hash:
+                from langfuse import propagate_attributes
+                with propagate_attributes(session_id=str(session_hash)):
+                    update_current_span(**kwargs)
+            else:
+                update_current_span(**kwargs)
+            return
+    except Exception as exc:
+        _logger.debug("langfuse_turn_span_update_v4_failed %s", exc)
     try:
         from langfuse.decorators import langfuse_context
         langfuse_context.update_current_observation(**kwargs)

@@ -143,9 +143,12 @@ REDIS_CACHE_TTL = int(os.getenv("REDIS_CACHE_TTL", str(7 * 24 * 3600)))
 REDIS_SESSION_TTL_SECONDS = int(os.getenv("REDIS_SESSION_TTL_SECONDS", str(24 * 3600)))
 
 # --- Langfuse Observability ---
-LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
-LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
+LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL", "").strip()
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "").strip() or LANGFUSE_BASE_URL or "https://cloud.langfuse.com"
+if LANGFUSE_HOST and not os.getenv("LANGFUSE_HOST"):
+    os.environ["LANGFUSE_HOST"] = LANGFUSE_HOST
 
 # --- Tham số tìm kiếm và rewrite ---
 # Số phòng tối thiểu để coi là kết quả "đủ tốt".
